@@ -85,28 +85,70 @@ function disconnect() {
 }
 
 // --- the confirm dialog ---
-// One floating, framed dialog. It resolves true for the action's own button and
-// false for the safe one or Escape, and gives the focus back to where it was.
-// restore is a selector for the button, because the poll may have swapped it
-// for a new element while the dialog was open.
-function confirmBox(title, text, yes, no, restore) {
+// One floating, framed dialog. It resolves false for the safe button or Escape
+// and gives the focus back to where it was. For a plain confirm it resolves
+// true; when choices ([[value, label], ...]) are given it resolves the picked
+// value, with up to three as buttons and more as a select. restore is a
+// selector for the button, because the poll may have swapped it for a new
+// element while the dialog was open.
+function confirmBox(title, text, yes, no, restore, choices, glyph = "\u{F0156}") {
   return new Promise((resolve) => {
     const d = $("dialog");
     const back = document.activeElement;
     $("dlg-title").textContent = title;
     $("dlg-text").textContent = text;
     const icon = document.createElement("i");
-    icon.textContent = "\u{F0156}";
+    icon.textContent = glyph;
     $("dlg-yes").replaceChildren(icon, yes);
     $("dlg-no").textContent = no;
+
+    let picked = choices?.[0]?.[0];
+    const box = $("dlg-choice");
+    let first = $("dlg-no");
+    box.replaceChildren();
+    box.hidden = !choices;
+    if (choices && choices.length > 3) {
+      const select = document.createElement("select");
+      select.setAttribute("aria-label", "Printer");
+      for (const [v, label] of choices) select.append(new Option(label, v));
+      select.onchange = () => (picked = select.value);
+      box.append(select);
+      first = select;
+    } else if (choices) {
+      const group = document.createElement("div");
+      group.className = "seg";
+      group.setAttribute("role", "group");
+      const mark = () => {
+        for (const b of group.children) {
+          b.className = b.dataset.val === picked ? "on" : "";
+          b.setAttribute("aria-pressed", String(b.dataset.val === picked));
+        }
+      };
+      for (const [v, label] of choices) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.dataset.val = v;
+        b.textContent = label;
+        b.onclick = () => {
+          picked = v;
+          mark();
+        };
+        group.append(b);
+      }
+      mark();
+      box.append(group);
+      first = group.children[0];
+    }
     d.hidden = false;
-    $("dlg-no").focus();
+    first.focus();
     const done = (v) => {
       d.hidden = true;
       d.onkeydown = $("dlg-yes").onclick = $("dlg-no").onclick = null;
+      box.replaceChildren();
+      box.hidden = true;
       const target = back?.isConnected ? back : restore && document.querySelector(restore);
       target?.focus?.();
-      resolve(v);
+      resolve(v && choices ? picked : v);
     };
     $("dlg-yes").onclick = () => done(true);
     $("dlg-no").onclick = () => done(false);
@@ -128,15 +170,32 @@ async function send(url, body) {
   }
 }
 
+async function moveJob(b) {
+  const { job } = b.dataset;
+  let targets = [];
+  try {
+    targets = JSON.parse(b.dataset.targets || "[]");
+  } catch (err) {
+    targets = [];
+  }
+  if (targets.length === 0) return;
+  const to = await confirmBox(b.dataset.moveTitle, `Choose the printer to move job ${job} to.`, b.dataset.moveLabel,
+    "Keep it here", `[data-act="move"][data-job="${job}"]`, targets.map((t) => [t.name, t.label]), "\u{F0054}");
+  if (!to) return;
+  b.disabled = true;
+  await send(`/jobs/${encodeURIComponent(job)}/move`, new URLSearchParams({ to }));
+}
+
 async function jobAction(b) {
   const { act, job } = b.dataset;
+  if (act === "move") return moveJob(b);
   if (b.dataset.confirm) {
     const ok = await confirmBox(b.dataset.confirmTitle, b.dataset.confirm, b.dataset.confirmLabel, "Keep printing",
       `[data-act="${act}"][data-job="${job}"]`);
     if (!ok) return;
   }
   b.disabled = true;
-  await send(`/jobs/${encodeURIComponent(job)}/${act}`);
+  await send(`/jobs/${encodeURIComponent(job)}/${act === "reprint" ? "restart" : act}`);
 }
 
 async function testPage(b) {

@@ -60,7 +60,7 @@ var jobActions = map[string]struct {
 	"hold":    {"job.hold", "Held", CUPS.Hold},
 	"release": {"job.release", "Released", CUPS.Release},
 	"cancel":  {"job.cancel", "Canceled", CUPS.Cancel},
-	"restart": {"job.restart", "Restarted", CUPS.Restart},
+	"restart": {"job.restart", "Reprinting", CUPS.Restart},
 }
 
 func (s *Server) actionRoutes(mux *http.ServeMux) {
@@ -175,7 +175,7 @@ func (s *Server) moveJob(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), actionTimeout)
 	defer cancel()
 	err := s.deps.CUPS.Move(ctx, id, to)
-	s.record(r, "job.move", fmt.Sprintf("job %d", id), jobName+" to "+to, err)
+	s.record(r, "job.move", fmt.Sprintf("job %d", id), "to "+to, err)
 	s.hub.Refresh()
 	if err != nil {
 		reply(w, http.StatusBadGateway, err.Error())
@@ -251,6 +251,9 @@ func sniffFormat(head []byte) string {
 // last, so the file never has to be held: the handler reads the multipart body
 // part by part and hands the file part to CUPS as it arrives.
 func (s *Server) printFile(w http.ResponseWriter, r *http.Request) {
+	// The tolerance: formOverhead (64 KiB) above maxUpload is let through here
+	// for the form framing. A file that is a little over 200 MB is stopped by
+	// the counter below instead, after CUPS has been called and aborted.
 	limit := maxUpload + formOverhead
 	if r.ContentLength > limit {
 		reply(w, http.StatusRequestEntityTooLarge, tooLargeText)

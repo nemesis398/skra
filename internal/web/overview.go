@@ -157,6 +157,12 @@ type view struct {
 	DefaultName string
 }
 
+// moveTarget is a queue the move dialog offers.
+type moveTarget struct {
+	Name  string `json:"name"`
+	Label string `json:"label"`
+}
+
 // optPrinter is one queue in the print form: what it can do for the
 // choices the form offers.
 type optPrinter struct {
@@ -188,6 +194,10 @@ type jobView struct {
 	// stands before its cancel.
 	CanHold, CanRelease                     bool
 	ConfirmTitle, ConfirmText, ConfirmLabel string
+	// MoveTo is the JSON of the other queues a waiting or held job can go to,
+	// and MoveTitle the heading of the dialog that asks; both are empty when
+	// there is nowhere to move it.
+	MoveTo, MoveTitle string
 }
 
 func (s *Server) view(snap Snapshot) view {
@@ -227,7 +237,19 @@ func (s *Server) view(snap Snapshot) view {
 		if j.State == 4 {
 			held++
 		}
-		v.Queue = append(v.Queue, jobRow(j, names, now, true))
+		jv := jobRow(j, names, now, true)
+		if (j.State == 3 || j.State == 4) && len(snap.Printers) > 1 {
+			var targets []moveTarget
+			for _, p := range snap.Printers {
+				if p.Name != j.Printer {
+					targets = append(targets, moveTarget{Name: p.Name, Label: names[p.Name]})
+				}
+			}
+			if raw, err := json.Marshal(targets); err == nil && len(targets) > 0 {
+				jv.MoveTo, jv.MoveTitle = string(raw), "Move "+quoted(jv.Name)
+			}
+		}
+		v.Queue = append(v.Queue, jv)
 	}
 	for i, j := range snap.Done {
 		if i == recentJobs {

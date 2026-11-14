@@ -147,7 +147,7 @@ func TestJobActionsAnswerWithTheFooterMessage(t *testing.T) {
 	}{
 		{"/jobs/13/release", "", `Released "Held.pdf".`, "job.release", "release 13"},
 		{"/jobs/14/hold", "", `Held "Waiting.pdf".`, "job.hold", "hold 14"},
-		{"/jobs/9/restart", "", `Restarted "Old.pdf".`, "job.restart", "restart 9"},
+		{"/jobs/9/restart", "", `Reprinting "Old.pdf".`, "job.restart", "restart 9"},
 		{"/jobs/14/move", "to=Virtual-MFC-2", `Moved "Waiting.pdf" to Virtual-MFC-2.`, "job.move", "move 14 Virtual-MFC-2"},
 		{"/jobs/77/hold", "", `Held "job 77".`, "job.hold", "hold 77"}, // not in the snapshot: the id stands in
 	} {
@@ -453,10 +453,12 @@ const mib = 1 << 20
 
 func TestPrintRejectsLargeAndUnknown(t *testing.T) {
 	pdf := []byte("%PDF-1.4\n")
-	t.Run("too large by Content-Length", func(t *testing.T) {
+	// The tolerance is formOverhead (64 KiB) over 200 MB. A body that announces
+	// more than that is refused before CUPS is called.
+	t.Run("Content-Length above 200 MB plus the tolerance never calls Print", func(t *testing.T) {
 		f := twoJobs()
 		s, h := actionServer(t, f)
-		size := int64(maxUpload + formOverhead + 1024)
+		size := maxUpload + formOverhead + 1024
 		rec := upload(s, h, printFields, "big.pdf", &fileBody{head: pdf, n: size}, size+300)
 		if rec.Code != 413 || rec.Body.String() != "Files up to 200 MB can be printed from here." {
 			t.Errorf("status %d, body %q", rec.Code, rec.Body.String())
@@ -464,18 +466,50 @@ func TestPrintRejectsLargeAndUnknown(t *testing.T) {
 		if f.prints() != 0 {
 			t.Error("Print was called for a body that announced it was too large")
 		}
-	})
-	t.Run("200 MB and one byte, no length announced", func(t *testing.T) {
-		f := twoJobs()
-		s, h := actionServer(t, f)
-		rec := upload(s, h, printFields, "big.pdf", &fileBody{head: pdf, n: 200*mib + 1}, -1)
-		if rec.Code != 413 || rec.Body.String() != "Files up to 200 MB can be printed from here." {
-			t.Errorf("status %d, body %q", rec.Code, rec.Body.String())
-		}
-		if ev, _ := s.deps.Store.Recent(context.Background(), 1); len(ev) != 0 && ev[0].OK {
-			t.Errorf("a failed upload was logged as done: %+v", ev[0])
+		if ev, _ := s.deps.Store.Recent(context.Background(), 1); len(ev) != 0 {
+			t.Errorf("a refused upload was logged: %+v", ev[0])
 		}
 	})
+	// Over 200 MB but not announced as such: either no length at all, or one
+	// within the tolerance. The counter stops the file, so Print has been called
+	// and sees its reader fail, and returns no job id.
+	for _, tc := range []struct {
+		name   string
+		length func(size int64) int64
+	}{
+		{"200 MB and one byte, no length announced", func(int64) int64 { return -1 }},
+		{"200 MB and one byte, length within the tolerance", func(size int64) int64 { return size + 300 }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := twoJobs()
+			var readErr error
+			var gotID int
+			f.print = func(_, _, _ string, _ cups.JobOptions, doc io.Reader) (int, error) {
+				_, readErr = io.Copy(io.Discard, doc)
+				if readErr != nil {
+					return 0, fmt.Errorf("CUPS does not answer: %w", readErr)
+				}
+				gotID = 31
+				return gotID, nil
+			}
+			s, h := actionServer(t, f)
+			size := maxUpload + 1
+			rec := upload(s, h, printFields, "big.pdf", &fileBody{head: pdf, n: size}, tc.length(size))
+			if rec.Code != 413 || rec.Body.String() != "Files up to 200 MB can be printed from here." {
+				t.Errorf("status %d, body %q", rec.Code, rec.Body.String())
+			}
+			if f.prints() != 1 {
+				t.Errorf("Print was called %d times, want 1", f.prints())
+			}
+			if readErr == nil || gotID != 0 {
+				t.Errorf("Print's reader did not fail (err %v) or a job id %d came back", readErr, gotID)
+			}
+			ev := lastEvent(t, s)
+			if ev.Action != "print.file" || ev.OK || ev.Target != "Virtual-MFC" {
+				t.Errorf("event = %+v, want print.file with OK false", ev)
+			}
+		})
+	}
 	t.Run("exactly 200 MB", func(t *testing.T) {
 		f := twoJobs()
 		s, h := actionServer(t, f)
@@ -573,5 +607,109 @@ func TestPrintCUPSRefusal(t *testing.T) {
 	}
 	if ev := lastEvent(t, s); ev.Action != "print.file" || ev.OK {
 		t.Errorf("event = %+v", ev)
+	}
+}
+
+// --- reprint and move buttons ---
+
+func rowOf(t *testing.T, body, table, id string) string {
+	t.Helper()
+	start := strings.Index(body, `<div id="`+table+`">`)
+	if start < 0 {
+		t.Fatalf("no %s fragment", table)
+	}
+	body = body[start:]
+	i := strings.Index(body, `<td class="jid">`+id+`</td>`)
+	if i < 0 {
+		t.Fatalf("no row for job %s in %s", id, table)
+	}
+	return body[i : i+strings.Index(body[i:], "</tr>")]
+}
+
+func TestReprintButtonOnEveryRecentRow(t *testing.T) {
+	f := twoJobs()
+	f.done = append(f.done, cups.Job{ID: 8, Name: "Broken.pdf", Printer: "Virtual-MFC", State: 8}, cups.Job{ID: 7, Name: "Gone.pdf", Printer: "Virtual-MFC", State: 7})
+	body := pageFor(t, f)
+	for _, id := range []string{"9", "8", "7"} {
+		if row := rowOf(t, body, "recent", id); !strings.Contains(row, `data-act="reprint" data-job="`+id+`"`) {
+			t.Errorf("recent row %s has no reprint button: %s", id, row)
+		}
+	}
+	if strings.Contains(rowOf(t, body, "queue", "13"), "reprint") {
+		t.Error("a queued job offers reprint")
+	}
+}
+
+func TestRestartLogsEventAndAnswersReprinting(t *testing.T) {
+	f := twoJobs()
+	s, h := actionServer(t, f)
+	rec := postTo(s, h, "/jobs/9/restart", nil)
+	if rec.Code != 200 || rec.Body.String() != `Reprinting "Old.pdf".` {
+		t.Errorf("status %d, body %q", rec.Code, rec.Body.String())
+	}
+	if ev := lastEvent(t, s); ev.Action != "job.restart" || ev.Target != "job 9" || !ev.OK {
+		t.Errorf("event = %+v", ev)
+	}
+	f.set(func(f *fakeCUPS) { f.actErr = errors.New("Job #9 cannot be restarted: its files are gone.") })
+	rec = postTo(s, h, "/jobs/9/restart", nil)
+	if rec.Code != 502 || rec.Body.String() != "Job #9 cannot be restarted: its files are gone." {
+		t.Errorf("refused: status %d, body %q", rec.Code, rec.Body.String())
+	}
+	if ev := lastEvent(t, s); ev.Action != "job.restart" || ev.OK {
+		t.Errorf("event after refusal = %+v", ev)
+	}
+}
+
+func second() cups.Printer {
+	p := brother()
+	p.Name, p.Info = "Virtual-MFC-2", "Hall laser"
+	return p
+}
+
+func TestMoveButtonNeedsTwoPrintersAndAWaitingOrHeldJob(t *testing.T) {
+	one := pageFor(t, twoJobs())
+	if strings.Contains(one, `data-act="move"`) {
+		t.Error("the move button is offered with a single printer")
+	}
+
+	f := twoJobs()
+	f.printers = []cups.Printer{brother(), second()}
+	body := pageFor(t, f)
+	for id, want := range map[string]bool{"12": false, "13": true, "14": true} {
+		row := rowOf(t, body, "queue", id)
+		if got := strings.Contains(row, `data-act="move" data-job="`+id+`"`); got != want {
+			t.Errorf("job %s: move button = %v, want %v: %s", id, got, want, row)
+		}
+	}
+	row := rowOf(t, body, "queue", "13")
+	if !strings.Contains(row, `&#34;name&#34;:&#34;Virtual-MFC-2&#34;`) || strings.Contains(row, `&#34;name&#34;:&#34;Virtual-MFC&#34;`) {
+		t.Errorf("the move choices are not the other queue only: %s", row)
+	}
+	if !strings.Contains(row, `data-move-title="Move &#34;Held.pdf&#34;"`) {
+		t.Errorf("no move title: %s", row)
+	}
+	if strings.Contains(rowOf(t, body, "recent", "9"), `data-act="move"`) {
+		t.Error("a finished job offers move")
+	}
+}
+
+func TestMoveLogsEvent(t *testing.T) {
+	f := twoJobs()
+	f.printers = []cups.Printer{brother(), second()}
+	s, h := actionServer(t, f)
+	rec := postTo(s, h, "/jobs/14/move", url.Values{"to": {"Virtual-MFC-2"}})
+	if rec.Code != 200 || rec.Body.String() != `Moved "Waiting.pdf" to Hall.` {
+		t.Errorf("status %d, body %q", rec.Code, rec.Body.String())
+	}
+	if ev := lastEvent(t, s); ev.Action != "job.move" || ev.Target != "job 14" || ev.Detail != "to Virtual-MFC-2" || !ev.OK {
+		t.Errorf("event = %+v", ev)
+	}
+	f.set(func(f *fakeCUPS) { f.actErr = errors.New("The printer or class does not exist.") })
+	rec = postTo(s, h, "/jobs/14/move", url.Values{"to": {"Nowhere"}})
+	if rec.Code != 502 {
+		t.Errorf("refused: status %d", rec.Code)
+	}
+	if ev := lastEvent(t, s); ev.Action != "job.move" || ev.Target != "job 14" || ev.OK {
+		t.Errorf("event after refusal = %+v", ev)
 	}
 }

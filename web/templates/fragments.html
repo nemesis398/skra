@@ -27,7 +27,7 @@
   <colgroup><col class="c-id"><col><col class="c-pr"><col class="c-st"><col class="c-t"><col class="c-a"></colgroup>
   <thead><tr><th>job</th><th>name</th><th>printer</th><th>state</th><th class="r">sent</th><th></th></tr></thead>
   <tbody>
-{{range .Queue}}  <tr><td class="jid">{{.ID}}</td><td class="jn">{{.Name}}</td><td class="jp">{{.Printer}}</td><td{{if .Class}} class="{{.Class}}"{{end}}>{{.State}}</td><td class="jt">{{.When}}</td><td class="ja">{{if .CanRelease}}<button type="button" class="btn sm" data-act="release" data-job="{{.ID}}"><i>&#xF040A;</i>release</button>{{end}}{{if .CanHold}}<button type="button" class="btn sm" data-act="hold" data-job="{{.ID}}"><i>&#xF03E4;</i>hold</button>{{end}}<button type="button" class="btn sm" data-act="cancel" data-job="{{.ID}}"{{if .ConfirmText}} data-confirm-title="{{.ConfirmTitle}}" data-confirm="{{.ConfirmText}}" data-confirm-label="{{.ConfirmLabel}}"{{end}}><i>&#xF0156;</i>cancel</button></td></tr>
+{{range .Queue}}  <tr><td class="jid">{{.ID}}</td><td class="jn">{{.Name}}</td><td class="jp">{{.Printer}}</td><td{{if .Class}} class="{{.Class}}"{{end}}>{{.State}}</td><td class="jt">{{.When}}</td><td class="ja">{{if .CanRelease}}<button type="button" class="btn sm" data-act="release" data-job="{{.ID}}"><i>&#xF040A;</i>release</button>{{end}}{{if .CanHold}}<button type="button" class="btn sm" data-act="hold" data-job="{{.ID}}"><i>&#xF03E4;</i>hold</button>{{end}}{{if .MoveTo}}<button type="button" class="btn sm" data-act="move" data-job="{{.ID}}" data-move-title="{{.MoveTitle}}" data-move-label="Move job {{.ID}}" data-targets="{{.MoveTo}}"><i>&#xF0054;</i>move</button>{{end}}<button type="button" class="btn sm" data-act="cancel" data-job="{{.ID}}"{{if .ConfirmText}} data-confirm-title="{{.ConfirmTitle}}" data-confirm="{{.ConfirmText}}" data-confirm-label="{{.ConfirmLabel}}"{{end}}><i>&#xF0156;</i>cancel</button></td></tr>
 {{end}}  </tbody>
 </table>
 {{else}}<div class="empty">Nothing is waiting. Drop a file above to print it.</div>
@@ -36,10 +36,10 @@
 {{define "recent"}}<div id="recent">
 <div class="sec"><b>last prints</b><span class="rule"></span></div>
 <table class="q">
-  <colgroup><col class="c-id"><col><col class="c-pr"><col class="c-st"><col class="c-pg"><col class="c-t"></colgroup>
-  <thead><tr><th>job</th><th>name</th><th>printer</th><th>result</th><th class="r">pages</th><th class="r">when</th></tr></thead>
+  <colgroup><col class="c-id"><col><col class="c-pr"><col class="c-st"><col class="c-pg"><col class="c-t"><col class="c-a"></colgroup>
+  <thead><tr><th>job</th><th>name</th><th>printer</th><th>result</th><th class="r">pages</th><th class="r">when</th><th></th></tr></thead>
   <tbody>
-{{range .Recent}}  <tr><td class="jid">{{.ID}}</td><td class="jn">{{.Name}}</td><td class="jp">{{.Printer}}</td><td{{if .Class}} class="{{.Class}}"{{end}}>{{.State}}</td><td class="r">{{.Pages}}</td><td class="jt">{{.When}}</td></tr>
+{{range .Recent}}  <tr><td class="jid">{{.ID}}</td><td class="jn">{{.Name}}</td><td class="jp">{{.Printer}}</td><td{{if .Class}} class="{{.Class}}"{{end}}>{{.State}}</td><td class="r">{{.Pages}}</td><td class="jt">{{.When}}</td><td class="ja"><button type="button" class="btn sm" data-act="reprint" data-job="{{.ID}}"><i>&#xF0450;</i>reprint</button></td></tr>
 {{end}}  </tbody>
 </table>
 </div>{{end}}

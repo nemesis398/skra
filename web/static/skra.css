@@ -103,6 +103,8 @@ td.ja .btn { margin-left:2px; }
 .dialog h4 { font-size:1.077rem; margin-bottom:0.615rem; overflow-wrap:anywhere; }
 .dialog p { color:var(--sub0); line-height:1.5; margin-bottom:0.769rem; }
 .dialog .row { display:flex; gap:2px; justify-content:flex-end; }
+.dialog .opts { justify-content:flex-start; margin-bottom:0.769rem; }
+.dialog select { background:var(--s0); color:var(--text); font:inherit; padding:0.231rem 0.615rem; border:0; border-bottom:2px solid var(--accent); border-radius:0; }
 
 /* the printers tab: queues, their settings, adding one */
 .head-acts { display:flex; gap:2px; margin:0.462rem 1.231rem 0; }
