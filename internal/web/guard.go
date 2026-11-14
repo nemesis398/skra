@@ -25,13 +25,18 @@ func NewToken() string {
 // stops a hostile name that resolves to 127.0.0.1 from reading the page.
 // Every request that is not GET, HEAD or OPTIONS must also carry the
 // X-Skra-Token header equal to token, and an Origin that is absent or equal to
-// "http://" + Host. Anything else gets 403.
+// "http://" + Host. Anything else gets 403. Every response, 403s included,
+// forbids framing (X-Frame-Options and frame-ancestors).
 func Guard(next http.Handler, port, token string) http.Handler {
 	hosts := map[string]bool{
 		"127.0.0.1:" + port: true,
 		"localhost:" + port: true,
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// No page may frame this one: a framed page would pass every check
+		// below, and a click could be steered onto a button.
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
 		if !hosts[r.Host] {
 			http.Error(w, "Forbidden: unexpected Host header.", http.StatusForbidden)
 			return

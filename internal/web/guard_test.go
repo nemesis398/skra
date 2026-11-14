@@ -135,3 +135,31 @@ func TestServerStaticAndGuard(t *testing.T) {
 		t.Errorf("foreign host: status %d", rec.Code)
 	}
 }
+
+func TestGuardForbidsFraming(t *testing.T) {
+	h := guarded()
+	for _, tc := range []struct {
+		name, method, host string
+		want               int
+	}{
+		{"a 200", "GET", "localhost:7631", 200},
+		{"a 403 for the host", "GET", "evil.example:7631", 403},
+		{"a 403 for the token", "POST", "localhost:7631", 403},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, "/x", nil)
+			req.Host = tc.host
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != tc.want {
+				t.Fatalf("status %d, want %d", rec.Code, tc.want)
+			}
+			if got := rec.Header().Get("X-Frame-Options"); got != "DENY" {
+				t.Errorf("X-Frame-Options %q, want DENY", got)
+			}
+			if got := rec.Header().Get("Content-Security-Policy"); got != "frame-ancestors 'none'" {
+				t.Errorf("Content-Security-Policy %q, want frame-ancestors 'none'", got)
+			}
+		})
+	}
+}
