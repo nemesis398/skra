@@ -4,5 +4,5 @@
 # printer.attrs because ippeveprinter 2.4 prints its usage and exits when -a is
 # combined with -M or -m. entrypoint.sh backgrounds it; the
 # Makefile starts it again with "podman exec -d" after "printer-stop".
-exec ippeveprinter -p 8631 -n localhost -r off -k -d /var/spool/skra \
+exec ippeveprinter -p 8631 -r off -k -d /var/spool/skra \
     -a /etc/skra/printer.attrs "Virtual MFC"

@@ -11,10 +11,13 @@ touches the laptop's real CUPS.
     make harness-down     remove the container
 
 The queue is `Virtual-MFC` at `ipp://localhost:8631/ipp/print`, published on
-`127.0.0.1:8631`. Tests get a client from `internal/testenv`, which acts as user
-`root` (the host user maps to root inside the rootless container, and CUPS
-checks the PeerCred name against the socket peer) and skips when the socket is
-missing.
+`127.0.0.1:8631`. `ippeveprinter` must listen on every address in the
+container, so `printer-start` passes no `-n`: with `-n localhost` it listens on
+the container's loopback only and the published port resets every request, so
+the host-side service could not query it. Tests get a client from
+`internal/testenv`, which acts as user `root` (the host user maps to root
+inside the rootless container, and CUPS checks the PeerCred name against the
+socket peer) and skips when the socket is missing.
 
 ## Markers
 
