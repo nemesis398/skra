@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -25,9 +26,7 @@ var adminAttrs = []string{"printer-is-shared", "printer-error-policy", "printer-
 	"media-supported", "media-default", "print-quality-supported", "print-quality-default"}
 
 func requestedPrinterAttrs() []string {
-	out := append([]string(nil), printerAttrs...)
-	out = append(out, adminAttrs...)
-	return append(out, "printer-commands")
+	return slices.Concat(printerAttrs, adminAttrs, []string{"printer-commands"})
 }
 
 var jobAttrs = []string{"job-id", "job-name", "job-state", "job-state-reasons", "job-printer-uri", "job-printer-state-message",
