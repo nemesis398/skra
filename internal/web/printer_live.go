@@ -4,7 +4,6 @@ package web
 
 import (
 	"context"
-	"net/netip"
 	"net/url"
 	"slices"
 	"strings"
@@ -34,7 +33,8 @@ var liveEvery = 5 * time.Second
 // ipp://localhost:60000 is how ipp-usb shows up, so it counts. A USB, socket or
 // lpd queue cannot be asked, and CUPS's word is all there is for it. Neither
 // can a loop queue to a CUPS on this machine (localhost, port 631): skra
-// speaks to CUPS only over its unix socket, never over TCP.
+// speaks to CUPS only over its unix socket, never over TCP. This is the cheap
+// early skip; printer.Query refuses the same address again after resolving.
 func queryable(uri string) bool {
 	scheme, _, ok := strings.Cut(uri, ":")
 	switch {
@@ -45,18 +45,8 @@ func queryable(uri string) bool {
 	case scheme != "ipp" && scheme != "ipps":
 		return false
 	}
-	u, err := url.Parse(uri)
-	if err != nil {
-		return false
-	}
-	port := u.Port()
-	if port == "" {
-		port = "631"
-	}
-	if ip, err := netip.ParseAddr(u.Hostname()); (err == nil && ip.IsLoopback()) || u.Hostname() == "localhost" {
-		return port != "631"
-	}
-	return true
+	_, err := url.Parse(uri)
+	return err == nil && !printer.IsLocalCUPS(uri)
 }
 
 // livePoll asks every queryable printer for its status, in parallel, and keeps
@@ -88,6 +78,9 @@ func (s *Server) livePoll(ctx context.Context) bool {
 
 	next := make(map[string]printer.Live, len(targets))
 	for i, p := range targets {
+		if answers[i].Own { // refused: this machine's own CUPS. Treat it as not queried.
+			continue
+		}
 		if answers[i].At.IsZero() {
 			answers[i].At = time.Now()
 		}

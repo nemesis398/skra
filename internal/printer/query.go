@@ -13,6 +13,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"sync"
@@ -38,6 +39,34 @@ type Live struct {
 	Reasons   []string
 	Message   string
 	At        time.Time
+	// Own is set when the address is this machine's own CUPS. Nothing was
+	// asked, so the printer is not away either: the caller treats it as a
+	// queue that is not queried.
+	Own bool
+}
+
+// ErrOwnHost is what a Resolver returns for a service this machine offers
+// itself, such as the CUPS queue it shares over DNS-SD.
+var ErrOwnHost = errors.New("this machine's own service")
+
+// IsLocalCUPS reports whether an ipp or ipps URI points at port 631 of this
+// machine, which is where its CUPS listens. skra speaks to CUPS only over its
+// unix socket, so Query never connects there: such a queue would be a loop
+// queue, or a dnssd name that resolves to the CUPS this laptop shares itself.
+func IsLocalCUPS(uri string) bool {
+	u, err := url.Parse(uri)
+	if err != nil || (u.Scheme != "ipp" && u.Scheme != "ipps") {
+		return false
+	}
+	if port := u.Port(); port != "" && port != "631" {
+		return false
+	}
+	host := strings.TrimSuffix(u.Hostname(), ".")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip, err := netip.ParseAddr(host)
+	return err == nil && (ip.IsLoopback() || ip.IsUnspecified())
 }
 
 // Resolver turns a dnssd:// device URI into an ipp:// or ipps:// one.
@@ -92,11 +121,18 @@ func Query(ctx context.Context, deviceURI string, r Resolver) Live {
 			}
 			ip, err := r.Resolve(ctx, deviceURI)
 			if err != nil {
+				live.Own = errors.Is(err, ErrOwnHost)
 				return live
 			}
 			target = ip
-			resolved.Store(deviceURI, ip)
 		}
+	}
+	if IsLocalCUPS(target) { // never cached, never asked
+		live.Own = true
+		return live
+	}
+	if isDNSSD {
+		resolved.Store(deviceURI, target)
 	}
 	res, err := fetch(ctx, target)
 	if err != nil {

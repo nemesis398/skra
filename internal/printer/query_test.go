@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -404,5 +405,75 @@ func TestPrinterURLs(t *testing.T) {
 		if _, _, err := httpURL(in); err == nil {
 			t.Errorf("httpURL(%q) accepted", in)
 		}
+	}
+}
+
+func TestIsLocalCUPS(t *testing.T) {
+	for uri, want := range map[string]bool{
+		"ipp://localhost:631/printers/x": true, "ipp://localhost/printers/x": true, "ipps://localhost:631/": true,
+		"ipp://127.0.0.1:631/printers/x": true, "ipp://127.0.0.1/": true, "ipp://127.1.2.3:631/": true,
+		"ipp://[::1]:631/printers/x": true, "ipp://[::1]/": true,
+		"ipp://localhost:8631/ipp/print": false, "ipp://localhost:60000/ipp/print": false,
+		"ipp://127.0.0.1:8631/": false, "ipp://printer.local:631/ipp/print": false, "ipp://192.168.1.5/": false,
+		"ipp://[2001:db8::5]:631/": false, "": false,
+	} {
+		if got := IsLocalCUPS(uri); got != want {
+			t.Errorf("IsLocalCUPS(%q) = %v, want %v", uri, got, want)
+		}
+	}
+}
+
+// countingTransport records every request instead of sending it.
+type countingTransport struct{ n atomic.Int32 }
+
+func (c *countingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	c.n.Add(1)
+	return nil, errors.New("must not be sent")
+}
+
+func TestQueryNeverSpeaksToThisMachinesCUPS(t *testing.T) {
+	ct := &countingTransport{}
+	oldP, oldT := plainClient.Transport, tlsClient.Transport
+	plainClient.Transport, tlsClient.Transport = ct, ct
+	defer func() { plainClient.Transport, tlsClient.Transport = oldP, oldT }()
+
+	// Directly, and through a resolver that hands out the local CUPS.
+	for _, uri := range []string{"ipp://127.0.0.1:631/printers/x", "ipps://localhost/printers/x", "ipp://[::1]:631/"} {
+		live := Query(context.Background(), uri, nil)
+		if live.Reachable || !live.Own {
+			t.Errorf("%s: %+v, want Own and not reachable", uri, live)
+		}
+	}
+	r := &fakeResolver{uri: "ipp://127.0.0.1:631/printers/x"}
+	uri := unique("dnssd://Own%20CUPS-%s._ipp._tcp.local/")
+	for range 2 {
+		live := Query(context.Background(), uri, r)
+		if live.Reachable || !live.Own {
+			t.Errorf("resolved loopback: %+v, want Own and not reachable", live)
+		}
+	}
+	if n := r.calls.Load(); n != 2 {
+		t.Errorf("resolved %d times, want 2: a refused address is never cached", n)
+	}
+	if n := ct.n.Load(); n != 0 {
+		t.Errorf("%d requests went out to this machine's CUPS", n)
+	}
+}
+
+func TestQueryOwnServiceFromTheResolverIsNotCachedOrAway(t *testing.T) {
+	r := &fakeResolver{err: fmt.Errorf("avahi: %w", ErrOwnHost)}
+	uri := unique("dnssd://Shared%20Queue-%s._ipp._tcp.local/")
+	for range 2 {
+		live := Query(context.Background(), uri, r)
+		if live.Reachable || !live.Own {
+			t.Errorf("live = %+v, want Own and not reachable", live)
+		}
+	}
+	if n := r.calls.Load(); n != 2 {
+		t.Errorf("resolved %d times, want 2", n)
+	}
+	// A plain failure is away, not own.
+	if live := Query(context.Background(), unique("dnssd://Gone-%s._ipp._tcp.local/"), &fakeResolver{err: errors.New("timeout")}); live.Own {
+		t.Error("a timeout is not this machine's own service")
 	}
 }

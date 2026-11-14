@@ -242,6 +242,26 @@ func TestLiveOnlyAsksPrintersItCanReach(t *testing.T) {
 	}
 }
 
+func TestLiveOwnServiceIsNotAwayAndNotAsked(t *testing.T) {
+	p := brother()
+	p.DeviceURI = "dnssd://Shared%20Queue._ipp._tcp.local/"
+	q := &fakeQuery{}
+	q.set(p.DeviceURI, printer.Live{Own: true, At: time.Now()}) // refused: it resolved to this machine's CUPS
+	s := liveServer(&fakeCUPS{printers: []cups.Printer{p}}, q)
+	body := pageWithLive(t, s)
+	if _, ok := s.poll(context.Background(), false).Live[p.Name]; ok {
+		t.Error("a refused queue has a live entry")
+	}
+	for _, want := range []string{"ready", "ink as of", "68 %"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("page lacks %q", want)
+		}
+	}
+	if strings.Contains(body, `class="st away"`) {
+		t.Error("a queue that resolves to this machine's CUPS is not away")
+	}
+}
+
 func TestLiveQueriesInParallel(t *testing.T) {
 	var ps []cups.Printer
 	q := &fakeQuery{delay: 200 * time.Millisecond}

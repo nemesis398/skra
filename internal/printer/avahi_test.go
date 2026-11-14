@@ -67,3 +67,19 @@ func TestServiceURIScopesALinkLocalAddress(t *testing.T) {
 		t.Errorf("got %q, want %q", got, want)
 	}
 }
+
+func TestOwnResult(t *testing.T) {
+	const (
+		cached, wideArea, multicast = 1, 2, 4
+		local, ourOwn, static       = 8, 16, 32
+	)
+	for flags, want := range map[uint32]bool{
+		0: false, cached: false, wideArea: false, multicast: false, static: false,
+		cached | multicast: false, multicast | static: false,
+		local: true, ourOwn: true, local | ourOwn: true, local | multicast: true, ourOwn | cached | static: true,
+	} {
+		if got := ownResult(flags); got != want {
+			t.Errorf("ownResult(%d) = %v, want %v", flags, got, want)
+		}
+	}
+}

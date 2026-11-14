@@ -80,6 +80,9 @@ func (Avahi) Resolve(ctx context.Context, dnssdURI string) (string, error) {
 	if err := call.Store(&iface, &proto, &rName, &rType, &rDom, &host, &aproto, &address, &port, &txt, &flags); err != nil {
 		return "", fmt.Errorf("avahi sent an unreadable answer: %w", err)
 	}
+	if ownResult(flags) {
+		return "", fmt.Errorf("%q: %w", name, ErrOwnHost)
+	}
 	addr, err := netip.ParseAddr(address)
 	if err != nil {
 		return "", fmt.Errorf("avahi sent address %q: %w", address, err)
@@ -117,3 +120,14 @@ func serviceURI(regtype string, addr netip.Addr, zone string, port uint16, txt [
 	u := url.URL{Scheme: scheme, Host: net.JoinHostPort(addr.WithZone(zone).String(), strconv.Itoa(int(port))), Path: "/" + rp}
 	return u.String()
 }
+
+// Result flags of ResolveService (AvahiLookupResultFlags).
+const (
+	lookupResultLocal  = 8  // the service is on this machine
+	lookupResultOurOwn = 16 // this client registered the service itself
+)
+
+// ownResult reports whether avahi found the service on this machine. The
+// laptop shares its CUPS queues over DNS-SD, and skra must not speak TCP to
+// its own CUPS.
+func ownResult(flags uint32) bool { return flags&(lookupResultLocal|lookupResultOurOwn) != 0 }
