@@ -50,6 +50,13 @@ func (f *fakeCUPS) Printers(context.Context) ([]cups.Printer, error) {
 	return f.printers, f.err
 }
 
+// callCount is how often CUPS was asked for the printers.
+func (f *fakeCUPS) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
 func (f *fakeCUPS) Default(context.Context) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

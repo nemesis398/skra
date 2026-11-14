@@ -264,13 +264,13 @@ func TestQueueActions(t *testing.T) {
 
 func TestQueueActionsTakeAnAwkwardName(t *testing.T) {
 	f := queuesFake()
-	f.printers = append(f.printers, cups.Printer{Name: "Fußball Drucker", State: 3, Accepting: true})
+	f.printers = append(f.printers, cups.Printer{Name: "Fußball-Drucker", State: 3, Accepting: true})
 	s, h := queueServer(t, f)
-	rec := postTo(s, h, "/printers/Fu%C3%9Fball%20Drucker/pause", nil)
-	if rec.Code != 200 || rec.Body.String() != "Paused the queue of Fußball Drucker." {
+	rec := postTo(s, h, "/printers/Fu%C3%9Fball-Drucker/pause", nil)
+	if rec.Code != 200 || rec.Body.String() != "Paused the queue of Fußball-Drucker." {
 		t.Errorf("status %d, body %q", rec.Code, rec.Body.String())
 	}
-	if got := f.did(); len(got) != 1 || got[0] != "pause Fußball Drucker true" {
+	if got := f.did(); len(got) != 1 || got[0] != "pause Fußball-Drucker true" {
 		t.Errorf("CUPS was asked %v", got)
 	}
 }
@@ -819,5 +819,140 @@ func TestOverviewHasPauseAndResumeOnTheCard(t *testing.T) {
 	if !strings.Contains(page, `data-act="resume" data-q="Hall"`) || !strings.Contains(page, ">resume queue<") ||
 		!strings.Contains(page, `data-act="pause" data-q="Virtual-MFC"`) || !strings.Contains(page, ">pause queue<") {
 		t.Error("the overview cards do not offer pause or resume")
+	}
+}
+
+// CUPS finds a queue whatever the case of its name, so the guard must too:
+// the name of the path is resolved to the queue's own name before anything
+// else, and every call to CUPS and every guard uses that name.
+func TestQueueNamesAreResolvedWhateverTheCase(t *testing.T) {
+	const refusal = "Virtual-MFC is declared in ravnix; remove it there."
+	f := queuesFake()
+	s, h := queueServer(t, f, "Virtual-MFC")
+	for _, path := range []string{"/printers/virtual-mfc/delete", "/printers/VIRTUAL-MFC/delete", "/printers/vIRTUAL-mfc/delete"} {
+		if rec := postTo(s, h, path, nil); rec.Code != 403 || rec.Body.String() != refusal {
+			t.Errorf("POST %s: status %d, body %q", path, rec.Code, rec.Body.String())
+		}
+	}
+	form := same(full())
+	form.Set("address", "ipp://elsewhere.local/ipp/print")
+	if rec := postTo(s, h, "/printers/virtual-mfc/settings", form); rec.Code != 403 || rec.Body.String() != refusal {
+		t.Errorf("address change: status %d, body %q", rec.Code, rec.Body.String())
+	}
+	if got := f.did(); len(got) != 0 {
+		t.Errorf("CUPS was asked %v although the declared queue was refused", got)
+	}
+
+	// An allowed call reaches CUPS with the queue's own name.
+	form = same(full())
+	form.Set("sides", "two-sided-long-edge")
+	if rec := postTo(s, h, "/printers/virtual-MFC/settings", form); rec.Code != 200 || rec.Body.String() != "Saved Virtual-MFC: 1 setting." {
+		t.Errorf("sides only: status %d, body %q", rec.Code, rec.Body.String())
+	}
+	for _, act := range []string{"pause", "default", "cancel-all"} {
+		postTo(s, h, "/printers/VIRTUAL-MFC/"+act, nil)
+	}
+	postTo(s, h, "/printers/virtual-mfc/move-all", url.Values{"to": {"HALL"}})
+	postTo(s, h, "/printers/virtual-mfc/command", url.Values{"command": {"Clean"}})
+	want := "modify Virtual-MFC; pause Virtual-MFC true; default Virtual-MFC; cancel-all Virtual-MFC; move-all Virtual-MFC Hall; command Virtual-MFC Clean"
+	if got := strings.Join(f.did(), "; "); got != want {
+		t.Errorf("CUPS was asked\n%s\nwant\n%s", got, want)
+	}
+	if ev := lastEvent(t, s); ev.Target != "Virtual-MFC" {
+		t.Errorf("the event is about %q, not the queue's own name", ev.Target)
+	}
+	if rec := get(h, "/printers/virtual-mfc/settings"); rec.Code != 200 || !strings.Contains(rec.Body.String(), `data-q="Virtual-MFC"`) {
+		t.Errorf("the panel by a lowercase name: status %d", rec.Code)
+	}
+
+	// An undeclared queue is not found under a wrong name either.
+	f.set(func(f *fakeCUPS) { f.acts = nil })
+	for _, act := range []string{"delete", "pause", "default", "cancel-all", "settings"} {
+		if rec := postTo(s, h, "/printers/virtual-mfc-2/"+act, nil); rec.Code != 404 || rec.Body.Len() == 0 {
+			t.Errorf("POST %s on an unknown queue: status %d, body %q, want 404 with a message", act, rec.Code, rec.Body.String())
+		}
+	}
+	if got := f.did(); len(got) != 0 {
+		t.Errorf("CUPS was asked %v for a queue it does not have", got)
+	}
+}
+
+// A name CUPS would never create is refused before CUPS hears of it.
+func TestQueueNamesOfTheWrongShapeAreRefused(t *testing.T) {
+	f := queuesFake()
+	s, h := queueServer(t, f, "Virtual-MFC")
+	for _, name := range []string{"..%2Fx", "a%2Fb", "%2E%2E%2F%2E%2E%2Fetc", "a%23b", "a%20b", "a%09b", "a%00b", "a%0Ab", "a%7Fb", strings.Repeat("x", 128)} {
+		before := f.callCount()
+		for _, route := range []struct{ method, path string }{
+			{"POST", "/delete"}, {"POST", "/default"}, {"POST", "/pause"}, {"POST", "/settings"}, {"GET", "/settings"},
+			{"POST", "/cancel-all"}, {"POST", "/move-all"}, {"POST", "/command"},
+		} {
+			var rec *httptest.ResponseRecorder
+			if route.method == "GET" {
+				rec = get(h, "/printers/"+name+route.path)
+			} else {
+				rec = postTo(s, h, "/printers/"+name+route.path, url.Values{"to": {"Hall"}, "command": {"Clean"}, "info": {"x"}})
+			}
+			if rec.Code != 400 || rec.Body.String() != "That is not a queue name." {
+				t.Errorf("%s %s%.20s: status %d, body %q", route.method, name, route.path, rec.Code, rec.Body.String())
+			}
+		}
+		if f.callCount() != before {
+			t.Errorf("name %.20q: CUPS was called", name)
+		}
+	}
+	if got := f.did(); len(got) != 0 {
+		t.Errorf("CUPS was asked %v", got)
+	}
+	// The longest name CUPS takes, 127 bytes, and the usual odd ones still pass the shape check.
+	for _, name := range []string{strings.Repeat("x", 127), "A_b.c-1", "Fußball-Drucker"} {
+		if rec := get(h, "/printers/"+url.PathEscape(name)+"/settings"); rec.Code != 404 {
+			t.Errorf("%.20q: status %d, want 404 (well-formed, but unknown)", name, rec.Code)
+		}
+	}
+}
+
+// The panel is never live-replaced, so it can be stale. Only the fields it
+// posts are looked at; a field that is not posted is never changed, whatever
+// the queue looks like now.
+func TestSettingsPostOfOneFieldLeavesTheRestAlone(t *testing.T) {
+	f := queuesFake()
+	f.printers[1].State, f.printers[1].Accepting = 5, false // the panel was loaded before this
+	f.printers[1].SidesDefault, f.printers[1].Shared = "two-sided-long-edge", false
+	s, h := queueServer(t, f)
+	rec := postTo(s, h, "/printers/Virtual-MFC/settings", url.Values{"location": {"Attic"}})
+	if rec.Code != 200 || rec.Body.String() != "Saved Virtual-MFC: 1 setting." {
+		t.Errorf("status %d, body %q", rec.Code, rec.Body.String())
+	}
+	if got := f.did(); len(got) != 1 || got[0] != "modify Virtual-MFC" {
+		t.Errorf("CUPS was asked %v, want one modify", got)
+	}
+	if len(f.modified()) != 1 {
+		t.Fatalf("Modify was called %d times", len(f.modified()))
+	}
+	ch := f.modified()[0]
+	if ch.Location == nil || *ch.Location != "Attic" || ch.Info != nil || ch.DeviceURI != nil || ch.Sides != nil || ch.Color != nil ||
+		ch.Media != nil || ch.ErrorPolicy != nil || ch.Shared != nil || ch.Quality != nil {
+		t.Errorf("Modify got %+v, want the location alone", ch)
+	}
+}
+
+// The panel remembers what it was loaded with, so the script can post only
+// the fields that the user changed.
+func TestSettingsPanelRecordsTheLoadedValues(t *testing.T) {
+	f := queuesFake()
+	f.printers[1].Info = `Brother "B"`
+	f.printers[1].State = 5
+	_, h := queueServer(t, f)
+	body := get(h, "/printers/Virtual-MFC/settings").Body.String()
+	for _, want := range []string{
+		`name="info" data-was="Brother &#34;B&#34;"`, `name="location" data-was="Study"`, `name="address" data-was="ipp://printer.local/ipp/print"`,
+		`data-group="state" data-was="paused"`, `data-group="accept" data-was="accepted"`, `data-group="shared" data-was="yes"`,
+		`data-group="sides" data-was="one-sided"`, `data-group="color" data-was="color"`, `data-group="quality" data-was="4"`,
+		`name="media" data-was="iso_a4_210x297mm"`, `name="policy" data-was="stop-printer"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the panel lacks %q", want)
+		}
 	}
 }

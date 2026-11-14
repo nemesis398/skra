@@ -273,13 +273,18 @@ function closePanel() {
   markSelected();
 }
 
-// settingsForm reads the panel: the fields by name and the button rows by group.
+// settingsForm reads the fields of the panel that differ from what the panel
+// was loaded with (data-was): the fields by name and the button rows by group.
+// The panel is never swapped live, so it can be stale; a field the user did not
+// touch is not sent, so a save cannot undo what changed elsewhere meanwhile.
 function settingsForm(root) {
   const form = new URLSearchParams();
-  for (const el of root.querySelectorAll("input[name], select[name]")) form.set(el.name, el.value);
+  for (const el of root.querySelectorAll("input[name], select[name]")) {
+    if (el.value !== el.dataset.was) form.set(el.name, el.value);
+  }
   for (const g of root.querySelectorAll("[data-group]")) {
     const on = g.querySelector("button.on");
-    if (on) form.set(g.dataset.group, on.dataset.pick);
+    if (on && on.dataset.pick !== g.dataset.was) form.set(g.dataset.group, on.dataset.pick);
   }
   return form;
 }
@@ -298,7 +303,13 @@ async function queueAction(b) {
       return;
     case "save": {
       const root = $("cfg");
-      if (root?.dataset.q === q && (await send(`${base}/settings`, settingsForm(root), b))) await loadPanel(q);
+      if (root?.dataset.q !== q) return;
+      const form = settingsForm(root);
+      if (form.toString() === "") {
+        say("Nothing to save.");
+        return;
+      }
+      if (await send(`${base}/settings`, form, b)) await loadPanel(q);
       return;
     }
     case "remove":

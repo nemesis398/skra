@@ -56,14 +56,30 @@ func (s *Server) printerRoutes(mux *http.ServeMux) {
 
 // declared reports whether ravnix declares the queue, which then can be
 // neither removed nor given another address here.
-func (s *Server) declared(name string) bool { return slices.Contains(s.cfg.DeclaredQueues, name) }
+// The names compare without regard to case, because CUPS does.
+func (s *Server) declared(name string) bool {
+	return slices.ContainsFunc(s.cfg.DeclaredQueues, func(d string) bool { return strings.EqualFold(d, name) })
+}
 
 func declaredText(name string) string { return name + " is declared in ravnix; remove it there." }
 
 var errNoQueue = errors.New("no such queue")
 
+// maxQueueName is the longest queue name CUPS takes, in bytes.
+const maxQueueName = 127
+
+// validQueueName reports whether CUPS could have a queue of that name: it
+// refuses an empty or long name and any space, slash, hash, control character
+// or DEL. The path of a route arrives URL-decoded, so it can hold all of them.
+func validQueueName(name string) bool {
+	return name != "" && len(name) <= maxQueueName &&
+		!strings.ContainsFunc(name, func(r rune) bool { return r == '/' || r == '#' || r == ' ' || r == 0x7f || unicode.IsControl(r) })
+}
+
 // queue asks CUPS afresh for the queue and, for the move dialog and the short
-// names, for all queues.
+// names, for all queues. CUPS matches a queue name without regard to case, so
+// the returned queue carries the name CUPS knows it by, and that is the name
+// every guard and every call has to use, not the one the path spelled.
 func (s *Server) queue(ctx context.Context, name string) (cups.Printer, []cups.Printer, error) {
 	all, err := s.deps.CUPS.Printers(ctx)
 	if err != nil {
@@ -74,7 +90,29 @@ func (s *Server) queue(ctx context.Context, name string) (cups.Printer, []cups.P
 			return p, all, nil
 		}
 	}
+	for _, p := range all {
+		if strings.EqualFold(p.Name, name) {
+			return p, all, nil
+		}
+	}
 	return cups.Printer{}, all, errNoQueue
+}
+
+// resolve reads {name} of the route and finds the queue. It answers 400 for a
+// name no queue can have, without asking CUPS, and 404 for one it does not
+// have, and then returns false.
+func (s *Server) resolve(ctx context.Context, w http.ResponseWriter, r *http.Request) (cups.Printer, []cups.Printer, bool) {
+	name := r.PathValue("name")
+	if !validQueueName(name) {
+		reply(w, http.StatusBadRequest, "That is not a queue name.")
+		return cups.Printer{}, nil, false
+	}
+	p, all, err := s.queue(ctx, name)
+	if err != nil {
+		queueFailed(w, name, err)
+		return cups.Printer{}, nil, false
+	}
+	return p, all, true
 }
 
 // queueFailed answers for a queue that could not be read.
@@ -108,13 +146,17 @@ func countOn(jobs []cups.Job, name string) int {
 func (s *Server) queueAction(act string) http.HandlerFunc {
 	a := queueActions[act]
 	return func(w http.ResponseWriter, r *http.Request) {
-		name := r.PathValue("name")
+		ctx, cancel := context.WithTimeout(r.Context(), actionTimeout)
+		defer cancel()
+		p, _, ok := s.resolve(ctx, w, r)
+		if !ok {
+			return
+		}
+		name := p.Name
 		if act == "delete" && s.declared(name) {
 			reply(w, http.StatusForbidden, declaredText(name))
 			return
 		}
-		ctx, cancel := context.WithTimeout(r.Context(), actionTimeout)
-		defer cancel()
 		err := a.do(s.deps.CUPS, ctx, name)
 		s.record(r, a.event, name, "", err)
 		s.hub.Refresh()
@@ -127,9 +169,13 @@ func (s *Server) queueAction(act string) http.HandlerFunc {
 }
 
 func (s *Server) cancelAll(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
 	ctx, cancel := context.WithTimeout(r.Context(), actionTimeout)
 	defer cancel()
+	p, _, ok := s.resolve(ctx, w, r)
+	if !ok {
+		return
+	}
+	name := p.Name
 	n, err := s.jobsOn(ctx, name)
 	if err != nil {
 		reply(w, http.StatusBadGateway, err.Error())
@@ -146,18 +192,27 @@ func (s *Server) cancelAll(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) moveAll(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
+	ctx, cancel := context.WithTimeout(r.Context(), actionTimeout)
+	defer cancel()
+	p, all, ok := s.resolve(ctx, w, r)
+	if !ok {
+		return
+	}
+	name := p.Name
 	to := strings.TrimSpace(r.PostFormValue("to"))
-	switch to {
-	case "":
+	if to == "" {
 		reply(w, http.StatusBadRequest, "Choose the queue to move the jobs to.")
 		return
-	case name:
+	}
+	// The target is named in the case CUPS has it, when it has it; a queue it
+	// does not have goes on as typed and CUPS refuses it.
+	if i := slices.IndexFunc(all, func(o cups.Printer) bool { return strings.EqualFold(o.Name, to) }); i >= 0 {
+		to = all[i].Name
+	}
+	if to == name {
 		reply(w, http.StatusBadRequest, "The jobs are on that queue already. Choose another one.")
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), actionTimeout)
-	defer cancel()
 	n, err := s.jobsOn(ctx, name)
 	if err != nil {
 		reply(w, http.StatusBadGateway, err.Error())
@@ -189,14 +244,13 @@ func commandLabel(c string) string {
 }
 
 func (s *Server) command(w http.ResponseWriter, r *http.Request) {
-	name, cmd := r.PathValue("name"), r.PostFormValue("command")
 	ctx, cancel := context.WithTimeout(r.Context(), actionTimeout)
 	defer cancel()
-	p, all, err := s.queue(ctx, name)
-	if err != nil {
-		queueFailed(w, name, err)
+	p, all, ok := s.resolve(ctx, w, r)
+	if !ok {
 		return
 	}
+	name, cmd := p.Name, r.PostFormValue("command")
 	short := shortNames(all)[name]
 	if !slices.Contains(p.Commands, cmd) {
 		reply(w, http.StatusBadRequest, short+" does not offer that command.")
@@ -419,16 +473,14 @@ func selectOf(id, name string, values []string, label func(string) string, cur s
 }
 
 func (s *Server) settingsPanel(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
 	ctx, cancel := context.WithTimeout(r.Context(), actionTimeout)
 	defer cancel()
-	p, _, err := s.queue(ctx, name)
-	if err != nil {
-		queueFailed(w, name, err)
+	p, _, ok := s.resolve(ctx, w, r)
+	if !ok {
 		return
 	}
 	var buf bytes.Buffer
-	if err := s.tpl.ExecuteTemplate(&buf, "settings", settingsFor(p, s.declared(name))); err != nil {
+	if err := s.tpl.ExecuteTemplate(&buf, "settings", settingsFor(p, s.declared(p.Name))); err != nil {
 		reply(w, http.StatusInternalServerError, "Could not render the settings.")
 		return
 	}
@@ -619,16 +671,15 @@ func (s *Server) planSettings(p cups.Printer, f url.Values) (plan, *refusal) {
 }
 
 func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
-	if err := r.ParseForm(); err != nil {
-		reply(w, http.StatusBadRequest, "The form could not be read. Reload the page and try again.")
-		return
-	}
 	ctx, cancel := context.WithTimeout(r.Context(), actionTimeout)
 	defer cancel()
-	p, _, err := s.queue(ctx, name)
-	if err != nil {
-		queueFailed(w, name, err)
+	p, _, ok := s.resolve(ctx, w, r)
+	if !ok {
+		return
+	}
+	name := p.Name
+	if err := r.ParseForm(); err != nil {
+		reply(w, http.StatusBadRequest, "The form could not be read. Reload the page and try again.")
 		return
 	}
 	pl, ref := s.planSettings(p, r.PostForm)

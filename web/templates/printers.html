@@ -3,18 +3,20 @@
 {{define "printerspage"}}{{template "queues" .}}
 <div id="panel"></div>{{end}}
 
-{{define "seg"}}<div class="seg" role="group" data-group="{{.Group}}">{{range .Choices}}<button type="button"{{if .On}} class="on"{{end}} data-pick="{{.Value}}" aria-pressed="{{.On}}">{{.Label}}</button>{{end}}</div>{{end}}
+{{define "seg"}}<div class="seg" role="group" data-group="{{.Group}}" data-was="{{range .Choices}}{{if .On}}{{.Value}}{{end}}{{end}}">{{range .Choices}}<button type="button"{{if .On}} class="on"{{end}} data-pick="{{.Value}}" aria-pressed="{{.On}}">{{.Label}}</button>{{end}}</div>{{end}}
 
-{{define "sel"}}<select class="f" id="{{.ID}}" name="{{.Name}}">{{range .Choices}}<option value="{{.Value}}"{{if .On}} selected{{end}}>{{.Label}}</option>{{end}}</select>{{end}}
+{{define "sel"}}<select class="f" id="{{.ID}}" name="{{.Name}}" data-was="{{range .Choices}}{{if .On}}{{.Value}}{{end}}{{end}}">{{range .Choices}}<option value="{{.Value}}"{{if .On}} selected{{end}}>{{.Label}}</option>{{end}}</select>{{end}}
 
-{{/* One queue's settings. Each field is named like its form field. Nothing
+{{/* One queue's settings. Each field is named like its form field and
+     carries what it was loaded with in data-was, so skra.js posts only the
+     fields that were changed here. Nothing
      here acts at once except the maintenance buttons: the rest waits for
      "save changes", so no action can throw away what was typed. */}}
 {{define "settings"}}<div class="panel" id="cfg" data-q="{{.Name}}">
   <h3>{{.Title}}<span>{{.Name}}</span></h3>
-  <div class="frow"><label class="k" for="c-info">description</label><span><input class="f" id="c-info" name="info" value="{{.Info}}"></span><span class="hint">the name shown everywhere</span></div>
-  <div class="frow"><label class="k" for="c-loc">location</label><span><input class="f" id="c-loc" name="location" value="{{.Location}}"></span><span class="hint"></span></div>
-  <div class="frow"><label class="k" for="c-uri">address</label><span><input class="f" id="c-uri" name="address" value="{{.Address}}" spellcheck="false"{{if .Declared}} readonly{{end}}></span><span class="hint">{{if .Declared}}declared in ravnix{{else}}{{.AddressHint}}{{end}}</span></div>
+  <div class="frow"><label class="k" for="c-info">description</label><span><input class="f" id="c-info" name="info" data-was="{{.Info}}" value="{{.Info}}"></span><span class="hint">the name shown everywhere</span></div>
+  <div class="frow"><label class="k" for="c-loc">location</label><span><input class="f" id="c-loc" name="location" data-was="{{.Location}}" value="{{.Location}}"></span><span class="hint"></span></div>
+  <div class="frow"><label class="k" for="c-uri">address</label><span><input class="f" id="c-uri" name="address" data-was="{{.Address}}" value="{{.Address}}" spellcheck="false"{{if .Declared}} readonly{{end}}></span><span class="hint">{{if .Declared}}declared in ravnix{{else}}{{.AddressHint}}{{end}}</span></div>
   <div class="frow"><span class="k">queue</span><span>{{template "seg" .State}}</span><span class="hint"></span></div>
   <div class="frow"><span class="k">new jobs</span><span>{{template "seg" .Accept}}</span><span class="hint"></span></div>
   <div class="frow"><span class="k">shared on the network</span><span>{{template "seg" .Shared}}</span><span class="hint">only matters when CUPS listens beyond localhost</span></div>
