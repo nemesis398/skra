@@ -119,12 +119,12 @@ func Query(ctx context.Context, deviceURI string, r Resolver) Live {
 			if r == nil {
 				return live
 			}
-			ip, err := r.Resolve(ctx, deviceURI)
+			uri, err := r.Resolve(ctx, deviceURI)
 			if err != nil {
 				live.Own = errors.Is(err, ErrOwnHost)
 				return live
 			}
-			target = ip
+			target = uri
 		}
 	}
 	if IsLocalCUPS(target) { // never cached, never asked
