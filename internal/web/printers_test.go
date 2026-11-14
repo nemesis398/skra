@@ -854,7 +854,13 @@ func TestQueueNamesAreResolvedWhateverTheCase(t *testing.T) {
 	}
 	postTo(s, h, "/printers/virtual-mfc/move-all", url.Values{"to": {"HALL"}})
 	postTo(s, h, "/printers/virtual-mfc/command", url.Values{"command": {"Clean"}})
-	want := "modify Virtual-MFC; pause Virtual-MFC true; default Virtual-MFC; cancel-all Virtual-MFC; move-all Virtual-MFC Hall; command Virtual-MFC Clean"
+	if rec := postTo(s, h, "/printers/virtual-mfc/testpage", url.Values{"hold": {"true"}}); rec.Code != 200 || rec.Body.String() != "Test page sent to Brother as job 32." {
+		t.Errorf("test page by a lowercase name: status %d, body %q", rec.Code, rec.Body.String())
+	}
+	if ev := lastEvent(t, s); ev.Action != "print.testpage" || ev.Target != "Virtual-MFC" {
+		t.Errorf("the test page event is about %q (%s), not the queue's own name", ev.Target, ev.Action)
+	}
+	want := "modify Virtual-MFC; pause Virtual-MFC true; default Virtual-MFC; cancel-all Virtual-MFC; move-all Virtual-MFC Hall; command Virtual-MFC Clean; testpage Virtual-MFC hold=true"
 	if got := strings.Join(f.did(), "; "); got != want {
 		t.Errorf("CUPS was asked\n%s\nwant\n%s", got, want)
 	}
@@ -867,7 +873,7 @@ func TestQueueNamesAreResolvedWhateverTheCase(t *testing.T) {
 
 	// An undeclared queue is not found under a wrong name either.
 	f.set(func(f *fakeCUPS) { f.acts = nil })
-	for _, act := range []string{"delete", "pause", "default", "cancel-all", "settings"} {
+	for _, act := range []string{"delete", "pause", "default", "cancel-all", "settings", "testpage"} {
 		if rec := postTo(s, h, "/printers/virtual-mfc-2/"+act, nil); rec.Code != 404 || rec.Body.Len() == 0 {
 			t.Errorf("POST %s on an unknown queue: status %d, body %q, want 404 with a message", act, rec.Code, rec.Body.String())
 		}
@@ -885,7 +891,7 @@ func TestQueueNamesOfTheWrongShapeAreRefused(t *testing.T) {
 		before := f.callCount()
 		for _, route := range []struct{ method, path string }{
 			{"POST", "/delete"}, {"POST", "/default"}, {"POST", "/pause"}, {"POST", "/settings"}, {"GET", "/settings"},
-			{"POST", "/cancel-all"}, {"POST", "/move-all"}, {"POST", "/command"},
+			{"POST", "/cancel-all"}, {"POST", "/move-all"}, {"POST", "/command"}, {"POST", "/testpage"},
 		} {
 			var rec *httptest.ResponseRecorder
 			if route.method == "GET" {

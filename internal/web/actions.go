@@ -190,10 +190,14 @@ func (s *Server) moveJob(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) testPage(w http.ResponseWriter, r *http.Request) {
-	printer := r.PathValue("name")
-	hold, _ := strconv.ParseBool(r.PostFormValue("hold"))
 	ctx, cancel := context.WithTimeout(r.Context(), actionTimeout)
 	defer cancel()
+	p, _, ok := s.resolve(ctx, w, r)
+	if !ok {
+		return
+	}
+	printer := p.Name
+	hold, _ := strconv.ParseBool(r.PostFormValue("hold"))
 	id, err := s.deps.CUPS.PrintTestPage(ctx, printer, hold)
 	s.record(r, "print.testpage", printer, fmt.Sprintf("job %d", id), err)
 	s.hub.Refresh()

@@ -237,7 +237,7 @@ func TestActionRefreshesOpenPages(t *testing.T) {
 }
 
 func TestTestPageRoute(t *testing.T) {
-	f := &fakeCUPS{printers: []cups.Printer{brother()}}
+	f := &fakeCUPS{printers: []cups.Printer{brother(), {Name: "Fußball-Karte", State: 3}}}
 	s, h := actionServer(t, f)
 	rec := postTo(s, h, "/printers/Virtual-MFC/testpage", url.Values{"hold": {"true"}})
 	if rec.Code != 200 || rec.Body.String() != "Test page sent to Brother as job 32." {
@@ -250,13 +250,13 @@ func TestTestPageRoute(t *testing.T) {
 		t.Errorf("event = %+v", ev)
 	}
 
-	postTo(s, h, "/printers/Fu%C3%9Fball%20Karte/testpage", nil)
-	if got := f.did(); got[len(got)-1] != "testpage Fußball Karte hold=false" {
+	postTo(s, h, "/printers/Fu%C3%9Fball-Karte/testpage", nil)
+	if got := f.did(); got[len(got)-1] != "testpage Fußball-Karte hold=false" {
 		t.Errorf("queue name not decoded: %v", got)
 	}
 
 	f.set(func(f *fakeCUPS) { f.actErr = errors.New("The printer or class does not exist.") })
-	rec = postTo(s, h, "/printers/Gone/testpage", nil)
+	rec = postTo(s, h, "/printers/Virtual-MFC/testpage", nil)
 	if rec.Code != 502 || rec.Body.String() != "The printer or class does not exist." {
 		t.Errorf("refused: status %d, body %q", rec.Code, rec.Body.String())
 	}
