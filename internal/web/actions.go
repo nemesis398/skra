@@ -88,7 +88,12 @@ func (s *Server) record(r *http.Request, action, target, detail string, err erro
 		return
 	}
 	if err != nil {
-		detail = err.Error()
+		// The reason joins what the action was about; it does not replace it.
+		if detail == "" {
+			detail = err.Error()
+		} else {
+			detail += ": " + err.Error()
+		}
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
 	defer cancel()

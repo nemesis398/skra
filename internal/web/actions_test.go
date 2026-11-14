@@ -713,3 +713,24 @@ func TestMoveLogsEvent(t *testing.T) {
 		t.Errorf("event after refusal = %+v", ev)
 	}
 }
+
+// A failed action keeps what the action was about and adds the reason, so the
+// log still says which queue a failed move was meant for.
+func TestRecordKeepsTheDetailOnFailure(t *testing.T) {
+	f := twoJobs()
+	s, h := actionServer(t, f)
+	f.set(func(f *fakeCUPS) { f.actErr = errors.New("The printer or class does not exist.") })
+	postTo(s, h, "/jobs/14/move", url.Values{"to": {"Nowhere"}})
+	ev := lastEvent(t, s)
+	if ev.OK || ev.Detail != "to Nowhere: The printer or class does not exist." {
+		t.Errorf("event after a failed move = %+v", ev)
+	}
+	postTo(s, h, "/jobs/12/cancel", nil)
+	if ev = lastEvent(t, s); ev.OK || ev.Detail != `Invoice.pdf: The printer or class does not exist.` {
+		t.Errorf("event after a failed cancel = %+v", ev)
+	}
+	s.record(httptest.NewRequest("POST", "/", nil), "x.y", "t", "", errors.New("boom"))
+	if ev = lastEvent(t, s); ev.Detail != "boom" {
+		t.Errorf("a failure with no detail logs %q, want just the reason", ev.Detail)
+	}
+}
