@@ -454,3 +454,96 @@ func TestEventsRejectsAForeignHost(t *testing.T) {
 		t.Errorf("status %d, want 403", resp.StatusCode)
 	}
 }
+
+func TestOverviewInkBarsAreNeutral(t *testing.T) {
+	p := brother()
+	p.Markers = []cups.Marker{
+		{Name: "Green", Color: "#00FF00", Level: 80, Low: 10},
+		{Name: "Cyan", Color: "#00FFFF", Level: 50, Low: 10},
+	}
+	body := pageFor(t, &fakeCUPS{printers: []cups.Printer{p}})
+	if strings.Contains(strings.ToLower(body), "00ff") || strings.Contains(body, "background:") {
+		t.Errorf("a marker color reached the page; the bars are neutral:\n%s", body)
+	}
+	if !strings.Contains(body, `style="width:80%"`) {
+		t.Error("the bar lost its width")
+	}
+}
+
+// parseSSE reads frames the way EventSource does: a line ends at \r\n, \r or
+// \n, a blank line dispatches the event.
+func parseSSE(stream string) (events []fragment) {
+	var cur fragment
+	var data []string
+	norm := strings.NewReplacer("\r\n", "\n", "\r", "\n").Replace(stream)
+	for _, line := range strings.Split(norm, "\n") {
+		switch {
+		case line == "":
+			if cur.event != "" || len(data) > 0 {
+				cur.html = strings.Join(data, "\n")
+				events = append(events, cur)
+			}
+			cur, data = fragment{}, nil
+		case strings.HasPrefix(line, "event: "):
+			cur.event = strings.TrimPrefix(line, "event: ")
+		case strings.HasPrefix(line, "data: "):
+			data = append(data, strings.TrimPrefix(line, "data: "))
+		case strings.HasPrefix(line, "data:"):
+			data = append(data, strings.TrimPrefix(line, "data:"))
+		}
+	}
+	return events
+}
+
+func TestWriteEventKeepsOneFrameForCarriageReturns(t *testing.T) {
+	for _, name := range []string{"a\r\rfoo", "a\r\nfoo", "a\rfoo", "a\nfoo"} {
+		html := "<td>" + name + "</td>\n<td>end</td>"
+		rec := httptest.NewRecorder()
+		if err := writeEvent(rec, "queue", html); err != nil {
+			t.Fatal(err)
+		}
+		evs := parseSSE(rec.Body.String())
+		if len(evs) != 1 || evs[0].event != "queue" {
+			t.Fatalf("%q: got %d events %+v, want one queue event", name, len(evs), evs)
+		}
+		want := strings.NewReplacer("\r\n", "\n", "\r", "\n").Replace(html)
+		if evs[0].html != want {
+			t.Errorf("%q: data %q, want %q", name, evs[0].html, want)
+		}
+		if !strings.Contains(evs[0].html, "<td>end</td>") {
+			t.Errorf("%q: the fragment was cut short: %q", name, evs[0].html)
+		}
+	}
+}
+
+func TestEventsSurviveCarriageReturnInJobName(t *testing.T) {
+	f := &fakeCUPS{
+		printers: []cups.Printer{brother()},
+		active:   []cups.Job{{ID: 1, Name: "a\r\rfoo\r\nbar", Printer: "Virtual-MFC", State: 3}},
+	}
+	ts := httptest.NewServer(serverFor(f).Handler())
+	t.Cleanup(ts.Close)
+	c := openEvents(t, ts)
+	// The reader splits on \n only, so read raw bytes until all five events are in.
+	var raw strings.Builder
+	deadline := time.Now().Add(2 * time.Second)
+	for len(parseSSE(raw.String())) < 5 {
+		if time.Now().After(deadline) {
+			t.Fatalf("fewer than five events:\n%q", raw.String())
+		}
+		b, err := c.r.ReadByte()
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw.WriteByte(b)
+	}
+	evs := parseSSE(raw.String())
+	if len(evs) != 5 {
+		t.Fatalf("got %d events, want 5: %+v", len(evs), evs)
+	}
+	for _, e := range evs {
+		if e.event == "queue" && (!strings.Contains(e.html, "foo") || !strings.Contains(e.html, "bar") || !strings.HasSuffix(strings.TrimSpace(e.html), "</div>")) {
+			t.Errorf("queue fragment cut short: %q", e.html)
+		}
+	}
+}

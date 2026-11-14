@@ -164,9 +164,9 @@ type printerView struct {
 }
 
 type inkView struct {
-	Label, Value, Color string
-	Pct                 int
-	Low                 bool
+	Label, Value string
+	Pct          int
+	Low          bool
 }
 
 type jobView struct {
@@ -322,7 +322,7 @@ func printerCell(p cups.Printer, def string, now time.Time) printerView {
 		if i == maxInks {
 			break
 		}
-		pv.Inks = append(pv.Inks, inkCell(m, i, pv.Away))
+		pv.Inks = append(pv.Inks, inkCell(m, i))
 	}
 	if p.MarkersAt.IsZero() {
 		pv.AsOf = "no ink levels reported yet"
@@ -366,15 +366,12 @@ func connection(uri string) string {
 	return scheme
 }
 
-var (
-	inkName  = regexp.MustCompile(`(?i)black|cyan|magenta|yellow`)
-	inkColor = regexp.MustCompile(`^#[0-9A-Fa-f]{6}$`)
-)
+var inkName = regexp.MustCompile(`(?i)black|cyan|magenta|yellow`)
 
 // inkCell draws one supply. Every field can be missing: a nameless supply is
-// "#n", a level below 0 is "·" with an empty bar, and a color that is not
-// #RRGGBB leaves the bar neutral.
-func inkCell(m cups.Marker, i int, away bool) inkView {
+// "#n" and a level below 0 is "·" with an empty bar. The bar is always
+// neutral, as in the prototype: the marker color is not drawn.
+func inkCell(m cups.Marker, i int) inkView {
 	iv := inkView{Label: fmt.Sprintf("#%d", i+1), Value: "·"}
 	if m.Name != "" {
 		if k := inkName.FindString(m.Name); k != "" {
@@ -394,17 +391,7 @@ func inkCell(m cups.Marker, i int, away bool) inkView {
 		}
 		iv.Low = m.Level <= low
 	}
-	if !iv.Low && !away && inkColor.MatchString(m.Color) && !nearBlack(m.Color) {
-		iv.Color = m.Color
-	}
 	return iv
-}
-
-// nearBlack is true for colors the dark meter track would swallow.
-func nearBlack(hex string) bool {
-	var r, g, b int
-	fmt.Sscanf(hex[1:], "%02x%02x%02x", &r, &g, &b)
-	return r+g+b < 3*0x40
 }
 
 var jobWords = map[int]string{3: "waiting", 4: "held", 5: "printing", 6: "stopped", 7: "canceled", 8: "failed", 9: "printed"}

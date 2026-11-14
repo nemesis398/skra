@@ -163,9 +163,14 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// lineBreaks folds CRLF and a bare CR into LF: EventSource ends a line at any
+// of the three, so a CR inside a job name would otherwise cut the frame short.
+var lineBreaks = strings.NewReplacer("\r\n", "\n", "\r", "\n")
+
 // writeEvent frames html as one event; every line of a multi-line payload
 // needs its own "data:" prefix.
 func writeEvent(w http.ResponseWriter, event, html string) error {
+	html = lineBreaks.Replace(html)
 	var b strings.Builder
 	fmt.Fprintf(&b, "event: %s\n", event)
 	for _, line := range strings.Split(html, "\n") {
