@@ -159,16 +159,24 @@ func TestCancelAllAndMoveAll(t *testing.T) {
 func TestSetDefault(t *testing.T) {
 	c := testenv.Client(t)
 	ctx := ctxFor(t)
+	testenv.LockDefault(t) // the default is one setting for every package's tests
 	before, err := c.Default(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Cleanups run last to first: restore the old default, delete the scratch
+	// queue (which clears the default when it was the one), then check.
+	t.Cleanup(func() {
+		if got, err := c.Default(context.Background()); err != nil || got != before {
+			t.Errorf("the default is %q (%v) after the test, was %q", got, err, before)
+		}
+	})
 	scratch(t, "Scratch-Cups-D")
-	// Deleting a queue that is the default clears it; when the harness had
-	// one before, the test puts it back.
 	t.Cleanup(func() {
 		if before != "" {
-			c.SetDefault(context.Background(), before)
+			if err := c.SetDefault(context.Background(), before); err != nil {
+				t.Errorf("restoring the default %q: %v", before, err)
+			}
 		}
 	})
 	if err := c.SetDefault(ctx, "Scratch-Cups-D"); err != nil {

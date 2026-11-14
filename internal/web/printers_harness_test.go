@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/nemesis398/skra/internal/cups"
+	"github.com/nemesis398/skra/internal/testenv"
 )
 
 // scratchQueue makes a queue in the container and removes it at the end. The
@@ -41,21 +42,16 @@ func queueNamed(t *testing.T, c *cups.Client, name string) (cups.Printer, bool) 
 	return ps[i], true
 }
 
-// TestSettingsAgainstHarness saves two settings of Virtual-MFC through the
-// page's own route, reads them back from CUPS and puts them back.
+// TestSettingsAgainstHarness saves settings through the page's own route on a
+// queue of its own. Virtual-MFC belongs to the cups package's round trip,
+// which runs at the same time.
 func TestSettingsAgainstHarness(t *testing.T) {
 	s, c := harnessServer(t)
 	h := s.Handler()
-	was, ok := queueNamed(t, c, "Virtual-MFC")
-	if !ok {
-		t.Fatal("no Virtual-MFC")
-	}
-	t.Cleanup(func() {
-		c.Modify(context.Background(), "Virtual-MFC", cups.Changes{Sides: &was.SidesDefault, Color: &was.ColorDefault,
-			ErrorPolicy: &was.ErrorPolicy, Location: &was.Location, Info: &was.Info})
-	})
+	scratchQueue(t, "Scratch-Web-S")
+	get(h, "/") // learn the queue names
 
-	body := get(h, "/printers/Virtual-MFC/settings").Body.String()
+	body := get(h, "/printers/Scratch-Web-S/settings").Body.String()
 	for _, want := range []string{"default sides", "default color", "when printing fails", "A4 · 210 × 297mm", `value="ipp://localhost:8631/ipp/print"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the panel lacks %q", want)
@@ -65,23 +61,27 @@ func TestSettingsAgainstHarness(t *testing.T) {
 		t.Error("a driverless queue lists maintenance commands")
 	}
 
-	rec := postTo(s, h, "/printers/Virtual-MFC/settings", url.Values{
+	rec := postTo(s, h, "/printers/Scratch-Web-S/settings", url.Values{
 		"sides": {"two-sided-long-edge"}, "color": {"monochrome"}, "policy": {"abort-job"}, "location": {"Test lab"}})
-	if rec.Code != 200 || rec.Body.String() != "Saved Virtual-MFC: 4 settings." {
+	if rec.Code != 200 || rec.Body.String() != "Saved Scratch-Web-S: 4 settings." {
 		t.Fatalf("status %d, body %q", rec.Code, rec.Body.String())
 	}
-	p, _ := queueNamed(t, c, "Virtual-MFC")
+	p, _ := queueNamed(t, c, "Scratch-Web-S")
 	if p.SidesDefault != "two-sided-long-edge" || p.ColorDefault != "monochrome" || p.ErrorPolicy != "abort-job" || p.Location != "Test lab" {
 		t.Errorf("CUPS has %+v", p)
 	}
 	if ev := lastEvent(t, s); ev.Action != "printer.modify" || !ev.OK {
 		t.Errorf("event = %+v", ev)
 	}
-	if rec = postTo(s, h, "/printers/Virtual-MFC/settings", url.Values{"sides": {"sideways"}}); rec.Code != 400 {
+	if rec = postTo(s, h, "/printers/Scratch-Web-S/settings", url.Values{"sides": {"sideways"}}); rec.Code != 400 {
 		t.Errorf("a wrong value: status %d", rec.Code)
 	}
-	if p, _ = queueNamed(t, c, "Virtual-MFC"); p.SidesDefault != "two-sided-long-edge" {
+	if p, _ = queueNamed(t, c, "Scratch-Web-S"); p.SidesDefault != "two-sided-long-edge" {
 		t.Errorf("sides-default = %q after a refused post", p.SidesDefault)
+	}
+	// A lowercase name reaches the same queue, in the case CUPS has it.
+	if rec = postTo(s, h, "/printers/scratch-web-s/settings", url.Values{"location": {"Attic"}}); rec.Code != 200 || rec.Body.String() != "Saved Scratch-Web-S: 1 setting." {
+		t.Errorf("lowercase name: status %d, body %q", rec.Code, rec.Body.String())
 	}
 }
 
@@ -150,7 +150,7 @@ func TestQueueActionsAgainstHarness(t *testing.T) {
 	if _, ok := queueNamed(t, c, "Scratch-Web-A"); ok {
 		t.Error("the queue is still there after delete")
 	}
-	if rec = postTo(s, h, "/printers/Scratch-Web-A/delete", nil); rec.Code != 502 || rec.Body.Len() == 0 {
+	if rec = postTo(s, h, "/printers/Scratch-Web-A/delete", nil); rec.Code != 404 || rec.Body.Len() == 0 {
 		t.Errorf("second delete: status %d, body %q", rec.Code, rec.Body.String())
 	}
 }
@@ -173,14 +173,23 @@ func jobsOn(t *testing.T, c *cups.Client, queue string) []cups.Job {
 func TestSetDefaultAgainstHarness(t *testing.T) {
 	s, c := harnessServer(t)
 	h := s.Handler()
+	testenv.LockDefault(t) // the default is one setting for every package's tests
 	before, err := c.Default(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Cleanups run last to first: restore, delete the scratch queue, check.
+	t.Cleanup(func() {
+		if got, err := c.Default(context.Background()); err != nil || got != before {
+			t.Errorf("the default is %q (%v) after the test, was %q", got, err, before)
+		}
+	})
 	scratchQueue(t, "Scratch-Web-C")
 	t.Cleanup(func() {
 		if before != "" {
-			c.SetDefault(context.Background(), before)
+			if err := c.SetDefault(context.Background(), before); err != nil {
+				t.Errorf("restoring the default %q: %v", before, err)
+			}
 		}
 	})
 	if rec := postTo(s, h, "/printers/Scratch-Web-C/default", nil); rec.Code != 200 {
