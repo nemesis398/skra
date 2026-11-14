@@ -1,0 +1,85 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+// Package cups talks IPP to the local CUPS daemon over its unix socket,
+// authenticated by peer credentials.
+package cups
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+
+	"github.com/nemesis398/skra/internal/ipp"
+)
+
+// maxResponse caps what Do reads from CUPS. A queue list with every media
+// size is a few hundred kilobytes at most.
+const maxResponse = 32 << 20
+
+// Client is a CUPS client for one socket and one user.
+type Client struct {
+	user string
+	http *http.Client
+}
+
+// New returns a client that dials the unix socket and acts as user. CUPS
+// checks the name against the socket peer, so it has to be the user the
+// process runs as.
+func New(socket, user string) *Client {
+	var d net.Dialer
+	return &Client{user: user, http: &http.Client{Transport: &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return d.DialContext(ctx, "unix", socket)
+		},
+	}}}
+}
+
+// Do posts req to the CUPS resource at path ("/", "/admin/", "/printers/NAME")
+// and decodes the answer. It adds requesting-user-name to the operation group
+// and sends Authorization: PeerCred up front, so each call is one request
+// with no retry. When doc is not nil it is streamed after the request.
+//
+// A reply with an IPP error status comes back as both the decoded response
+// and its *ipp.StatusError. Req must not be reused: a second Do would add the
+// user name again.
+func (c *Client) Do(ctx context.Context, path string, req *ipp.Request, doc io.Reader) (*ipp.Response, error) {
+	if c.user == "" {
+		return nil, errors.New("no user configured")
+	}
+	var body io.Reader = bytes.NewReader(req.Op(ipp.Name("requesting-user-name", c.user)).Encode())
+	if doc != nil {
+		body = io.MultiReader(body, doc)
+	}
+	hr, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://localhost"+path, body)
+	if err != nil {
+		return nil, fmt.Errorf("CUPS request: %w", err)
+	}
+	hr.Header.Set("Content-Type", "application/ipp")
+	hr.Header.Set("Authorization", "PeerCred "+c.user)
+	resp, err := c.http.Do(hr)
+	if err != nil {
+		return nil, fmt.Errorf("CUPS does not answer: %w", err)
+	}
+	defer resp.Body.Close()
+	switch {
+	case resp.StatusCode == http.StatusUnauthorized:
+		return nil, errors.New("CUPS refused the login: it did not accept this user over the local socket")
+	case resp.StatusCode == http.StatusForbidden:
+		return nil, errors.New("CUPS refused this: the user may not do it (403)")
+	case resp.StatusCode != http.StatusOK:
+		return nil, fmt.Errorf("CUPS answered HTTP %d", resp.StatusCode)
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponse))
+	if err != nil {
+		return nil, fmt.Errorf("CUPS does not answer: %w", err)
+	}
+	res, err := ipp.Decode(raw)
+	if err != nil {
+		return nil, fmt.Errorf("CUPS sent an unreadable answer: %w", err)
+	}
+	return res, res.Err()
+}
