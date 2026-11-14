@@ -112,14 +112,39 @@ func TestLiveUnreachableBeatsWhateverCUPSThinks(t *testing.T) {
 	}
 }
 
-func TestLiveCUPSOfflineStaysAwayEvenWhenReachable(t *testing.T) {
+// A live answer is fresher than CUPS's offline-report, which CUPS clears only
+// when it next probes the printer.
+func TestLiveReachableBeatsCUPSOffline(t *testing.T) {
 	p := brother()
 	p.Reasons = []string{"offline-report"}
 	q := &fakeQuery{}
 	q.set(p.DeviceURI, printer.Live{Reachable: true, Markers: liveInks(), At: time.Now()})
 	body := pageWithLive(t, liveServer(&fakeCUPS{printers: []cups.Printer{p}}, q))
+	if strings.Contains(body, `class="st away"`) || strings.Contains(body, `class="pr away"`) {
+		t.Error("a printer that answered is not away because CUPS still says offline")
+	}
+	if !strings.Contains(body, "ready") || !strings.Contains(body, "91 %") || strings.Contains(body, "ink as of") {
+		t.Error("the cell should read ready with the live inks")
+	}
+}
+
+func TestLiveReachableKeepsCUPSsOtherReasons(t *testing.T) {
+	p := brother()
+	p.Reasons = []string{"offline-report", "media-empty-error"}
+	q := &fakeQuery{}
+	q.set(p.DeviceURI, printer.Live{Reachable: true, Markers: liveInks(), At: time.Now()})
+	body := pageWithLive(t, liveServer(&fakeCUPS{printers: []cups.Printer{p}}, q))
+	if !strings.Contains(body, "out of paper") || strings.Contains(body, `class="st away"`) {
+		t.Errorf("only offline is stale; the paper reason must stay:\n%s", body)
+	}
+}
+
+func TestLiveOfflineWithoutALiveEntryStaysAway(t *testing.T) {
+	p := brother() // ipp://, so it is asked, but the live loop has not answered yet
+	p.Reasons = []string{"offline-report"}
+	body := get(liveServer(&fakeCUPS{printers: []cups.Printer{p}}, &fakeQuery{}).Handler(), "/").Body.String()
 	if !strings.Contains(body, `class="st away"`) {
-		t.Error("offline-report from CUPS should still read away")
+		t.Error("CUPS offline-report with no live entry should read away")
 	}
 }
 
@@ -366,7 +391,10 @@ func TestConnectionLabel(t *testing.T) {
 
 func TestQueryable(t *testing.T) {
 	for uri, want := range map[string]bool{
-		"ipp://a/b": true, "ipps://a/b": true, "dnssd://x._ipp._tcp.local/": true,
+		"ipp://a/b": true, "ipps://a/b": true, "ipp://localhost:8631/ipp/print": true, "ipp://localhost:60000/ipp/print": true,
+		"ipp://localhost:631/printers/x": false, "ipp://localhost/printers/x": false, "ipps://localhost:631/": false,
+		"ipp://127.0.0.1:631/printers/x": false, "ipp://127.0.0.1/": false, "ipp://[::1]:631/printers/x": false,
+		"ipp://[::1]/": false, "ipp://127.1.2.3:631/": false, "ipp://a:631/b": true, "dnssd://x._ipp._tcp.local/": true,
 		"usb://a": false, "socket://a:9100": false, "lpd://a/q": false, "implicitclass://a": false,
 		"file:///x": false, "http://a/": false, "": false, "ipp": false,
 	} {

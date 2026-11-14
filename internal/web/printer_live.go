@@ -4,6 +4,8 @@ package web
 
 import (
 	"context"
+	"net/netip"
+	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -29,11 +31,32 @@ var liveEvery = 5 * time.Second
 
 // queryable reports whether skra may ask the printer behind a device URI
 // itself: only those that speak IPP (ipp, ipps) or are found by name (dnssd).
-// ipp://localhost is how ipp-usb shows up, so it counts. A USB, socket or lpd
-// queue cannot be asked, and CUPS's word is all there is for it.
+// ipp://localhost:60000 is how ipp-usb shows up, so it counts. A USB, socket or
+// lpd queue cannot be asked, and CUPS's word is all there is for it. Neither
+// can a loop queue to a CUPS on this machine (localhost, port 631): skra
+// speaks to CUPS only over its unix socket, never over TCP.
 func queryable(uri string) bool {
 	scheme, _, ok := strings.Cut(uri, ":")
-	return ok && (scheme == "ipp" || scheme == "ipps" || scheme == "dnssd")
+	switch {
+	case !ok:
+		return false
+	case scheme == "dnssd":
+		return true
+	case scheme != "ipp" && scheme != "ipps":
+		return false
+	}
+	u, err := url.Parse(uri)
+	if err != nil {
+		return false
+	}
+	port := u.Port()
+	if port == "" {
+		port = "631"
+	}
+	if ip, err := netip.ParseAddr(u.Hostname()); (err == nil && ip.IsLoopback()) || u.Hostname() == "localhost" {
+		return port != "631"
+	}
+	return true
 }
 
 // livePoll asks every queryable printer for its status, in parallel, and keeps

@@ -361,8 +361,16 @@ func printerState(p cups.Printer) (word, class string) {
 // themselves, keyed by queue name; a queue with no entry was not asked, or not
 // yet, and shows what CUPS knows.
 func printerCell(p cups.Printer, def string, now time.Time, live map[string]printer.Live) printerView {
-	word, class := printerState(p)
 	l, asked := live[p.Name]
+	state := p
+	if asked && l.Reachable {
+		// The printer just answered, which is fresher than a CUPS offline
+		// report that CUPS clears only when it next probes the queue.
+		state.Reasons = slices.DeleteFunc(slices.Clone(p.Reasons), func(r string) bool {
+			return reasonSuffix.ReplaceAllString(r, "") == "offline"
+		})
+	}
+	word, class := printerState(state)
 	if asked && !l.Reachable {
 		word, class = "away", "away" // it did not answer: not on this network, which is no fault
 	}
