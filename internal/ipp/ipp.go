@@ -28,7 +28,7 @@ const (
 	TagMime     Tag = 0x49
 )
 
-// Collections and the constructed values the decoder skips or maps to nil.
+// The collection delimiters. The decoder skips a collection whole.
 const (
 	tagBegCollection Tag = 0x34
 	tagEndCollection Tag = 0x37
