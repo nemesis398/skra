@@ -230,7 +230,8 @@ func TestOverviewAwayIsNotRed(t *testing.T) {
 	if !strings.Contains(body, "away") {
 		t.Error("state word away is missing")
 	}
-	if strings.Contains(body, "bad") {
+	// Not a bare "bad": the page token is random hex and can spell it.
+	if strings.Contains(body, `st bad`) || strings.Contains(body, `pr bad`) {
 		t.Error("an unreachable printer must never render class bad")
 	}
 }
