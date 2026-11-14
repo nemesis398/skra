@@ -1,0 +1,169 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+// Package store keeps skra's local event store: every action the service
+// takes is one row in a SQLite file, with the user who did it. The file lives
+// in the state directory, so a later household server can read the same
+// history without a rewrite.
+//
+// Action names are dotted: job.cancel, job.hold, job.release, job.restart,
+// job.move, print.file, print.testpage, printer.add, printer.modify,
+// printer.delete, printer.default, printer.accept, printer.reject,
+// printer.pause, printer.resume, printer.cancelall, printer.moveall,
+// printer.command and cups.loglevel.
+package store
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"os"
+	"path/filepath"
+	"time"
+
+	_ "modernc.org/sqlite" // registers the "sqlite" driver, pure Go
+)
+
+// Event is one recorded action.
+type Event struct {
+	At     time.Time
+	Actor  string // the configured user who did it
+	Action string // dotted name, for example job.cancel
+	Target string // queue or job the action touched
+	Detail string
+	OK     bool
+}
+
+// Store is an open event store. It is safe for concurrent use.
+type Store struct {
+	db *sql.DB
+}
+
+// migrations[i] takes the schema from version i to i+1. The version lives in
+// PRAGMA user_version, so a later plan appends here and never edits an entry.
+var migrations = []string{
+	`CREATE TABLE events (
+		at     INTEGER NOT NULL,
+		actor  TEXT    NOT NULL,
+		action TEXT    NOT NULL,
+		target TEXT    NOT NULL,
+		detail TEXT    NOT NULL,
+		ok     INTEGER NOT NULL
+	)`,
+}
+
+// Open creates dir with mode 0700 (and tightens an existing one), creates
+// skra.db with mode 0600 and migrates it to the current schema.
+func Open(dir string) (*Store, error) {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("store: create %s: %w", dir, err)
+	}
+	// MkdirAll applies the umask and leaves an existing directory alone.
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("store: restrict %s: %w", dir, err)
+	}
+	path := filepath.Join(dir, "skra.db")
+	// Create the file ourselves so it never exists with a wider mode.
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("store: create %s: %w", path, err)
+	}
+	if err := f.Chmod(0o600); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("store: restrict %s: %w", path, err)
+	}
+	if err := f.Close(); err != nil {
+		return nil, fmt.Errorf("store: create %s: %w", path, err)
+	}
+
+	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		return nil, fmt.Errorf("store: open %s: %w", path, err)
+	}
+	// One connection: the service is local and low-traffic, and it keeps
+	// writes serialized without lock errors.
+	db.SetMaxOpenConns(1)
+	if err := migrate(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("store: migrate %s: %w", path, err)
+	}
+	return &Store{db: db}, nil
+}
+
+func migrate(db *sql.DB) error {
+	var version int
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		return err
+	}
+	if version > len(migrations) {
+		return fmt.Errorf("database schema version %d is newer than this skra (%d)", version, len(migrations))
+	}
+	for ; version < len(migrations); version++ {
+		tx, err := db.Begin()
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(migrations[version]); err != nil {
+			tx.Rollback()
+			return err
+		}
+		// PRAGMA does not take bound parameters; version is our own int.
+		if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, version+1)); err != nil {
+			tx.Rollback()
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Log records e. A zero At is replaced by the current time.
+func (s *Store) Log(ctx context.Context, e Event) error {
+	if e.At.IsZero() {
+		e.At = time.Now()
+	}
+	ok := 0
+	if e.OK {
+		ok = 1
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO events (at, actor, action, target, detail, ok) VALUES (?, ?, ?, ?, ?, ?)`,
+		e.At.UnixMilli(), e.Actor, e.Action, e.Target, e.Detail, ok)
+	if err != nil {
+		return fmt.Errorf("store: log %s: %w", e.Action, err)
+	}
+	return nil
+}
+
+// Recent returns up to n events, newest first. Events with the same time come
+// back in reverse insertion order.
+func (s *Store) Recent(ctx context.Context, n int) ([]Event, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT at, actor, action, target, detail, ok FROM events ORDER BY at DESC, rowid DESC LIMIT ?`, n)
+	if err != nil {
+		return nil, fmt.Errorf("store: recent: %w", err)
+	}
+	defer rows.Close()
+	var out []Event
+	for rows.Next() {
+		var (
+			e  Event
+			ms int64
+			ok int
+		)
+		if err := rows.Scan(&ms, &e.Actor, &e.Action, &e.Target, &e.Detail, &ok); err != nil {
+			return nil, fmt.Errorf("store: recent: %w", err)
+		}
+		e.At = time.UnixMilli(ms).UTC()
+		e.OK = ok != 0
+		out = append(out, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: recent: %w", err)
+	}
+	return out, nil
+}
+
+// Close closes the database.
+func (s *Store) Close() error { return s.db.Close() }
