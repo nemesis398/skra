@@ -88,7 +88,7 @@
   table.q td { padding:0.308rem 0.615rem; height:2.462rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   table.q tbody tr:hover td { background:var(--s0); }
   table.q .r { text-align:right; }
-  .c-id { width:4.308rem; } .c-pr { width:11.538rem; } .c-st { width:16.923rem; } .c-t { width:11.538rem; } .c-pg { width:4.923rem; } .c-a { width:15.385rem; }
+  .c-q { width:18rem; } .c-id { width:4.308rem; } .c-pr { width:11.538rem; } .c-st { width:16.923rem; } .c-t { width:11.538rem; } .c-pg { width:4.923rem; } .c-a { width:15.385rem; }
   td.jid { color:var(--sub0); }
   td.jn { font-weight:700; }
   td.jp { color:var(--sub0); }
@@ -111,7 +111,28 @@
   .dialog p { color:var(--sub0); line-height:1.5; margin-bottom:0.769rem; }
   .dialog .row { display:flex; gap:2px; justify-content:flex-end; }
 
+  /* the printers tab: queues, their settings, adding one */
+  .head-acts { display:flex; gap:2px; margin:0.462rem 1.231rem 0; }
+  tr.sel td { background:var(--s0); }
+  tr.sel td.jn { color:var(--accent); }
+  td.flags { color:var(--sub0); }
+  .panel { margin:0.462rem 1.231rem 0; background:var(--mantle); padding:0.769rem 0.923rem; }
+  .panel h3 { font-size:1.077rem; margin:0 0 0.615rem 0.615rem; }
+  .panel h3 span { color:var(--sub0); font-weight:400; font-size:0.923rem; margin-left:0.615rem; }
+  .frow { display:grid; grid-template-columns:16rem minmax(0, 36rem) 1fr; gap:0.923rem; align-items:center;
+    min-height:2.462rem; padding:0.154rem 0.615rem; }
+  .frow:hover { background:var(--s0); }
+  .frow .k { color:var(--sub0); }
+  .frow .hint { color:var(--o1); font-size:0.923rem; }
+  .f { font:inherit; color:var(--text); background:var(--base); border:0; border-bottom:2px solid var(--s1);
+    padding:0.308rem 0.462rem; width:100%; }
+  .f:focus { outline:none; border-bottom-color:var(--accent); }
+  select.f option { background:var(--mantle); color:var(--text); }
+  .panel .row { display:flex; gap:2px; justify-content:flex-end; margin-top:0.769rem; }
+  .wait { color:var(--sub0); padding:0.615rem 1.846rem; }
+
   @media (max-width: 760px) {
+    .frow { grid-template-columns:1fr; gap:0.231rem; }
     .printers { grid-template-columns:1fr; }
     .drop { grid-template-columns:1fr; }
     .opts { justify-content:flex-start; }
@@ -125,6 +146,7 @@
   <nav class="bar">
     <div class="brand"><i>&#xF042A;</i> print</div>
     <a class="tab" id="tab-overview" href="#">Overview</a>
+    <a class="tab" id="tab-printers" href="#printers">Printers</a>
     <a class="tab hist" id="tab-history" href="#history">History</a>
     <a class="tab" href="/admin">CUPS <i class="ext">&#xF03CC;</i></a>
     <div class="spacer"></div>
@@ -157,6 +179,28 @@
       <thead><tr><th>job</th><th>name</th><th>printer</th><th>result</th><th class="r">pages</th><th class="r">when</th></tr></thead>
       <tbody id="recent"></tbody>
     </table>
+  </section>
+
+  <section id="view-printers" hidden>
+    <div class="sec"><b>queues</b><span id="mcount"></span><span class="rule"></span></div>
+    <table class="q">
+      <colgroup><col class="c-q"><col><col class="c-pr"><col class="c-pr"><col class="c-st"><col class="c-a"></colgroup>
+      <thead><tr><th>queue</th><th>printer</th><th>connection</th><th>state</th><th>notes</th><th></th></tr></thead>
+      <tbody id="queues"></tbody>
+    </table>
+    <div id="panel"></div>
+
+    <div class="sec"><b>add a printer</b><span class="rule"></span></div>
+    <div class="head-acts">
+      <button class="btn" data-act="search"><i>&#xF0349;</i>find printers on the network and USB</button>
+    </div>
+    <div id="devices"></div>
+    <div class="panel">
+      <div class="frow"><label class="k" for="manual-uri">or enter an address</label>
+        <input class="f" id="manual-uri" placeholder="ipp://printer.local/ipp/print" spellcheck="false">
+        <span><button class="btn sm" data-act="add-manual"><i>&#xF0415;</i>add</button></span></div>
+    </div>
+    <div id="add-panel"></div>
   </section>
 
   <section id="view-history" hidden>
@@ -194,7 +238,8 @@ const USER = (() => {
 
 const OP = { printJob:0x0002, cancelJob:0x0008, getJobs:0x000A, getPrinterAttributes:0x000B,
   holdJob:0x000C, releaseJob:0x000D, pausePrinter:0x0010, resumePrinter:0x0011,
-  getDefault:0x4001, getPrinters:0x4002 };
+  getDefault:0x4001, getPrinters:0x4002, addModifyPrinter:0x4003, deletePrinter:0x4004,
+  acceptJobs:0x4008, rejectJobs:0x4009, setDefault:0x400A, getDevices:0x400B, getPpds:0x400C };
 const TAG = { op:0x01, job:0x02, end:0x03, printer:0x04,
   int:0x21, bool:0x22, enum:0x23, kw:0x44, uri:0x45, charset:0x47, lang:0x48, mime:0x49, name:0x42, text:0x41 };
 const enc = new TextEncoder(), dec = new TextDecoder();
@@ -206,8 +251,8 @@ function encode(op, groups, data) {
   bytes([2, 0, op >> 8, op & 255, 0, 0, 0, 1]);
   const head = [["charset", "attributes-charset", "utf-8"], ["lang", "attributes-natural-language", "en"]];
   if (USER) head.push(["name", "requesting-user-name", USER]);
-  groups = { op: [...head, ...(groups.op || [])], job: groups.job || [] };
-  for (const g of ["op", "job"]) {
+  groups = { op: [...head, ...(groups.op || [])], job: groups.job || [], printer: groups.printer || [] };
+  for (const g of ["op", "job", "printer"]) {
     if (!groups[g].length) continue;
     bytes([TAG[g]]);
     for (const [type, name, value] of groups[g]) {
@@ -251,14 +296,14 @@ function decode(buf) {
   return res;
 }
 
-class IppError extends Error {}
+class IppError extends Error { constructor(m, status = 0) { super(m); this.status = status; } }
 async function ipp(path, op, groups = {}, data = null) {
   const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/ipp" }, body: encode(op, groups, data) });
   if (r.status === 401) throw new IppError("CUPS wants a login for this");
   if (r.status === 403) throw new IppError("CUPS refused this (403)");
   if (!r.ok) throw new IppError(`CUPS answered HTTP ${r.status}`);
   const res = decode(await r.arrayBuffer());
-  if (res.status >= 0x0100) throw new IppError(res.op["status-message"] || `IPP status 0x${res.status.toString(16).padStart(4, "0")}`);
+  if (res.status >= 0x0100) throw new IppError(res.op["status-message"] || `IPP status 0x${res.status.toString(16).padStart(4, "0")}`, res.status);
   return res;
 }
 const list = v => v === undefined ? [] : [].concat(v);
@@ -405,6 +450,8 @@ function render() {
   $("need").hidden = !need; $("need").innerHTML = need ? `&#xF002A; ${esc(need)}` : "";
   $("tab-overview").classList.toggle("on", S.view === "overview");
   $("tab-history").classList.toggle("on", S.view === "history");
+  $("tab-printers").classList.toggle("on", S.view === "printers");
+  $("view-printers").hidden = S.view !== "printers";
   $("view-overview").hidden = S.view !== "overview";
   $("view-history").hidden = S.view !== "history";
   renderPrinters(); renderOpts();
@@ -415,6 +462,7 @@ function render() {
   $("recent").innerHTML = S.done.slice(0, 5).map(j => jobRow(j, false)).join("");
   $("hcount").textContent = `· the last ${S.done.length} jobs CUPS keeps`;
   $("history").innerHTML = S.done.map(j => jobRow(j, false)).join("");
+  renderQueues();
   renderFoot();
 }
 function renderFoot() {
@@ -497,6 +545,204 @@ async function printFile(file) {
   say(`Sent "${file.name}" to ${shortName(S.opts.printer)} as job ${r.groups[0]?.["job-id"] ?? "?"}${S.opts.hold ? ", held until you release it" : ""}.`);
 }
 
+// ── managing queues: every call here is an admin operation ─────────────────
+// CUPS answers the first one with 401 and the browser asks for the CUPS login
+// (on Fedora a member of wheel); the browser then reuses it for the session.
+const M = { sel: "", cfg: null, devices: null, searching: 0, adding: null };
+const ADMIN_ATTRS = [...PRINTER_ATTRS, "printer-is-shared", "printer-error-policy", "printer-error-policy-supported",
+  "media-supported", "media-default", "print-quality-supported", "print-quality-default"];
+const IPP_SCHEMES = /^(dnssd|ipp|ipps|ippusb):\/\//;
+
+function mediaLabel(m) {
+  const parts = m.split("_");
+  if (parts.length < 3) return m;
+  const name = parts.slice(1, -1).join(" ");
+  const label = /^[a-c]\d+$/.test(name) ? name.toUpperCase() : name.replace(/^./, c => c.toUpperCase());
+  return `${label} · ${parts.at(-1).replace("x", " × ")}`;
+}
+const QUALITY = { 3: "draft", 4: "normal", 5: "high" };
+const ERROR_POLICY = { "retry-job": "try the job again later", "retry-current-job": "try the job again now",
+  "abort-job": "drop the job, carry on", "stop-printer": "pause the queue" };
+
+function renderQueues() {
+  $("mcount").textContent = `· ${S.printers.length}`;
+  $("queues").innerHTML = S.printers.map(p => {
+    const name = p["printer-name"], st = printerState(p);
+    const flags = [name === S.defaultName && "default", p["printer-is-accepting-jobs"] === false && "rejects jobs"].filter(Boolean).join(" · ") || "·";
+    return `<tr class="${name === M.sel ? "sel" : ""}"><td class="jn" title="${esc(name)}">${esc(name)}</td>` +
+      `<td>${esc(p["printer-info"] || "")}</td><td class="jp">${esc(connection(p["device-uri"]))}</td>` +
+      `<td class="${st.cls === "away" ? "off" : st.cls === "bad" ? "bad" : st.cls === "need" ? "held" : ""}">${esc(st.text)}</td>` +
+      `<td class="flags">${esc(flags)}</td>` +
+      `<td class="ja"><button class="btn sm" data-act="configure" data-printer="${esc(name)}"><i>&#xF0493;</i>settings</button>` +
+      (name === S.defaultName ? "" : `<button class="btn sm" data-act="make-default" data-printer="${esc(name)}"><i>&#xF04CE;</i>default</button>`) +
+      `<button class="btn sm" data-act="remove" data-printer="${esc(name)}"><i>&#xF0A7A;</i>remove</button></td></tr>`;
+  }).join("");
+}
+
+function frow(label, field, hint = "") {
+  return `<div class="frow"><span class="k">${esc(label)}</span><span>${field}</span><span class="hint">${hint}</span></div>`;
+}
+function fseg(group, choices, current) {
+  return `<div class="seg" role="group" data-group="${group}">${choices.map(([v, label]) =>
+    `<button type="button" class="${String(v) === String(current) ? "on" : ""}" data-pick="${esc(v)}" aria-pressed="${String(v) === String(current)}">${esc(label)}</button>`).join("")}</div>`;
+}
+function fselect(id, choices, current) {
+  return `<select class="f" id="${id}">${choices.map(([v, label]) =>
+    `<option value="${esc(v)}"${String(v) === String(current) ? " selected" : ""}>${esc(label)}</option>`).join("")}</select>`;
+}
+const picked = (root, group) => root.querySelector(`[data-group="${group}"] button.on`)?.dataset.pick;
+document.addEventListener("click", e => {
+  const b = e.target.closest("[data-pick]");
+  if (!b) return;
+  b.parentElement.querySelectorAll("button").forEach(x => { x.classList.toggle("on", x === b); x.setAttribute("aria-pressed", x === b); });
+  if (b.parentElement.dataset.group === "driver") $("ppd-row").hidden = b.dataset.pick !== "choose";
+});
+
+const MANAGE = {
+  async configure(name) {
+    if (M.sel === name) { M.sel = ""; M.cfg = null; $("panel").innerHTML = ""; renderQueues(); return; }
+    const r = await ipp(`/printers/${encodeURIComponent(name)}`, OP.getPrinterAttributes,
+      { op: [["uri", "printer-uri", printerUri(name)], ask(...ADMIN_ATTRS)] });
+    const p = r.groups[0]; M.sel = name; M.cfg = p; renderQueues();
+    const sides = list(p["sides-supported"]), colors = list(p["print-color-mode-supported"]);
+    const media = list(p["media-supported"]).filter(m => !m.startsWith("custom_"));
+    const quality = list(p["print-quality-supported"]), policies = list(p["printer-error-policy-supported"]);
+    $("panel").innerHTML = `<div class="panel" id="cfg">
+      <h3>${esc(p["printer-info"] || name)}<span>${esc(name)}</span></h3>
+      ${frow("description", `<input class="f" id="c-info" value="${esc(p["printer-info"] || "")}">`, "the name shown everywhere")}
+      ${frow("location", `<input class="f" id="c-loc" value="${esc(p["printer-location"] || "")}">`)}
+      ${frow("address", `<input class="f" id="c-uri" value="${esc(p["device-uri"] || "")}" spellcheck="false">`, esc(connection(p["device-uri"])))}
+      ${frow("queue", fseg("state", [[3, "running"], [5, "paused"]], p["printer-state"] === 5 ? 5 : 3))}
+      ${frow("new jobs", fseg("accept", [[true, "accepted"], [false, "rejected"]], p["printer-is-accepting-jobs"] !== false))}
+      ${frow("shared on the network", fseg("shared", [[false, "no"], [true, "yes"]], !!p["printer-is-shared"]), "only matters when CUPS listens beyond localhost")}
+      ${sides.length > 1 ? frow("default sides", fseg("sides", sides.map(s => [s, s.replace("two-sided-", "2-sided, ").replace("one-sided", "1-sided").replace("-edge", " edge")]), p["sides-default"])) : ""}
+      ${colors.length > 1 ? frow("default color", fseg("color", colors.map(c => [c, c === "monochrome" ? "gray" : c]), p["print-color-mode-default"])) : ""}
+      ${quality.length > 1 ? frow("default quality", fseg("quality", quality.map(q => [q, QUALITY[q] || q]), p["print-quality-default"])) : ""}
+      ${media.length ? frow("default paper", fselect("c-media", media.map(m => [m, mediaLabel(m)]), p["media-default"])) : ""}
+      ${policies.length ? frow("when printing fails", fselect("c-policy", policies.map(x => [x, ERROR_POLICY[x] || x]), p["printer-error-policy"])) : ""}
+      <div class="row"><button class="btn" data-act="configure" data-printer="${esc(name)}">close</button>
+        <button class="btn" data-act="save" data-printer="${esc(name)}"><i>&#xF0193;</i>save changes</button></div></div>`;
+  },
+
+  async save(name) {
+    const p = M.cfg, root = $("cfg"), attrs = [];
+    const val = id => root.querySelector("#" + id)?.value;
+    const changed = (now, was) => now !== undefined && String(now) !== String(was ?? "");
+    if (changed(val("c-info"), p["printer-info"])) attrs.push(["text", "printer-info", val("c-info")]);
+    if (changed(val("c-loc"), p["printer-location"])) attrs.push(["text", "printer-location", val("c-loc")]);
+    if (changed(val("c-uri"), p["device-uri"])) attrs.push(["uri", "device-uri", val("c-uri")]);
+    if (changed(picked(root, "shared"), !!p["printer-is-shared"])) attrs.push(["bool", "printer-is-shared", picked(root, "shared") === "true"]);
+    if (changed(picked(root, "sides"), p["sides-default"])) attrs.push(["kw", "sides-default", picked(root, "sides")]);
+    if (changed(picked(root, "color"), p["print-color-mode-default"])) attrs.push(["kw", "print-color-mode-default", picked(root, "color")]);
+    if (changed(picked(root, "quality"), p["print-quality-default"])) attrs.push(["enum", "print-quality-default", Number(picked(root, "quality"))]);
+    if (changed(val("c-media"), p["media-default"])) attrs.push(["kw", "media-default", val("c-media")]);
+    if (changed(val("c-policy"), p["printer-error-policy"])) attrs.push(["name", "printer-error-policy", val("c-policy")]);
+    const uri = ["uri", "printer-uri", printerUri(name)], done = [];
+    if (attrs.length) { await ipp("/admin/", OP.addModifyPrinter, { op: [uri], printer: attrs }); done.push(`${attrs.length} ${attrs.length === 1 ? "setting" : "settings"}`); }
+    const accept = picked(root, "accept") === "true";
+    if (accept !== (p["printer-is-accepting-jobs"] !== false)) { await ipp("/admin/", accept ? OP.acceptJobs : OP.rejectJobs, { op: [uri] }); done.push(accept ? "accepts jobs" : "rejects jobs"); }
+    const paused = picked(root, "state") === "5";
+    if (paused !== (p["printer-state"] === 5)) { await ipp("/admin/", paused ? OP.pausePrinter : OP.resumePrinter, { op: [uri] }); done.push(paused ? "paused" : "running"); }
+    say(done.length ? `Saved ${name}: ${done.join(", ")}.` : "Nothing changed.");
+    M.sel = ""; await MANAGE.configure(name);
+  },
+
+  async "make-default"(name) {
+    await ipp("/admin/", OP.setDefault, { op: [["uri", "printer-uri", printerUri(name)]] });
+    say(`${name} is the default printer now.`);
+  },
+
+  async remove(name) {
+    const waiting = S.active.filter(j => printerOf(j) === name).length;
+    if (!await confirmBox(`Remove the queue ${name}?`,
+      `${waiting ? `${waiting} waiting ${waiting === 1 ? "job is" : "jobs are"} canceled with it. ` : ""}The printer itself is not touched, and you can add it again below.`,
+      `Remove ${name}`, "Keep it")) return;
+    await ipp("/admin/", OP.deletePrinter, { op: [["uri", "printer-uri", printerUri(name)]] });
+    if (M.sel === name) { M.sel = ""; $("panel").innerHTML = ""; }
+    say(`Removed the queue ${name}.`);
+  },
+
+  async search() {
+    // CUPS asks every backend (network, DNS-SD, USB) and answers once the timeout is over
+    const seconds = 10;
+    M.searching = seconds; renderDevices();
+    const t = setInterval(() => { M.searching = Math.max(1, M.searching - 1); renderDevices(); }, 1000);
+    try {
+      const r = await ipp("/admin/", OP.getDevices, { op: [["int", "timeout", seconds]] });
+      M.devices = r.groups.filter(g => g._tag === TAG.printer && /:\/\//.test(g["device-uri"] || ""));
+    } finally { clearInterval(t); M.searching = 0; renderDevices(); }
+  },
+
+  async "add-device"(i) { await openAdd(M.devices[Number(i)]); },
+  async "add-manual"() {
+    const uri = $("manual-uri").value.trim();
+    if (!/^[a-z][a-z0-9+.-]*:\/\/\S+$/i.test(uri)) { say("That is not a printer address. It looks like ipp://printer.local/ipp/print.", true); return; }
+    await openAdd({ "device-uri": uri, "device-info": "", "device-make-and-model": "" });
+  },
+  async "cancel-add"() { M.adding = null; $("add-panel").innerHTML = ""; },
+
+  async create() {
+    const d = M.adding, root = $("add");
+    const name = root.querySelector("#a-name").value.trim();
+    if (!/^[A-Za-z0-9._-]{1,127}$/.test(name)) { say("A queue name takes letters, digits, dot, dash and underscore, without spaces.", true); return; }
+    if (S.printers.some(p => p["printer-name"].toLowerCase() === name.toLowerCase())) { say(`There is a queue named ${name} already.`, true); return; }
+    const driver = picked(root, "driver") === "choose" ? root.querySelector("#a-ppd")?.value : "everywhere";
+    if (!driver) { say("Choose a driver first.", true); return; }
+    say(driver === "everywhere" ? `Adding ${name}: CUPS asks the printer what it can do, this takes a few seconds.` : `Adding ${name}.`);
+    await ipp("/admin/", OP.addModifyPrinter, {
+      op: [["uri", "printer-uri", printerUri(name)], ["name", "ppd-name", driver]],
+      printer: [["uri", "device-uri", d["device-uri"]], ["text", "printer-info", root.querySelector("#a-info").value.trim() || name],
+        ["text", "printer-location", root.querySelector("#a-loc").value.trim()],
+        ["bool", "printer-is-shared", picked(root, "shared") === "true"],
+        ["bool", "printer-is-accepting-jobs", true], ["enum", "printer-state", 3]] });
+    if (picked(root, "default") === "true") await ipp("/admin/", OP.setDefault, { op: [["uri", "printer-uri", printerUri(name)]] });
+    M.adding = null; $("add-panel").innerHTML = "";
+    say(`Added ${name}. Send it a test page from the overview.`);
+  },
+};
+
+function renderDevices() {
+  if (M.searching) { $("devices").innerHTML = `<div class="wait">looking for printers · ${String(M.searching).padStart(2)} s</div>`; return; }
+  if (!M.devices) { $("devices").innerHTML = ""; return; }
+  if (!M.devices.length) { $("devices").innerHTML = `<div class="empty">No printer answered. Check that it is on and on this network, or enter its address below.</div>`; return; }
+  $("devices").innerHTML = `<table class="q"><colgroup><col><col><col class="c-pr"><col class="c-st"><col class="c-a"></colgroup>
+    <thead><tr><th>printer</th><th>model</th><th>connection</th><th>queue</th><th></th></tr></thead><tbody>` +
+    M.devices.map((d, i) => {
+      const has = S.printers.find(p => p["device-uri"] === d["device-uri"]);
+      return `<tr><td class="jn">${esc(d["device-info"] || d["device-uri"])}</td><td class="jp">${esc(d["device-make-and-model"] || "")}</td>` +
+        `<td class="jp">${esc(connection(d["device-uri"]))}</td><td class="${has ? "off" : ""}">${has ? esc(has["printer-name"]) : "none yet"}</td>` +
+        `<td class="ja"><button class="btn sm" data-act="add-device" data-i="${i}"><i>&#xF0415;</i>${has ? "add again" : "add"}</button></td></tr>`;
+    }).join("") + `</tbody></table>`;
+}
+
+async function openAdd(d) {
+  M.adding = d;
+  const viaIpp = IPP_SCHEMES.test(d["device-uri"]);
+  const base = (d["device-info"] || d["device-make-and-model"] || "Printer").replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "Printer";
+  $("add-panel").innerHTML = `<div class="panel" id="add">
+    <h3>add ${esc(d["device-info"] || d["device-uri"])}<span>${esc(d["device-uri"])}</span></h3>
+    ${frow("queue name", `<input class="f" id="a-name" value="${esc(base)}" spellcheck="false">`, "letters, digits, . - _")}
+    ${frow("description", `<input class="f" id="a-info" value="${esc(d["device-info"] || "")}">`)}
+    ${frow("location", `<input class="f" id="a-loc" value="">`)}
+    ${frow("driver", fseg("driver", viaIpp ? [["everywhere", "driverless"], ["choose", "choose a driver"]] : [["choose", "choose a driver"]], viaIpp ? "everywhere" : "choose"),
+      viaIpp ? "driverless asks the printer itself; right for almost every printer made since 2015" : "this address does not speak IPP")}
+    <div id="ppd-row"${viaIpp ? " hidden" : ""}>${frow("", `<span class="wait" id="ppd-wait">loading the drivers CUPS has</span>`)}</div>
+    ${frow("shared on the network", fseg("shared", [[false, "no"], [true, "yes"]], false))}
+    ${frow("default printer", fseg("default", [[false, "no"], [true, "yes"]], S.printers.length === 0))}
+    <div class="row"><button class="btn" data-act="cancel-add">cancel</button><button class="btn" data-act="create"><i>&#xF0415;</i>add printer</button></div></div>`;
+  // drivers that match the device, else the maker's
+  const filter = d["device-id"] ? [["text", "ppd-device-id", d["device-id"]]]
+    : d["device-make-and-model"] ? [["text", "ppd-make", d["device-make-and-model"].split(" ")[0]]] : [];
+  try {
+    const r = await ipp("/", OP.getPpds, { op: [...filter, ["int", "limit", 200], ask("ppd-name", "ppd-make-and-model")] })
+      .catch(e => { if (e.status === 0x0406) return { groups: [] }; throw e; });   // not-found: no driver matches
+    const ppds = r.groups.filter(g => g._tag === TAG.printer).sort((a, b) => (a["ppd-make-and-model"] || "").localeCompare(b["ppd-make-and-model"] || ""));
+    const row = $("ppd-row"); if (!row) return;
+    row.innerHTML = ppds.length ? frow("", fselect("a-ppd", ppds.map(x => [x["ppd-name"], x["ppd-make-and-model"] || x["ppd-name"]]), ""), `${ppds.length} found`)
+      : frow("", `<span class="wait">CUPS has no driver for this model. Try driverless, or install the maker's driver package.</span>`);
+  } catch (e) { const w = $("ppd-wait"); if (w) w.textContent = `could not list drivers: ${e.message}`; }
+}
+
 async function run(fn) {
   try { await fn(); } catch (e) { say(e.message, true); }
   tick(true);
@@ -508,7 +754,8 @@ document.addEventListener("click", e => {
   if (b.dataset.opt) {
     const v = b.dataset.val; S.opts[b.dataset.opt] = v === "true" ? true : v === "false" ? false : v; renderOpts(); return;
   }
-  if (b.dataset.job) run(() => jobAction(b.dataset.act, Number(b.dataset.job)));
+  if (MANAGE[b.dataset.act]) run(() => MANAGE[b.dataset.act](b.dataset.printer ?? b.dataset.i));
+  else if (b.dataset.job) run(() => jobAction(b.dataset.act, Number(b.dataset.job)));
   else run(() => printerAction(b.dataset.act, b.dataset.printer));
 });
 $("choose").onclick = () => $("file").click();
@@ -523,7 +770,7 @@ document.addEventListener("drop", e => {
   e.preventDefault(); drop.classList.remove("over");
   const f = e.dataTransfer.files[0]; if (f) run(() => printFile(f));
 });
-function route() { S.view = location.hash === "#history" ? "history" : "overview"; render(); }
+function route() { S.view = { "#history": "history", "#printers": "printers" }[location.hash] || "overview"; render(); }
 window.addEventListener("hashchange", route);
 
 route();
