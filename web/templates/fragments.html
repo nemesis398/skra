@@ -33,6 +33,20 @@
 {{else}}<div class="empty">Nothing is waiting. Drop a file above to print it.</div>
 {{end}}</div>{{end}}
 
+{{/* The printers tab's queue table. The settings panel under it is not a
+     fragment of the stream, so an open panel is never swapped away. */}}
+{{define "queues"}}<div id="queues">
+<div class="sec"><b>queues</b><span>· {{len .Queues}}</span><span class="rule"></span></div>
+{{if .Queues}}<table class="q">
+  <colgroup><col class="c-q"><col><col class="c-pr"><col class="c-pr"><col class="c-st"><col class="c-qa"></colgroup>
+  <thead><tr><th>queue</th><th>printer</th><th>connection</th><th>state</th><th>notes</th><th></th></tr></thead>
+  <tbody>
+{{range .Queues}}  <tr data-q="{{.Name}}"><td class="jn" title="{{.Name}}">{{.Name}}</td><td>{{.Info}}</td><td class="jp">{{.Conn}}</td><td{{if .Class}} class="{{.Class}}"{{end}}>{{.State}}</td><td class="flags">{{.Notes}}</td><td class="ja"><button type="button" class="btn sm" data-act="configure" data-q="{{.Name}}"><i>&#xF0493;</i>settings</button>{{if not .Default}}<button type="button" class="btn sm" data-act="default" data-q="{{.Name}}"><i>&#xF04CE;</i>default</button>{{end}}{{if .CanRemove}}<button type="button" class="btn sm" data-act="remove" data-q="{{.Name}}" data-keep="Keep it" data-confirm-title="{{.RemoveTitle}}" data-confirm="{{.RemoveText}}" data-confirm-label="{{.RemoveLabel}}"><i>&#xF0A7A;</i>remove</button>{{end}}</td></tr>
+{{end}}  </tbody>
+</table>
+{{else}}<div class="empty">{{.NoPrinters}}</div>
+{{end}}</div>{{end}}
+
 {{define "recent"}}<div id="recent">
 <div class="sec"><b>last prints</b><span class="rule"></span></div>
 <table class="q">

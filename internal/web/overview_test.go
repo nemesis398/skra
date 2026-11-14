@@ -32,6 +32,7 @@ type fakeCUPS struct {
 	// is what every action then answers. print stands in for Print.
 	acts    []string
 	actErr  error
+	changes []cups.Changes // what Modify was asked, in order
 	printed int
 	print   func(printer, name, format string, o cups.JobOptions, doc io.Reader) (int, error)
 }
@@ -377,11 +378,11 @@ func TestEventsSendsFullSnapshotOnConnect(t *testing.T) {
 		t.Error("the stream lacks the guard's headers")
 	}
 	got := map[string]string{}
-	for range 6 {
+	for range 7 {
 		name, data := c.event(t)
 		got[name] = data
 	}
-	for _, name := range []string{"printers", "opts", "queue", "recent", "need", "foot"} {
+	for _, name := range []string{"printers", "opts", "queue", "queues", "recent", "need", "foot"} {
 		if _, ok := got[name]; !ok {
 			t.Errorf("no %q event on connect", name)
 		}
@@ -396,7 +397,7 @@ func TestEventsSendsFullSnapshotOnConnect(t *testing.T) {
 
 	// A second tab joins the same poller and gets the whole state at once.
 	c2 := openEvents(t, ts)
-	for range 6 {
+	for range 7 {
 		c2.event(t)
 	}
 	if n := s.hub.Subscribers(); n != 2 {
@@ -414,7 +415,7 @@ func TestEventsPushesChangesAndStopsPolling(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	c := openEvents(t, ts)
-	for range 6 {
+	for range 7 {
 		c.event(t)
 	}
 	f.set(func(f *fakeCUPS) {

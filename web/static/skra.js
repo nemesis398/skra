@@ -55,7 +55,7 @@ function say(text, bad = false) {
 // connect and then only what changed, as HTML fragments that each replace the
 // element with the same id as the event.
 let source = null;
-const slots = ["printers", "opts", "queue", "recent", "need", "foot"];
+const slots = ["printers", "opts", "queue", "queues", "recent", "need", "foot"];
 
 function swap(id, html) {
   const el = $(id);
@@ -63,6 +63,7 @@ function swap(id, html) {
   el.outerHTML = html;
   if (id === "foot") readServerMsg();
   if (id === "opts") renderOpts();
+  if (id === "queues") markSelected();
 }
 
 function connect() {
@@ -174,13 +175,16 @@ function confirmBox(title, text, yes, no, restore, choices, glyph = "\u{F0156}")
 // started it is off while the request runs and on again afterwards: the poll
 // swaps a fragment only when its HTML changed, and a refused action changes
 // nothing, so the swap cannot be what turns the button back on.
+// It answers whether the server did it.
 async function send(url, body, button) {
   if (button) button.disabled = true;
   try {
     const res = await post(url, body);
     say((await res.text()).trim() || (res.ok ? "Done." : `skrá answered ${res.status}.`), !res.ok);
+    return res.ok;
   } catch (err) {
     say("Could not reach skrá. Is it still running?", true);
+    return false;
   } finally {
     if (button?.isConnected) button.disabled = false;
   }
@@ -212,6 +216,14 @@ async function testPage(b) {
 }
 
 document.addEventListener("click", (e) => {
+  const pick = e.target.closest("#cfg [data-pick]");
+  if (pick) {
+    for (const x of pick.parentElement.children) {
+      x.classList.toggle("on", x === pick);
+      x.setAttribute("aria-pressed", String(x === pick));
+    }
+    return;
+  }
   const o = e.target.closest("[data-opt]");
   if (o) {
     const v = o.dataset.val;
@@ -223,7 +235,100 @@ document.addEventListener("click", (e) => {
   if (!b) return;
   if (b.dataset.job) jobAction(b);
   else if (b.dataset.act === "testpage") testPage(b);
+  else if (b.dataset.q) queueAction(b);
 });
+
+// --- the printers tab ---
+// The queue table is swapped by the event stream; the settings panel under it
+// is not, so what is typed into it stays until it is saved or closed. It is
+// loaded from the server as HTML and loaded again after a save or an action
+// on its queue, so it always shows what CUPS has.
+let panelFor = "";
+
+function markSelected() {
+  for (const tr of document.querySelectorAll("#queues tr[data-q]")) tr.classList.toggle("sel", tr.dataset.q === panelFor);
+}
+
+async function loadPanel(name) {
+  const panel = $("panel");
+  if (!panel) return;
+  try {
+    const res = await fetch(`/printers/${encodeURIComponent(name)}/settings`, { cache: "no-store" });
+    const text = await res.text();
+    if (!res.ok) {
+      say(text.trim() || `skrá answered ${res.status}.`, true);
+      return;
+    }
+    panel.innerHTML = text;
+    panelFor = name;
+    markSelected();
+  } catch (err) {
+    say("Could not reach skrá. Is it still running?", true);
+  }
+}
+
+function closePanel() {
+  panelFor = "";
+  $("panel")?.replaceChildren();
+  markSelected();
+}
+
+const reloadPanel = (name) => (panelFor === name ? loadPanel(name) : undefined);
+
+// settingsForm reads the panel: the fields by name and the button rows by group.
+function settingsForm(root) {
+  const form = new URLSearchParams();
+  for (const el of root.querySelectorAll("input[name], select[name]")) form.set(el.name, el.value);
+  for (const g of root.querySelectorAll("[data-group]")) {
+    const on = g.querySelector("button.on");
+    if (on) form.set(g.dataset.group, on.dataset.pick);
+  }
+  return form;
+}
+
+async function queueAction(b) {
+  const { act, q } = b.dataset;
+  const base = `/printers/${encodeURIComponent(q)}`;
+  const restore = `[data-act="${act}"][data-q="${CSS.escape(q)}"]`;
+  switch (act) {
+    case "configure":
+      if (panelFor === q) closePanel();
+      else await loadPanel(q);
+      return;
+    case "close":
+      closePanel();
+      return;
+    case "save": {
+      const root = $("cfg");
+      if (root?.dataset.q === q && (await send(`${base}/settings`, settingsForm(root), b))) await loadPanel(q);
+      return;
+    }
+    case "remove":
+    case "cancel-all": {
+      const glyph = act === "remove" ? "\u{F0A7A}" : "\u{F0156}";
+      if (!(await confirmBox(b.dataset.confirmTitle, b.dataset.confirm, b.dataset.confirmLabel, b.dataset.keep, restore, undefined, glyph))) return;
+      // The button says "remove"; the route is the CUPS operation, delete.
+      if (!(await send(`${base}/${act === "remove" ? "delete" : act}`, undefined, b))) return;
+      if (act === "remove" && panelFor === q) closePanel();
+      else await reloadPanel(q);
+      return;
+    }
+    case "move-all": {
+      const targets = parseList(b.dataset.targets);
+      if (targets.length === 0) return;
+      const to = await confirmBox(b.dataset.moveTitle, b.dataset.moveText, b.dataset.moveLabel, b.dataset.keep, restore,
+        targets.map((t) => [t.name, t.label]), "\u{F0054}");
+      if (to && (await send(`${base}/move-all`, new URLSearchParams({ to }), b))) await reloadPanel(q);
+      return;
+    }
+    case "command":
+      await send(`${base}/command`, new URLSearchParams({ command: b.dataset.command }), b);
+      return;
+    default: // default, pause, resume, accept, reject
+      if (await send(`${base}/${act}`, undefined, b)) await reloadPanel(q);
+  }
+}
+
 
 // --- printing a file ---
 // The choices live in the #opts fragment as JSON; what was picked stays here
@@ -292,20 +397,23 @@ async function printFile(file) {
   await send("/print", form);
 }
 
-$("choose").onclick = () => $("file").click();
-$("file").onchange = (e) => {
-  const f = e.target.files[0];
-  e.target.value = "";
-  if (f) printFile(f);
-};
+// The printers tab has no print form: its elements are not there.
+if ($("choose")) $("choose").onclick = () => $("file").click();
+if ($("file")) {
+  $("file").onchange = (e) => {
+    const f = e.target.files[0];
+    e.target.value = "";
+    if (f) printFile(f);
+  };
+}
 document.addEventListener("keydown", (e) => {
-  if (e.key === "o" && !e.ctrlKey && !e.metaKey && !e.altKey && $("dialog").hidden &&
+  if (e.key === "o" && $("file") && !e.ctrlKey && !e.metaKey && !e.altKey && $("dialog").hidden &&
       !/INPUT|TEXTAREA/.test(document.activeElement.tagName)) {
     $("file").click();
   }
 });
 const drop = $("drop");
-const hasFiles = (e) => e.dataTransfer?.types.includes("Files");
+const hasFiles = (e) => drop && e.dataTransfer?.types.includes("Files");
 document.addEventListener("dragover", (e) => {
   if (!hasFiles(e)) return;
   e.preventDefault();

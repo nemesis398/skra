@@ -1,0 +1,29 @@
+{{/* The printers tab: the queue table (fragments.html), and under it the
+     settings of one queue, which skra.js loads from /printers/{name}/settings. */}}
+{{define "printerspage"}}{{template "queues" .}}
+<div id="panel"></div>{{end}}
+
+{{define "seg"}}<div class="seg" role="group" data-group="{{.Group}}">{{range .Choices}}<button type="button"{{if .On}} class="on"{{end}} data-pick="{{.Value}}" aria-pressed="{{.On}}">{{.Label}}</button>{{end}}</div>{{end}}
+
+{{define "sel"}}<select class="f" id="{{.ID}}" name="{{.Name}}">{{range .Choices}}<option value="{{.Value}}"{{if .On}} selected{{end}}>{{.Label}}</option>{{end}}</select>{{end}}
+
+{{/* One queue's settings. Each field is named like its form field; the
+     buttons below the rows act at once, the rows above wait for "save changes". */}}
+{{define "settings"}}<div class="panel" id="cfg" data-q="{{.Name}}">
+  <h3>{{.Title}}<span>{{.Name}}</span></h3>
+  <div class="frow"><label class="k" for="c-info">description</label><span><input class="f" id="c-info" name="info" value="{{.Info}}"></span><span class="hint">the name shown everywhere</span></div>
+  <div class="frow"><label class="k" for="c-loc">location</label><span><input class="f" id="c-loc" name="location" value="{{.Location}}"></span><span class="hint"></span></div>
+  <div class="frow"><label class="k" for="c-uri">address</label><span><input class="f" id="c-uri" name="address" value="{{.Address}}" spellcheck="false"{{if .Declared}} readonly{{end}}></span><span class="hint">{{if .Declared}}declared in ravnix{{else}}{{.AddressHint}}{{end}}</span></div>
+  <div class="frow"><span class="k">queue</span><span>{{template "seg" .State}}</span><span class="hint"></span></div>
+  <div class="frow"><span class="k">new jobs</span><span>{{template "seg" .Accept}}</span><span class="hint"></span></div>
+  <div class="frow"><span class="k">shared on the network</span><span>{{template "seg" .Shared}}</span><span class="hint">only matters when CUPS listens beyond localhost</span></div>
+  {{if .Sides.Choices}}<div class="frow"><span class="k">default sides</span><span>{{template "seg" .Sides}}</span><span class="hint"></span></div>{{end}}
+  {{if .Color.Choices}}<div class="frow"><span class="k">default color</span><span>{{template "seg" .Color}}</span><span class="hint"></span></div>{{end}}
+  {{if .Quality.Choices}}<div class="frow"><span class="k">default quality</span><span>{{template "seg" .Quality}}</span><span class="hint"></span></div>{{end}}
+  {{if .Media.Choices}}<div class="frow"><label class="k" for="c-media">default paper</label><span>{{template "sel" .Media}}</span><span class="hint"></span></div>{{end}}
+  {{if .Policy.Choices}}<div class="frow"><label class="k" for="c-policy">when printing fails</label><span>{{template "sel" .Policy}}</span><span class="hint"></span></div>{{end}}
+  <div class="row"><button type="button" class="btn" data-act="close" data-q="{{.Name}}">close</button><button type="button" class="btn" data-act="save" data-q="{{.Name}}"><i>&#xF0193;</i>save changes</button></div>
+  <div class="frow"><span class="k">right now</span><span class="btns"><button type="button" class="btn sm" data-act="{{.PauseAct}}" data-q="{{.Name}}"><i>&#xF03E4;</i>{{.PauseLabel}}</button><button type="button" class="btn sm" data-act="{{.AcceptAct}}" data-q="{{.Name}}"><i>&#xF012C;</i>{{.AcceptLabel}}</button></span><span class="hint">acts at once, without save</span></div>
+  {{if .Jobs}}<div class="frow"><span class="k">jobs on this queue</span><span class="btns"><button type="button" class="btn sm" data-act="cancel-all" data-q="{{.Name}}" data-keep="Keep them" data-confirm-title="{{.CancelTitle}}" data-confirm="{{.CancelText}}" data-confirm-label="{{.CancelLabel}}"><i>&#xF0156;</i>cancel all</button>{{if .MoveTo}}<button type="button" class="btn sm" data-act="move-all" data-q="{{.Name}}" data-keep="Keep them here" data-move-title="{{.MoveTitle}}" data-move-text="{{.MoveText}}" data-move-label="{{.MoveLabel}}" data-targets="{{.MoveTo}}"><i>&#xF0054;</i>move all</button>{{end}}</span><span class="hint"></span></div>{{end}}
+  {{if .Commands}}<div class="frow"><span class="k">maintenance</span><span class="btns">{{range .Commands}}<button type="button" class="btn sm" data-act="command" data-q="{{$.Name}}" data-command="{{.Name}}"><i>&#xF05B7;</i>{{.Label}}</button>{{end}}</span><span class="hint">sent to the printer as a job</span></div>{{end}}
+</div>{{end}}

@@ -25,6 +25,15 @@ type CUPS interface {
 	Move(ctx context.Context, id int, to string) error
 	Print(ctx context.Context, printer, name, format string, o cups.JobOptions, doc io.Reader) (int, error)
 	PrintTestPage(ctx context.Context, printer string, hold bool) (int, error)
+
+	Modify(ctx context.Context, name string, ch cups.Changes) error
+	Delete(ctx context.Context, name string) error
+	SetDefault(ctx context.Context, name string) error
+	Accept(ctx context.Context, name string, on bool) error
+	Pause(ctx context.Context, name string, on bool) error
+	CancelAll(ctx context.Context, name string) error
+	MoveAll(ctx context.Context, from, to string) error
+	Command(ctx context.Context, printer, command string) (int, error)
 }
 
 var _ CUPS = (*cups.Client)(nil)

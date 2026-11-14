@@ -123,7 +123,7 @@ func printerFrom(g ipp.AttrGroup) Printer {
 		ColorSupported:   g.Strings("print-color-mode-supported"),
 		MediaSupported:   g.Strings("media-supported"),
 		ErrorPolicies:    g.Strings("printer-error-policy-supported"),
-		Commands:         g.Strings("printer-commands"),
+		Commands:         slices.DeleteFunc(g.Strings("printer-commands"), func(c string) bool { return c == "none" }),
 		QualitySupported: g.Ints("print-quality-supported"),
 		Markers:          markers(g),
 		MarkersAt:        unix(g, "marker-change-time"),

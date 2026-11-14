@@ -110,13 +110,17 @@ func (s *Server) tickPoll(ctx context.Context) Snapshot { return s.poll(ctx, fal
 
 // page renders the whole overview from a fresh poll, so it works before the
 // event stream connects.
-func (s *Server) page(w http.ResponseWriter, r *http.Request) {
+func (s *Server) page(w http.ResponseWriter, r *http.Request) { s.render(w, r, "overview") }
+
+// render draws a full page, the overview or the printers tab, with the shared
+// tab bar around it.
+func (s *Server) render(w http.ResponseWriter, r *http.Request, which string) {
 	snap := s.poll(r.Context(), true)
 	var buf bytes.Buffer
 	data := struct {
-		Token string
-		V     view
-	}{s.token, s.view(snap)}
+		Token, Page string
+		V           view
+	}{s.token, which, s.view(snap)}
 	if err := s.tpl.ExecuteTemplate(&buf, "layout.html", data); err != nil {
 		http.Error(w, "Could not render the page.", http.StatusInternalServerError)
 		return
@@ -132,7 +136,7 @@ type fragment struct{ event, html string }
 func (s *Server) fragments(snap Snapshot) []fragment {
 	v := s.view(snap)
 	var out []fragment
-	for _, name := range []string{"printers", "opts", "queue", "recent", "need", "foot"} {
+	for _, name := range []string{"printers", "opts", "queue", "queues", "recent", "need", "foot"} {
 		var buf bytes.Buffer
 		if err := s.tpl.ExecuteTemplate(&buf, name, v); err != nil {
 			continue // a template bug must not end the stream
@@ -149,6 +153,7 @@ type view struct {
 	NoPrinters   string
 	Queue        []jobView
 	QueueCount   string
+	Queues       []queueView // the table of the printers tab
 	Recent       []jobView
 	Need         string
 	Msg          string
@@ -236,6 +241,7 @@ func (s *Server) view(snap Snapshot) view {
 		v.Opts = string(raw)
 	}
 	v.DefaultName = snap.Default
+	v.Queues = s.queueRows(snap, now)
 	for _, j := range snap.Active {
 		if j.State == 4 {
 			held++

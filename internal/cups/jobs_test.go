@@ -23,6 +23,9 @@ type seen struct {
 }
 
 func (s seen) group(g ipp.Group) ipp.AttrGroup {
+	if s.req == nil {
+		return ipp.AttrGroup{}
+	}
 	if gs := s.req.Of(g); len(gs) > 0 {
 		return gs[0]
 	}

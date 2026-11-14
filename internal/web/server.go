@@ -66,6 +66,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /{$}", s.page)
 	mux.HandleFunc("GET /events", s.events)
 	s.actionRoutes(mux)
+	s.printerRoutes(mux)
 	_, port, _ := net.SplitHostPort(s.cfg.Listen) // an empty port matches no Host: closed
 	return Guard(mux, port, s.token)
 }
