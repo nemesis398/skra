@@ -437,7 +437,7 @@ function jobRow(j, active) {
                            : `<button class="btn sm" data-act="hold" data-job="${j["job-id"]}"><i>&#xF03E4;</i>hold</button>`) +
       `<button class="btn sm" data-act="cancel" data-job="${j["job-id"]}"><i>&#xF0156;</i>cancel</button>`;
     return `<tr><td class="jid">${j["job-id"]}</td><td class="jn" title="${esc(name)}">${esc(name)}</td><td class="jp">${esc(pr)}</td>` +
-      `<td class="${cls}">${st === 4 ? state : esc(state)}</td><td class="jt">${when(j["time-at-creation"])}</td><td class="ja">${acts}</td></tr>`;
+      `<td class="${cls}">${state}</td><td class="jt">${when(j["time-at-creation"])}</td><td class="ja">${acts}</td></tr>`;
   }
   return `<tr><td class="jid">${j["job-id"]}</td><td class="jn" title="${esc(name)}">${esc(name)}</td><td class="jp">${esc(pr)}</td>` +
     `<td class="${cls}">${state}</td><td class="r">${j["job-media-sheets-completed"] ?? "·"}</td><td class="jt">${when(j["time-at-completed"])}</td></tr>`;
