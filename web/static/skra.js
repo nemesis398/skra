@@ -160,13 +160,19 @@ function confirmBox(title, text, yes, no, restore, choices, glyph = "\u{F0156}")
 
 // --- actions ---
 // Every action is a POST that answers with the sentence for the footer: the
-// server's own words when it worked or when CUPS refused.
-async function send(url, body) {
+// server's own words when it worked or when CUPS refused. The button that
+// started it is off while the request runs and on again afterwards: the poll
+// swaps a fragment only when its HTML changed, and a refused action changes
+// nothing, so the swap cannot be what turns the button back on.
+async function send(url, body, button) {
+  if (button) button.disabled = true;
   try {
     const res = await post(url, body);
     say((await res.text()).trim() || (res.ok ? "Done." : `skrá answered ${res.status}.`), !res.ok);
   } catch (err) {
     say("Could not reach skrá. Is it still running?", true);
+  } finally {
+    if (button?.isConnected) button.disabled = false;
   }
 }
 
@@ -182,8 +188,7 @@ async function moveJob(b) {
   const to = await confirmBox(b.dataset.moveTitle, `Choose the printer to move job ${job} to.`, b.dataset.moveLabel,
     "Keep it here", `[data-act="move"][data-job="${job}"]`, targets.map((t) => [t.name, t.label]), "\u{F0054}");
   if (!to) return;
-  b.disabled = true;
-  await send(`/jobs/${encodeURIComponent(job)}/move`, new URLSearchParams({ to }));
+  await send(`/jobs/${encodeURIComponent(job)}/move`, new URLSearchParams({ to }), b);
 }
 
 async function jobAction(b) {
@@ -194,13 +199,11 @@ async function jobAction(b) {
       `[data-act="${act}"][data-job="${job}"]`);
     if (!ok) return;
   }
-  b.disabled = true;
-  await send(`/jobs/${encodeURIComponent(job)}/${act === "reprint" ? "restart" : act}`);
+  await send(`/jobs/${encodeURIComponent(job)}/${act === "reprint" ? "restart" : act}`, undefined, b);
 }
 
 async function testPage(b) {
-  b.disabled = true;
-  await send(`/printers/${encodeURIComponent(b.dataset.printer)}/testpage`, new URLSearchParams({ hold: String(opts.hold) }));
+  await send(`/printers/${encodeURIComponent(b.dataset.printer)}/testpage`, new URLSearchParams({ hold: String(opts.hold) }), b);
 }
 
 document.addEventListener("click", (e) => {
