@@ -289,17 +289,17 @@ func TestCancelAllNamesTheCount(t *testing.T) {
 		t.Errorf("event = %+v", ev)
 	}
 
-	panel := get(h, "/printers/Virtual-MFC/settings").Body.String()
-	btn := regexp.MustCompile(`<button[^>]*data-act="cancel-all"[^>]*>`).FindString(panel)
-	if !strings.Contains(btn, "data-confirm-title=") || !strings.Contains(btn, "2 jobs") || !strings.Contains(btn, "data-confirm-label=") {
+	page := get(h, "/printers").Body.String()
+	btn := regexp.MustCompile(`<button[^>]*data-act="cancel-all" data-q="Virtual-MFC"[^>]*>`).FindString(page)
+	if !strings.Contains(btn, "data-confirm-title=") || !strings.Contains(btn, "2 jobs") || !strings.Contains(btn, "data-confirm-label=") || !strings.Contains(btn, `data-keep="Keep them"`) {
 		t.Errorf("cancel all does not ask first, or does not name the count: %q", btn)
 	}
-	if hallPanel := get(h, "/printers/Hall/settings").Body.String(); !strings.Contains(hallPanel, "1 job") {
-		t.Error("the Hall panel does not name its job")
+	if hallBtn := regexp.MustCompile(`<button[^>]*data-act="cancel-all" data-q="Hall"[^>]*>`).FindString(page); !strings.Contains(hallBtn, "1 job") {
+		t.Errorf("the Hall row does not name its job: %q", hallBtn)
 	}
 	f.set(func(f *fakeCUPS) { f.active = nil })
-	if strings.Contains(get(h, "/printers/Virtual-MFC/settings").Body.String(), `data-act="cancel-all"`) {
-		t.Error("cancel all is offered for a queue with no jobs")
+	if strings.Contains(get(h, "/printers").Body.String(), `data-act="cancel-all"`) {
+		t.Error("cancel all is offered for queues with no jobs")
 	}
 }
 
@@ -340,13 +340,13 @@ func TestMoveAll(t *testing.T) {
 func TestMoveAllIsOfferedFromTwoQueues(t *testing.T) {
 	f := queuesFake()
 	_, h := queueServer(t, f)
-	btn := regexp.MustCompile(`<button[^>]*data-act="move-all"[^>]*>`).FindString(get(h, "/printers/Virtual-MFC/settings").Body.String())
+	btn := regexp.MustCompile(`<button[^>]*data-act="move-all" data-q="Virtual-MFC"[^>]*>`).FindString(get(h, "/printers").Body.String())
 	if btn == "" || !strings.Contains(btn, `data-targets="[{&#34;name&#34;:&#34;Hall&#34;,&#34;label&#34;:&#34;Hall&#34;}]"`) {
 		t.Errorf("move all with the other queue as its only target is missing: %q", btn)
 	}
 	f.set(func(f *fakeCUPS) { f.printers = f.printers[1:] })
 	_, h = queueServer(t, f)
-	if strings.Contains(get(h, "/printers/Virtual-MFC/settings").Body.String(), `data-act="move-all"`) {
+	if strings.Contains(get(h, "/printers").Body.String(), `data-act="move-all"`) {
 		t.Error("move all is offered with one queue")
 	}
 }
@@ -751,5 +751,73 @@ func TestEventsCarryTheQueueTable(t *testing.T) {
 	q, ok := got["queues"]
 	if !ok || !strings.HasPrefix(q, `<div id="queues">`) || !strings.Contains(q, "Hall Laser") {
 		t.Errorf("queues event: %q", q)
+	}
+}
+
+// The panel holds the settings that wait for "save changes". Whatever acts at
+// once lives in the table or the overview, so an instant action can never throw
+// away what was typed into an open panel.
+func TestSettingsPanelHasNoInstantActions(t *testing.T) {
+	f := queuesFake()
+	_, h := queueServer(t, f)
+	body := get(h, "/printers/Virtual-MFC/settings").Body.String()
+	for _, act := range []string{"pause", "resume", "accept", "reject", "default", "remove", "cancel-all", "move-all"} {
+		if strings.Contains(body, `data-act="`+act+`"`) {
+			t.Errorf("the panel has an instant %q button", act)
+		}
+	}
+	for _, want := range []string{`data-act="save"`, `data-act="close"`, `data-group="state"`, `data-group="accept"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the panel lacks %q", want)
+		}
+	}
+}
+
+// The prototype puts pause and resume on the overview's printer card, and
+// accept and reject only among the panel's settings: the table has neither.
+func TestQueueTableLeavesPauseAndAcceptToTheirOwnPlaces(t *testing.T) {
+	f := queuesFake()
+	_, h := queueServer(t, f)
+	page := get(h, "/printers").Body.String()
+	for _, act := range []string{"pause", "resume", "accept", "reject"} {
+		if strings.Contains(page, `data-act="`+act+`"`) {
+			t.Errorf("the queue table has a %q button", act)
+		}
+	}
+}
+
+// Cleaning uses ink, so it asks first; the other commands go at once.
+func TestOnlyCleanAsksFirst(t *testing.T) {
+	f := queuesFake()
+	_, h := queueServer(t, f)
+	body := get(h, "/printers/Virtual-MFC/settings").Body.String()
+	buttons := regexp.MustCompile(`<button[^>]*data-act="command"[^>]*>`).FindAllString(body, -1)
+	if len(buttons) != 4 {
+		t.Fatalf("%d maintenance buttons, want 4", len(buttons))
+	}
+	for _, b := range buttons {
+		asks := strings.Contains(b, "data-confirm=")
+		if clean := strings.Contains(b, `data-command="Clean"`); asks != clean {
+			t.Errorf("asks first = %v for %s", asks, b)
+		}
+		if strings.Contains(b, `data-command="Clean"`) {
+			for _, want := range []string{`data-confirm="Cleaning the print heads uses ink. Clean them now?"`,
+				`data-confirm-label="Clean print heads"`, `data-keep="Not now"`, "data-confirm-title="} {
+				if !strings.Contains(b, want) {
+					t.Errorf("the Clean button lacks %q: %s", want, b)
+				}
+			}
+		}
+	}
+}
+
+func TestOverviewHasPauseAndResumeOnTheCard(t *testing.T) {
+	f := queuesFake()
+	f.printers[0].State = 5
+	_, h := queueServer(t, f)
+	page := get(h, "/").Body.String()
+	if !strings.Contains(page, `data-act="resume" data-q="Hall"`) || !strings.Contains(page, ">resume queue<") ||
+		!strings.Contains(page, `data-act="pause" data-q="Virtual-MFC"`) || !strings.Contains(page, ">pause queue<") {
+		t.Error("the overview cards do not offer pause or resume")
 	}
 }

@@ -224,6 +224,43 @@ type queueView struct {
 	Default, CanRemove                    bool
 	// The remove button always asks first, and names the waiting jobs.
 	RemoveTitle, RemoveText, RemoveLabel string
+	jobButtons
+}
+
+// jobButtons are the table's two buttons for the jobs of a queue: cancel them
+// all, move them all. Both are empty when the queue has no jobs, and the move
+// when there is nowhere to move them.
+type jobButtons struct {
+	Jobs                                   int
+	CancelTitle, CancelText, CancelLabel   string
+	MoveTo, MoveTitle, MoveText, MoveLabel string
+}
+
+func jobButtonsFor(p cups.Printer, all []cups.Printer, jobs int) jobButtons {
+	if jobs == 0 {
+		return jobButtons{}
+	}
+	names := shortNames(all)
+	short, count := names[p.Name], plural(jobs, "job", "jobs")
+	jb := jobButtons{
+		Jobs:        jobs,
+		CancelTitle: "Cancel " + count + " on " + short + "?",
+		CancelText:  "Everything waiting or printing on this queue is canceled. A sheet already in the printer may still come out.",
+		CancelLabel: "Cancel " + count,
+	}
+	var targets []moveTarget
+	for _, o := range all {
+		if o.Name != p.Name {
+			targets = append(targets, moveTarget{Name: o.Name, Label: names[o.Name]})
+		}
+	}
+	if raw, err := json.Marshal(targets); err == nil && len(targets) > 0 {
+		jb.MoveTo = string(raw)
+		jb.MoveTitle = "Move " + count + " from " + short
+		jb.MoveText = "Choose the printer to move the jobs to."
+		jb.MoveLabel = "Move " + count
+	}
+	return jb
 }
 
 func (s *Server) queueRows(snap Snapshot, now time.Time) []queueView {
@@ -258,7 +295,9 @@ func (s *Server) queueRows(snap Snapshot, now time.Time) []queueView {
 		}
 		q.RemoveTitle = "Remove the queue " + p.Name + "?"
 		q.RemoveLabel = "Remove " + p.Name
-		q.RemoveText = removeText(countOn(snap.Active, p.Name))
+		waiting := countOn(snap.Active, p.Name)
+		q.RemoveText = removeText(waiting)
+		q.jobButtons = jobButtonsFor(p, snap.Printers, waiting)
 		out = append(out, q)
 	}
 	return out
@@ -295,7 +334,9 @@ type selView struct {
 	Choices  []choice
 }
 
-type commandView struct{ Name, Label string }
+// commandView is a maintenance button. Cleaning uses ink, so it carries the
+// texts of a confirm; the other commands carry none and go at once.
+type commandView struct{ Name, Label, ConfirmTitle, ConfirmText, ConfirmLabel, Keep string }
 
 type settingsView struct {
 	Name, Title, Info, Location, Address, AddressHint string
@@ -303,13 +344,7 @@ type settingsView struct {
 	State, Accept, Shared, Sides, Color, Quality      segView
 	Media, Policy                                     selView
 
-	// The buttons that act at once: the opposite of what the queue does now.
-	PauseAct, PauseLabel, AcceptAct, AcceptLabel string
-
-	Jobs                                   int
-	CancelTitle, CancelText, CancelLabel   string
-	MoveTo, MoveTitle, MoveText, MoveLabel string
-	Commands                               []commandView
+	Commands []commandView
 }
 
 var (
@@ -387,18 +422,13 @@ func (s *Server) settingsPanel(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	ctx, cancel := context.WithTimeout(r.Context(), actionTimeout)
 	defer cancel()
-	p, all, err := s.queue(ctx, name)
+	p, _, err := s.queue(ctx, name)
 	if err != nil {
 		queueFailed(w, name, err)
 		return
 	}
-	jobs, err := s.jobsOn(ctx, name)
-	if err != nil {
-		reply(w, http.StatusBadGateway, err.Error())
-		return
-	}
 	var buf bytes.Buffer
-	if err := s.tpl.ExecuteTemplate(&buf, "settings", settingsFor(p, all, jobs, s.declared(name))); err != nil {
+	if err := s.tpl.ExecuteTemplate(&buf, "settings", settingsFor(p, s.declared(name))); err != nil {
 		reply(w, http.StatusInternalServerError, "Could not render the settings.")
 		return
 	}
@@ -408,31 +438,21 @@ func (s *Server) settingsPanel(w http.ResponseWriter, r *http.Request) {
 	buf.WriteTo(w)
 }
 
-func settingsFor(p cups.Printer, all []cups.Printer, jobs int, declared bool) settingsView {
-	names := shortNames(all)
-	short := names[p.Name]
+func settingsFor(p cups.Printer, declared bool) settingsView {
 	paused := p.State == 5
 	sv := settingsView{
 		Name: p.Name, Title: p.Info, Info: p.Info, Location: p.Location, Address: p.DeviceURI,
 		AddressHint: connection(p.DeviceURI), Declared: declared,
-		State:    segOf("state", []string{"running", "paused"}, ident, pick(paused, "paused", "running")),
-		Accept:   segOf("accept", []string{"accepted", "rejected"}, ident, pick(p.Accepting, "accepted", "rejected")),
-		Shared:   segOf("shared", []string{"no", "yes"}, ident, pick(p.Shared, "yes", "no")),
-		Sides:    segOf("sides", p.SidesSupported, sidesWords.Replace, p.SidesDefault),
-		Color:    segOf("color", p.ColorSupported, colorLabel, p.ColorDefault),
-		Media:    selectOf("c-media", "media", slices.DeleteFunc(slices.Clone(p.MediaSupported), func(m string) bool { return strings.HasPrefix(m, "custom_") }), mediaLabel, p.MediaDefault),
-		Policy:   selectOf("c-policy", "policy", p.ErrorPolicies, policyLabel, p.ErrorPolicy),
-		Jobs:     jobs,
-		PauseAct: "pause", PauseLabel: "pause queue", AcceptAct: "reject", AcceptLabel: "reject new jobs",
+		State:  segOf("state", []string{"running", "paused"}, ident, pick(paused, "paused", "running")),
+		Accept: segOf("accept", []string{"accepted", "rejected"}, ident, pick(p.Accepting, "accepted", "rejected")),
+		Shared: segOf("shared", []string{"no", "yes"}, ident, pick(p.Shared, "yes", "no")),
+		Sides:  segOf("sides", p.SidesSupported, sidesWords.Replace, p.SidesDefault),
+		Color:  segOf("color", p.ColorSupported, colorLabel, p.ColorDefault),
+		Media:  selectOf("c-media", "media", slices.DeleteFunc(slices.Clone(p.MediaSupported), func(m string) bool { return strings.HasPrefix(m, "custom_") }), mediaLabel, p.MediaDefault),
+		Policy: selectOf("c-policy", "policy", p.ErrorPolicies, policyLabel, p.ErrorPolicy),
 	}
 	if sv.Title == "" {
 		sv.Title = p.Name
-	}
-	if paused {
-		sv.PauseAct, sv.PauseLabel = "resume", "resume queue"
-	}
-	if !p.Accepting {
-		sv.AcceptAct, sv.AcceptLabel = "accept", "accept new jobs"
 	}
 	var q []string
 	for _, v := range p.QualitySupported {
@@ -445,26 +465,13 @@ func settingsFor(p cups.Printer, all []cups.Printer, jobs int, declared bool) se
 		return v
 	}, strconv.Itoa(p.QualityDefault))
 
-	if jobs > 0 {
-		count := plural(jobs, "job", "jobs")
-		sv.CancelTitle = "Cancel " + count + " on " + short + "?"
-		sv.CancelText = "Everything waiting or printing on this queue is canceled. A sheet already in the printer may still come out."
-		sv.CancelLabel = "Cancel " + count
-		var targets []moveTarget
-		for _, o := range all {
-			if o.Name != p.Name {
-				targets = append(targets, moveTarget{Name: o.Name, Label: names[o.Name]})
-			}
-		}
-		if raw, err := json.Marshal(targets); err == nil && len(targets) > 0 {
-			sv.MoveTo = string(raw)
-			sv.MoveTitle = "Move " + count + " from " + short
-			sv.MoveText = "Choose the printer to move the jobs to."
-			sv.MoveLabel = "Move " + count
-		}
-	}
 	for _, c := range p.Commands {
-		sv.Commands = append(sv.Commands, commandView{Name: c, Label: commandLabel(c)})
+		cv := commandView{Name: c, Label: commandLabel(c)}
+		if c == "Clean" {
+			cv.ConfirmTitle, cv.ConfirmText = "Clean the print heads?", "Cleaning the print heads uses ink. Clean them now?"
+			cv.ConfirmLabel, cv.Keep = "Clean print heads", "Not now"
+		}
+		sv.Commands = append(sv.Commands, cv)
 	}
 	return sv
 }

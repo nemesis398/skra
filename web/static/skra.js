@@ -241,8 +241,8 @@ document.addEventListener("click", (e) => {
 // --- the printers tab ---
 // The queue table is swapped by the event stream; the settings panel under it
 // is not, so what is typed into it stays until it is saved or closed. It is
-// loaded from the server as HTML and loaded again after a save or an action
-// on its queue, so it always shows what CUPS has.
+// loaded from the server as HTML and loaded again after a save. No instant
+// action reloads it: those live in the table and on the overview cards.
 let panelFor = "";
 
 function markSelected() {
@@ -272,8 +272,6 @@ function closePanel() {
   $("panel")?.replaceChildren();
   markSelected();
 }
-
-const reloadPanel = (name) => (panelFor === name ? loadPanel(name) : undefined);
 
 // settingsForm reads the panel: the fields by name and the button rows by group.
 function settingsForm(root) {
@@ -310,7 +308,6 @@ async function queueAction(b) {
       // The button says "remove"; the route is the CUPS operation, delete.
       if (!(await send(`${base}/${act === "remove" ? "delete" : act}`, undefined, b))) return;
       if (act === "remove" && panelFor === q) closePanel();
-      else await reloadPanel(q);
       return;
     }
     case "move-all": {
@@ -318,14 +315,16 @@ async function queueAction(b) {
       if (targets.length === 0) return;
       const to = await confirmBox(b.dataset.moveTitle, b.dataset.moveText, b.dataset.moveLabel, b.dataset.keep, restore,
         targets.map((t) => [t.name, t.label]), "\u{F0054}");
-      if (to && (await send(`${base}/move-all`, new URLSearchParams({ to }), b))) await reloadPanel(q);
+      if (to) await send(`${base}/move-all`, new URLSearchParams({ to }), b);
       return;
     }
     case "command":
+      // Only Clean carries confirm texts, because it uses ink.
+      if (b.dataset.confirm && !(await confirmBox(b.dataset.confirmTitle, b.dataset.confirm, b.dataset.confirmLabel, b.dataset.keep, restore, undefined, "\u{F05B7}"))) return;
       await send(`${base}/command`, new URLSearchParams({ command: b.dataset.command }), b);
       return;
-    default: // default, pause, resume, accept, reject
-      if (await send(`${base}/${act}`, undefined, b)) await reloadPanel(q);
+    default: // default, pause, resume
+      await send(`${base}/${act}`, undefined, b);
   }
 }
 

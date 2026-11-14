@@ -184,7 +184,7 @@ type optPrinter struct {
 
 type printerView struct {
 	Name, Display, State, Class, Facts, AsOf, Link string
-	Default, Away                                  bool
+	Default, Away, Paused                          bool
 	Inks                                           []inkView
 }
 
@@ -386,6 +386,7 @@ func printerCell(p cups.Printer, def string, now time.Time, live map[string]prin
 		State:   word,
 		Class:   class,
 		Away:    class == "away",
+		Paused:  p.State == 5,
 		Default: p.Name == def,
 		Link:    "http://localhost:631/printers/" + url.PathEscape(p.Name),
 	}

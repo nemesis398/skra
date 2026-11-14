@@ -135,4 +135,4 @@ select.f option { background:var(--mantle); color:var(--text); }
   .bar .tab.hist, .bar .clock { display:none; }
 }
 .frow .btns { display:flex; gap:2px; flex-wrap:wrap; }
-.c-qa { width:21rem; }
+.c-qa { width:34rem; }

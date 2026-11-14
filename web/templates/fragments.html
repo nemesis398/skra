@@ -11,6 +11,7 @@
   {{if .AsOf}}<div class="asof">{{.AsOf}}</div>{{end}}
   <div class="acts">
     <button type="button" class="btn sm" data-act="testpage" data-printer="{{.Name}}"><i>&#xF0219;</i>test page</button>
+    <button type="button" class="btn sm" data-act="{{if .Paused}}resume{{else}}pause{{end}}" data-q="{{.Name}}"><i>&#xF033E;</i>{{if .Paused}}resume queue{{else}}pause queue{{end}}</button>
     <a class="btn sm" href="{{.Link}}"><i>&#xF03CC;</i>CUPS page</a>
   </div></div>
 {{else}}<div class="pr"><div class="facts">{{.NoPrinters}}</div></div>
@@ -41,7 +42,7 @@
   <colgroup><col class="c-q"><col><col class="c-pr"><col class="c-pr"><col class="c-st"><col class="c-qa"></colgroup>
   <thead><tr><th>queue</th><th>printer</th><th>connection</th><th>state</th><th>notes</th><th></th></tr></thead>
   <tbody>
-{{range .Queues}}  <tr data-q="{{.Name}}"><td class="jn" title="{{.Name}}">{{.Name}}</td><td>{{.Info}}</td><td class="jp">{{.Conn}}</td><td{{if .Class}} class="{{.Class}}"{{end}}>{{.State}}</td><td class="flags">{{.Notes}}</td><td class="ja"><button type="button" class="btn sm" data-act="configure" data-q="{{.Name}}"><i>&#xF0493;</i>settings</button>{{if not .Default}}<button type="button" class="btn sm" data-act="default" data-q="{{.Name}}"><i>&#xF04CE;</i>default</button>{{end}}{{if .CanRemove}}<button type="button" class="btn sm" data-act="remove" data-q="{{.Name}}" data-keep="Keep it" data-confirm-title="{{.RemoveTitle}}" data-confirm="{{.RemoveText}}" data-confirm-label="{{.RemoveLabel}}"><i>&#xF0A7A;</i>remove</button>{{end}}</td></tr>
+{{range .Queues}}  <tr data-q="{{.Name}}"><td class="jn" title="{{.Name}}">{{.Name}}</td><td>{{.Info}}</td><td class="jp">{{.Conn}}</td><td{{if .Class}} class="{{.Class}}"{{end}}>{{.State}}</td><td class="flags">{{.Notes}}</td><td class="ja"><button type="button" class="btn sm" data-act="configure" data-q="{{.Name}}"><i>&#xF0493;</i>settings</button>{{if not .Default}}<button type="button" class="btn sm" data-act="default" data-q="{{.Name}}"><i>&#xF04CE;</i>default</button>{{end}}{{if .Jobs}}<button type="button" class="btn sm" data-act="cancel-all" data-q="{{.Name}}" data-keep="Keep them" data-confirm-title="{{.CancelTitle}}" data-confirm="{{.CancelText}}" data-confirm-label="{{.CancelLabel}}"><i>&#xF0156;</i>cancel all</button>{{if .MoveTo}}<button type="button" class="btn sm" data-act="move-all" data-q="{{.Name}}" data-keep="Keep them here" data-move-title="{{.MoveTitle}}" data-move-text="{{.MoveText}}" data-move-label="{{.MoveLabel}}" data-targets="{{.MoveTo}}"><i>&#xF0054;</i>move all</button>{{end}}{{end}}{{if .CanRemove}}<button type="button" class="btn sm" data-act="remove" data-q="{{.Name}}" data-keep="Keep it" data-confirm-title="{{.RemoveTitle}}" data-confirm="{{.RemoveText}}" data-confirm-label="{{.RemoveLabel}}"><i>&#xF0A7A;</i>remove</button>{{end}}</td></tr>
 {{end}}  </tbody>
 </table>
 {{else}}<div class="empty">{{.NoPrinters}}</div>
