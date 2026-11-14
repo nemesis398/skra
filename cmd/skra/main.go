@@ -11,6 +11,7 @@ import (
 
 	"github.com/nemesis398/skra/internal/activation"
 	"github.com/nemesis398/skra/internal/config"
+	"github.com/nemesis398/skra/internal/web"
 )
 
 func main() {
@@ -31,9 +32,5 @@ func run() error {
 	}
 	log.Printf("listening on %s (socket-activated: %t)", ln.Addr(), activated)
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintln(w, "ok")
-	})
-	return http.Serve(ln, mux)
+	return http.Serve(ln, web.New(cfg, web.Deps{}).Handler())
 }

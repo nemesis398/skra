@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="skra-token" content="{{.Token}}">
+<title>skrá</title>
+<link rel="stylesheet" href="/static/skra.css">
+</head>
+<body>
+<div class="app" id="app">
+  <nav class="bar">
+    <div class="brand"><i>&#xF042A;</i> skrá</div>
+    <a class="tab on" id="tab-overview" href="#">Overview</a>
+    <a class="tab" id="tab-printers" href="#printers">Printers</a>
+    <a class="tab hist" id="tab-history" href="#history">History</a>
+    <a class="tab" href="http://localhost:631/admin">CUPS <i class="ext">&#xF03CC;</i></a>
+    <div class="spacer"></div>
+    <div class="stat warn" id="need" hidden></div>
+    <div class="stat clock" id="clock"></div>
+  </nav>
+
+  <main id="main"></main>
+
+  <footer class="foot">
+    <span class="msg" id="msg"></span>
+    <span id="fresh"></span>
+  </footer>
+</div>
+<script src="/static/skra.js"></script>
+</body>
+</html>
