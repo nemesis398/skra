@@ -308,7 +308,7 @@ async function ipp(path, op, groups = {}, data = null) {
 }
 const list = v => v === undefined ? [] : [].concat(v);
 const ask = (...names) => ["kw", "requested-attributes", names];
-const printerUri = name => `ipp://localhost/printers/${encodeURIComponent(name)}`;
+const printerUriAttr = name => ["uri", "printer-uri", `ipp://localhost/printers/${encodeURIComponent(name)}`];
 
 // ── state ───────────────────────────────────────────────────────────────────
 const S = { printers: [], defaultName: "", active: [], done: [], opts: { printer: "", sides: "", color: "", hold: false, copies: 1 },
@@ -506,27 +506,28 @@ async function jobAction(act, id) {
   if (act === "cancel" && j?.["job-state"] === 5 &&
       !await confirmBox(`Cancel "${name}"?`, `It is printing on the ${shortName(printerOf(j))}. The sheet in the printer may still come out.`, `Cancel job ${id}`, "Keep printing")) return;
   const op = { cancel: OP.cancelJob, hold: OP.holdJob, release: OP.releaseJob }[act];
-  const groups = { op: [["uri", "printer-uri", printerUri(printerOf(j))], ["int", "job-id", id]] };
+  const groups = { op: [printerUriAttr(printerOf(j)), ["int", "job-id", id]] };
   if (act === "hold") groups.op.push(["kw", "job-hold-until", "indefinite"]);
   await ipp("/jobs/", op, groups);
   say({ cancel: "Canceled", hold: "Held", release: "Released" }[act] + ` "${name}".`);
 }
 
+// CUPS's own test page is this banner file; the filters fill in the printer's details
+const TEST_PAGE = enc.encode("#PDF-BANNER\nTemplate default-testpage.pdf\nShow printer-name printer-info printer-location " +
+  "printer-make-and-model printer-driver-name printer-driver-version paper-size imageable-area job-id options " +
+  "time-at-creation time-at-processing\n\n");
+
 async function printerAction(act, name) {
   if (act === "testpage") {
-    // CUPS's own test page is this banner file; the filters fill in the printer's details
-    const banner = enc.encode("#PDF-BANNER\nTemplate default-testpage.pdf\nShow printer-name printer-info printer-location " +
-      "printer-make-and-model printer-driver-name printer-driver-version paper-size imageable-area job-id options " +
-      "time-at-creation time-at-processing\n\n");
-    const groups = { op: [["uri", "printer-uri", printerUri(name)], ["name", "job-name", "Test Page"],
+    const groups = { op: [printerUriAttr(name), ["name", "job-name", "Test Page"],
       ["mime", "document-format", "application/vnd.cups-pdf-banner"]],
       job: S.opts.hold ? [["kw", "job-hold-until", "indefinite"]] : [] };
-    const r = await ipp(`/printers/${encodeURIComponent(name)}`, OP.printJob, groups, banner);
+    const r = await ipp(`/printers/${encodeURIComponent(name)}`, OP.printJob, groups, TEST_PAGE);
     say(`Test page sent to ${shortName(name)} as job ${r.groups[0]?.["job-id"] ?? "?"}${S.opts.hold ? ", held" : ""}.`);
     return;
   }
   // Pause and resume are admin operations: CUPS answers 401 and the browser asks for the CUPS login.
-  await ipp("/admin/", act === "pause" ? OP.pausePrinter : OP.resumePrinter, { op: [["uri", "printer-uri", printerUri(name)]] });
+  await ipp("/admin/", act === "pause" ? OP.pausePrinter : OP.resumePrinter, { op: [printerUriAttr(name)] });
   say(`${act === "pause" ? "Paused" : "Resumed"} the queue of ${shortName(name)}.`);
 }
 
@@ -540,7 +541,7 @@ async function printFile(file) {
   if (S.opts.color) job.push(["kw", "print-color-mode", S.opts.color]);
   if (S.opts.hold) job.push(["kw", "job-hold-until", "indefinite"]);
   const r = await ipp(`/printers/${encodeURIComponent(S.opts.printer)}`, OP.printJob,
-    { op: [["uri", "printer-uri", printerUri(S.opts.printer)], ["name", "job-name", file.name], ["mime", "document-format", fmt]], job },
+    { op: [printerUriAttr(S.opts.printer), ["name", "job-name", file.name], ["mime", "document-format", fmt]], job },
     new Uint8Array(await file.arrayBuffer()));
   say(`Sent "${file.name}" to ${shortName(S.opts.printer)} as job ${r.groups[0]?.["job-id"] ?? "?"}${S.opts.hold ? ", held until you release it" : ""}.`);
 }
@@ -602,7 +603,7 @@ const MANAGE = {
   async configure(name) {
     if (M.sel === name) { M.sel = ""; M.cfg = null; $("panel").innerHTML = ""; renderQueues(); return; }
     const r = await ipp(`/printers/${encodeURIComponent(name)}`, OP.getPrinterAttributes,
-      { op: [["uri", "printer-uri", printerUri(name)], ask(...ADMIN_ATTRS)] });
+      { op: [printerUriAttr(name), ask(...ADMIN_ATTRS)] });
     const p = r.groups[0]; M.sel = name; M.cfg = p; renderQueues();
     const sides = list(p["sides-supported"]), colors = list(p["print-color-mode-supported"]);
     const media = list(p["media-supported"]).filter(m => !m.startsWith("custom_"));
@@ -637,7 +638,7 @@ const MANAGE = {
     if (changed(picked(root, "quality"), p["print-quality-default"])) attrs.push(["enum", "print-quality-default", Number(picked(root, "quality"))]);
     if (changed(val("c-media"), p["media-default"])) attrs.push(["kw", "media-default", val("c-media")]);
     if (changed(val("c-policy"), p["printer-error-policy"])) attrs.push(["name", "printer-error-policy", val("c-policy")]);
-    const uri = ["uri", "printer-uri", printerUri(name)], done = [];
+    const uri = printerUriAttr(name), done = [];
     if (attrs.length) { await ipp("/admin/", OP.addModifyPrinter, { op: [uri], printer: attrs }); done.push(`${attrs.length} ${attrs.length === 1 ? "setting" : "settings"}`); }
     const accept = picked(root, "accept") === "true";
     if (accept !== (p["printer-is-accepting-jobs"] !== false)) { await ipp("/admin/", accept ? OP.acceptJobs : OP.rejectJobs, { op: [uri] }); done.push(accept ? "accepts jobs" : "rejects jobs"); }
@@ -648,7 +649,7 @@ const MANAGE = {
   },
 
   async "make-default"(name) {
-    await ipp("/admin/", OP.setDefault, { op: [["uri", "printer-uri", printerUri(name)]] });
+    await ipp("/admin/", OP.setDefault, { op: [printerUriAttr(name)] });
     say(`${name} is the default printer now.`);
   },
 
@@ -657,7 +658,7 @@ const MANAGE = {
     if (!await confirmBox(`Remove the queue ${name}?`,
       `${waiting ? `${waiting} waiting ${waiting === 1 ? "job is" : "jobs are"} canceled with it. ` : ""}The printer itself is not touched, and you can add it again below.`,
       `Remove ${name}`, "Keep it")) return;
-    await ipp("/admin/", OP.deletePrinter, { op: [["uri", "printer-uri", printerUri(name)]] });
+    await ipp("/admin/", OP.deletePrinter, { op: [printerUriAttr(name)] });
     if (M.sel === name) { M.sel = ""; $("panel").innerHTML = ""; }
     say(`Removed the queue ${name}.`);
   },
@@ -690,12 +691,12 @@ const MANAGE = {
     if (!driver) { say("Choose a driver first.", true); return; }
     say(driver === "everywhere" ? `Adding ${name}: CUPS asks the printer what it can do, this takes a few seconds.` : `Adding ${name}.`);
     await ipp("/admin/", OP.addModifyPrinter, {
-      op: [["uri", "printer-uri", printerUri(name)], ["name", "ppd-name", driver]],
+      op: [printerUriAttr(name), ["name", "ppd-name", driver]],
       printer: [["uri", "device-uri", d["device-uri"]], ["text", "printer-info", root.querySelector("#a-info").value.trim() || name],
         ["text", "printer-location", root.querySelector("#a-loc").value.trim()],
         ["bool", "printer-is-shared", picked(root, "shared") === "true"],
         ["bool", "printer-is-accepting-jobs", true], ["enum", "printer-state", 3]] });
-    if (picked(root, "default") === "true") await ipp("/admin/", OP.setDefault, { op: [["uri", "printer-uri", printerUri(name)]] });
+    if (picked(root, "default") === "true") await ipp("/admin/", OP.setDefault, { op: [printerUriAttr(name)] });
     M.adding = null; $("add-panel").innerHTML = "";
     say(`Added ${name}. Send it a test page from the overview.`);
   },
