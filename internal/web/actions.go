@@ -283,7 +283,8 @@ func (s *Server) printFile(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
-		if part.FormName() == "file" {
+		field := part.FormName()
+		if field == "file" {
 			s.printPart(w, r, part, printer, opts)
 			return
 		}
@@ -294,7 +295,7 @@ func (s *Server) printFile(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		val := strings.TrimSpace(string(raw))
-		switch part.FormName() {
+		switch field {
 		case "printer":
 			printer = val
 		case "sides", "color":
@@ -303,7 +304,7 @@ func (s *Server) printFile(w http.ResponseWriter, r *http.Request) {
 				reply(w, http.StatusBadRequest, "That print option is not valid.")
 				return
 			}
-			if part.FormName() == "sides" {
+			if field == "sides" {
 				opts.Sides = val
 			} else {
 				opts.Color = val
