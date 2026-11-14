@@ -160,3 +160,80 @@ func TestHubKeepsOnlyTheLatestForASlowClient(t *testing.T) {
 		t.Errorf("slow client got the oldest snapshot %q, want a newer one", s.Default)
 	}
 }
+
+func TestHubRunsTheLiveLoopOnlyWithSubscribers(t *testing.T) {
+	var polls, lives atomic.Int32
+	h := NewHub(countedPoll(&polls), time.Hour).WithLive(func(context.Context) bool {
+		lives.Add(1)
+		return false
+	}, 10*time.Millisecond)
+
+	time.Sleep(50 * time.Millisecond)
+	if got := lives.Load(); got != 0 {
+		t.Fatalf("%d live rounds with no subscriber, want 0", got)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	next(t, h.Subscribe(ctx))
+	time.Sleep(60 * time.Millisecond)
+	if got := lives.Load(); got < 3 {
+		t.Fatalf("%d live rounds in 60 ms with a subscriber, want at least 3", got)
+	}
+
+	cancel()
+	time.Sleep(30 * time.Millisecond)
+	settled := lives.Load()
+	time.Sleep(60 * time.Millisecond)
+	if got := lives.Load(); got != settled {
+		t.Fatalf("%d live rounds after the last subscriber left, want %d", got, settled)
+	}
+
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
+	next(t, h.Subscribe(ctx2))
+	time.Sleep(30 * time.Millisecond)
+	if got := lives.Load(); got <= settled {
+		t.Errorf("no live round after resubscribing (%d)", got)
+	}
+}
+
+func TestHubLiveChangePollsAtOnce(t *testing.T) {
+	var polls atomic.Int32
+	var changed atomic.Bool
+	h := NewHub(countedPoll(&polls), time.Hour).WithLive(func(context.Context) bool {
+		return changed.Swap(false)
+	}, 10*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch := h.Subscribe(ctx)
+	next(t, ch)
+	time.Sleep(30 * time.Millisecond)
+	if got := polls.Load(); got != 1 {
+		t.Fatalf("%d polls while nothing changed, want 1", got)
+	}
+	changed.Store(true)
+	next(t, ch) // the live change pushes a snapshot without waiting for the CUPS tick
+	if got := polls.Load(); got != 2 {
+		t.Errorf("%d polls, want 2", got)
+	}
+}
+
+func TestHubLiveRoundNeverBlocksTheCUPSPoll(t *testing.T) {
+	var polls atomic.Int32
+	release := make(chan struct{})
+	defer close(release)
+	h := NewHub(countedPoll(&polls), 10*time.Millisecond).WithLive(func(ctx context.Context) bool {
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+		return false
+	}, 10*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h.Subscribe(ctx)
+	time.Sleep(100 * time.Millisecond)
+	if got := polls.Load(); got < 5 {
+		t.Errorf("%d CUPS polls while a live round hangs, want at least 5", got)
+	}
+}

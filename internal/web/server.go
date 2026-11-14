@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/nemesis398/skra/internal/config"
+	"github.com/nemesis398/skra/internal/printer"
 	webassets "github.com/nemesis398/skra/web"
 )
 
@@ -30,6 +31,11 @@ type Server struct {
 	haveDone bool
 	good     Snapshot
 	goodMu   sync.RWMutex
+
+	// live is the last answer of each queried printer, by queue name. The
+	// hub's live loop writes it and every CUPS poll reads it.
+	liveMu sync.Mutex
+	live   map[string]printer.Live
 }
 
 // New builds a Server with a fresh token. The templates are embedded, so a
@@ -47,6 +53,9 @@ func New(cfg config.Config, deps Deps) *Server {
 		static: http.StripPrefix("/static/", http.FileServer(http.FS(static))),
 	}
 	s.hub = NewHub(s.tickPoll, pollEvery)
+	if deps.Query != nil {
+		s.hub.WithLive(s.livePoll, liveEvery)
+	}
 	return s
 }
 

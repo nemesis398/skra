@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/nemesis398/skra/internal/cups"
+	"github.com/nemesis398/skra/internal/printer"
 )
 
 // Snapshot is what one poll of CUPS saw. Err is set when CUPS did not answer
@@ -21,15 +22,21 @@ type Snapshot struct {
 	Active, Done []cups.Job
 	Err          string
 	At           time.Time
+	// Live is the last answer of each printer that skra asks itself, keyed by
+	// queue name. A queue it does not ask has no entry.
+	Live map[string]printer.Live
 }
 
-// Hub runs one poller for any number of subscribers. The poller runs only
-// while somebody subscribes, so an idle service does no work at all.
+// Hub runs one poller for any number of subscribers. The poller, and the
+// optional live loop, run only while somebody subscribes, so an idle service
+// does no work at all.
 type Hub struct {
 	poll  func(context.Context) Snapshot
 	every time.Duration
 
-	refresh chan struct{}
+	refresh  chan struct{}
+	live     func(context.Context) bool
+	liveTick time.Duration
 
 	mu     sync.Mutex
 	subs   map[chan Snapshot]struct{}
@@ -48,6 +55,16 @@ func NewHub(poll func(context.Context) Snapshot, every time.Duration) *Hub {
 	}
 }
 
+// WithLive adds a second loop that calls fn every interval while somebody
+// subscribes, beside the CUPS poll and on its own goroutine, so a printer
+// that is slow to answer never holds the poll up. fn reports whether it
+// learned something new; the hub then polls at once so the snapshot carries
+// it. Call it before the first Subscribe.
+func (h *Hub) WithLive(fn func(context.Context) bool, every time.Duration) *Hub {
+	h.live, h.liveTick = fn, every
+	return h
+}
+
 // Subscribe returns a channel of snapshots that closes when ctx ends. The
 // first subscriber starts the poller, which polls at once. A later one gets
 // the last snapshot at once, without waiting for the next tick. A reader that
@@ -64,6 +81,9 @@ func (h *Hub) Subscribe(ctx context.Context) <-chan Snapshot {
 		default:
 		}
 		go h.run(pctx)
+		if h.live != nil {
+			go h.runLive(pctx)
+		}
 	}
 	h.subs[ch] = struct{}{}
 	if h.have {
@@ -113,6 +133,21 @@ func (h *Hub) run(ctx context.Context) {
 		case <-h.refresh:
 		}
 		h.pollOnce(ctx)
+	}
+}
+
+func (h *Hub) runLive(ctx context.Context) {
+	t := time.NewTicker(h.liveTick)
+	defer t.Stop()
+	for {
+		if h.live(ctx) && ctx.Err() == nil {
+			h.Refresh()
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
 	}
 }
 

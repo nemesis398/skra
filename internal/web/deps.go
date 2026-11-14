@@ -7,6 +7,7 @@ import (
 	"io"
 
 	"github.com/nemesis398/skra/internal/cups"
+	"github.com/nemesis398/skra/internal/printer"
 	"github.com/nemesis398/skra/internal/store"
 )
 
@@ -28,9 +29,10 @@ type CUPS interface {
 
 var _ CUPS = (*cups.Client)(nil)
 
-// Deps are the collaborators the handlers use. A later task adds the printer
-// query.
+// Deps are the collaborators the handlers use. Query asks one printer for its
+// live status; it may be nil, and then no printer is ever queried.
 type Deps struct {
 	CUPS  CUPS
 	Store *store.Store
+	Query func(ctx context.Context, deviceURI string) printer.Live
 }

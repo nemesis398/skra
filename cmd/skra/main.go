@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"github.com/nemesis398/skra/internal/activation"
 	"github.com/nemesis398/skra/internal/config"
 	"github.com/nemesis398/skra/internal/cups"
+	"github.com/nemesis398/skra/internal/printer"
 	"github.com/nemesis398/skra/internal/store"
 	"github.com/nemesis398/skra/internal/web"
 )
@@ -39,5 +41,12 @@ func run() error {
 	}
 	log.Printf("listening on %s (socket-activated: %t)", ln.Addr(), activated)
 
-	return http.Serve(ln, web.New(cfg, web.Deps{CUPS: cups.New(cfg.CUPSSocket, cfg.User), Store: db}).Handler())
+	deps := web.Deps{
+		CUPS:  cups.New(cfg.CUPSSocket, cfg.User),
+		Store: db,
+		Query: func(ctx context.Context, deviceURI string) printer.Live {
+			return printer.Query(ctx, deviceURI, printer.Avahi{})
+		},
+	}
+	return http.Serve(ln, web.New(cfg, deps).Handler())
 }

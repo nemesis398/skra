@@ -11,11 +11,13 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/nemesis398/skra/internal/cups"
+	"github.com/nemesis398/skra/internal/printer"
 )
 
 // pollEvery is how often the hub asks CUPS while somebody watches. A variable
@@ -56,6 +58,7 @@ func (s *Server) poll(ctx context.Context, withDone bool) Snapshot {
 
 	snap := s.good
 	snap.Err = ""
+	snap.Live = s.liveNow()
 	fail := func(err error) Snapshot {
 		msg := err.Error()
 		if !strings.HasPrefix(msg, "CUPS") {
@@ -217,7 +220,7 @@ func (s *Server) view(snap Snapshot) view {
 
 	held, stuck := 0, 0
 	for _, p := range snap.Printers {
-		pv := printerCell(p, snap.Default, now)
+		pv := printerCell(p, snap.Default, now, snap.Live)
 		if pv.Class == "need" {
 			stuck++
 		}
@@ -354,8 +357,15 @@ func printerState(p cups.Printer) (word, class string) {
 	return "ready", ""
 }
 
-func printerCell(p cups.Printer, def string, now time.Time) printerView {
+// printerCell draws one queue. live holds the answers of the printers
+// themselves, keyed by queue name; a queue with no entry was not asked, or not
+// yet, and shows what CUPS knows.
+func printerCell(p cups.Printer, def string, now time.Time, live map[string]printer.Live) printerView {
 	word, class := printerState(p)
+	l, asked := live[p.Name]
+	if asked && !l.Reachable {
+		word, class = "away", "away" // it did not answer: not on this network, which is no fault
+	}
 	pv := printerView{
 		Name:    p.Name,
 		Display: p.Info,
@@ -376,16 +386,20 @@ func printerCell(p cups.Printer, def string, now time.Time) printerView {
 	}
 	pv.Facts = strings.Join(facts, " · ")
 
-	for i, m := range p.Markers {
+	markers := p.Markers
+	switch {
+	case asked && l.Reachable && len(l.Markers) > 0:
+		markers = l.Markers // the printer's own word, so no age to state
+	case len(markers) == 0:
+		pv.AsOf = "no ink levels reported yet"
+	case !p.MarkersAt.IsZero():
+		pv.AsOf = "ink as of " + when(p.MarkersAt, now) + ", the last time CUPS spoke to it"
+	}
+	for i, m := range markers {
 		if i == maxInks {
 			break
 		}
 		pv.Inks = append(pv.Inks, inkCell(m, i))
-	}
-	if p.MarkersAt.IsZero() {
-		pv.AsOf = "no ink levels reported yet"
-	} else {
-		pv.AsOf = "ink as of " + when(p.MarkersAt, now) + ", the last time CUPS spoke to it"
 	}
 	return pv
 }
@@ -412,9 +426,7 @@ func connection(uri string) string {
 	switch {
 	case scheme == "usb":
 		return "USB"
-	case strings.HasPrefix(uri, "ipp://localhost") || strings.HasPrefix(uri, "ipps://localhost") ||
-		strings.HasPrefix(uri, "ipp://127.0.0.1") || strings.HasPrefix(uri, "ipps://127.0.0.1") ||
-		strings.Contains(plain, "(USB)"):
+	case ippUSB(uri) || strings.Contains(plain, "(USB)"):
 		return "USB through ipp-usb"
 	}
 	switch scheme {
@@ -422,6 +434,21 @@ func connection(uri string) string {
 		return "network"
 	}
 	return scheme
+}
+
+// ippUSB reports whether uri is one ipp-usb serves: this machine, on a port of
+// 60000 or higher. Any other port on localhost is a printer of its own, such
+// as the harness's on 8631.
+func ippUSB(uri string) bool {
+	u, err := url.Parse(uri)
+	if err != nil || (u.Scheme != "ipp" && u.Scheme != "ipps") {
+		return false
+	}
+	if h := u.Hostname(); h != "localhost" && h != "127.0.0.1" {
+		return false
+	}
+	port, err := strconv.Atoi(u.Port())
+	return err == nil && port >= 60000
 }
 
 var inkName = regexp.MustCompile(`(?i)black|cyan|magenta|yellow`)

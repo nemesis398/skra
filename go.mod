@@ -2,7 +2,10 @@ module github.com/nemesis398/skra
 
 go 1.26.0
 
-require modernc.org/sqlite v1.62.0
+require (
+	github.com/godbus/dbus/v5 v5.2.4
+	modernc.org/sqlite v1.62.0
+)
 
 require (
 	github.com/dustin/go-humanize v1.1.0 // indirect

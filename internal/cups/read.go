@@ -203,3 +203,7 @@ func unix(g ipp.AttrGroup, name string) time.Time {
 	}
 	return time.Time{}
 }
+
+// MarkersFrom reads the marker-* attributes of a printer group, for callers
+// that ask a printer directly instead of CUPS.
+func MarkersFrom(g ipp.AttrGroup) []Marker { return markers(g) }

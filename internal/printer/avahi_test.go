@@ -1,0 +1,69 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+package printer
+
+import (
+	"net/netip"
+	"testing"
+)
+
+func TestParseDNSSD(t *testing.T) {
+	name, regtype, domain, err := ParseDNSSD("dnssd://Brother%20MFC-J6975DW._ipp._tcp.local/?uuid=e3248000-80ce-11db-8000-94ddf8f11cb0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name != "Brother MFC-J6975DW" || regtype != "_ipp._tcp" || domain != "local" {
+		t.Errorf("got %q, %q, %q", name, regtype, domain)
+	}
+}
+
+func TestParseDNSSDShapes(t *testing.T) {
+	for _, tc := range []struct{ uri, name, regtype, domain string }{
+		{"dnssd://Plain._ipps._tcp.local", "Plain", "_ipps._tcp", "local"},
+		{"dnssd://HP%20Officejet%205.0._ipp._tcp.local./cups", "HP Officejet 5.0", "_ipp._tcp", "local."},
+		{"dnssd://M%C3%BCller%20Drucker._ipp._tcp.example.org/", "Müller Drucker", "_ipp._tcp", "example.org"},
+		{"dnssd://A._printer._tcp.local/?uuid=x", "A", "_printer._tcp", "local"},
+	} {
+		name, regtype, domain, err := ParseDNSSD(tc.uri)
+		if err != nil || name != tc.name || regtype != tc.regtype || domain != tc.domain {
+			t.Errorf("ParseDNSSD(%q) = %q, %q, %q, %v", tc.uri, name, regtype, domain, err)
+		}
+	}
+}
+
+func TestParseDNSSDRejects(t *testing.T) {
+	for _, uri := range []string{"", "ipp://x._ipp._tcp.local/", "dnssd://", "dnssd://nothing", "dnssd://x._ipp.local/", "dnssd://%zz._ipp._tcp.local/", "dnssd://._ipp._tcp.local/"} {
+		if _, _, _, err := ParseDNSSD(uri); err == nil {
+			t.Errorf("ParseDNSSD(%q) accepted", uri)
+		}
+	}
+}
+
+func TestServiceURI(t *testing.T) {
+	for _, tc := range []struct {
+		regtype, addr string
+		port          uint16
+		txt           [][]byte
+		want          string
+	}{
+		{"_ipp._tcp", "192.168.1.5", 631, [][]byte{[]byte("txtvers=1"), []byte("rp=ipp/print")}, "ipp://192.168.1.5:631/ipp/print"},
+		{"_ipps._tcp", "192.168.1.5", 443, [][]byte{[]byte("rp=ipp/print")}, "ipps://192.168.1.5:443/ipp/print"},
+		{"_ipp._tcp", "2001:db8::5", 631, [][]byte{[]byte("rp=ipp/print")}, "ipp://[2001:db8::5]:631/ipp/print"},
+		{"_ipp._tcp", "10.0.0.2", 631, [][]byte{[]byte("rp=/printers/x")}, "ipp://10.0.0.2:631/printers/x"},
+		{"_ipp._tcp", "10.0.0.2", 631, nil, "ipp://10.0.0.2:631/ipp/print"},
+		{"_ipp._tcp", "10.0.0.2", 631, [][]byte{[]byte("rp=")}, "ipp://10.0.0.2:631/ipp/print"},
+		{"_ipp._tcp", "10.0.0.2", 631, [][]byte{[]byte("RP=ipp/x")}, "ipp://10.0.0.2:631/ipp/x"},
+		{"_ipp._tcp", "10.0.0.2", 631, [][]byte{[]byte("rp=my printer")}, "ipp://10.0.0.2:631/my%20printer"},
+	} {
+		if got := serviceURI(tc.regtype, netip.MustParseAddr(tc.addr), "", tc.port, tc.txt); got != tc.want {
+			t.Errorf("serviceURI(%s, %s) = %q, want %q", tc.regtype, tc.addr, got, tc.want)
+		}
+	}
+}
+
+func TestServiceURIScopesALinkLocalAddress(t *testing.T) {
+	got := serviceURI("_ipp._tcp", netip.MustParseAddr("fe80::1"), "wlp3s0", 631, [][]byte{[]byte("rp=ipp/print")})
+	if want := "ipp://[fe80::1%25wlp3s0]:631/ipp/print"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
