@@ -4,9 +4,9 @@ A modern web interface for CUPS, the Linux print server. It is one HTML file tha
 CUPS serves itself, so it adds no daemon, no port and no build step. The colors
 are Catppuccin Mocha.
 
-![The overview: printers with ink, printing a file, the queue and the last prints](docs/overview.png)
+![The overview: printers with ink, printing a file, the queue and the last prints](prototype/docs/overview.png)
 
-![The printers tab with a queue's settings open](docs/printers.png)
+![The printers tab with a queue's settings open](prototype/docs/printers.png)
 
 ## 🖨️ What it does
 
