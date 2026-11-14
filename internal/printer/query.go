@@ -50,13 +50,19 @@ type Resolver interface {
 // otherwise hold dead ones. Printers carry self-signed certificates, so ipps
 // skips verification. That is acceptable only because this client reads
 // status and sends no document and no credentials.
+//
+// Neither follows a redirect: a printer on the LAN could otherwise bounce the
+// POST to any host, 127.0.0.1:631 included. A redirect is an answer that is
+// not a success, so the printer reads as unreachable.
 var (
-	plainClient = &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
-	tlsClient   = &http.Client{Transport: &http.Transport{
+	plainClient = &http.Client{CheckRedirect: noRedirect, Transport: &http.Transport{DisableKeepAlives: true}}
+	tlsClient   = &http.Client{CheckRedirect: noRedirect, Transport: &http.Transport{
 		DisableKeepAlives: true,
 		TLSClientConfig:   &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // see above
 	}}
 )
+
+func noRedirect(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 
 var statusAttrs = []string{"marker-names", "marker-levels", "marker-colors", "marker-types",
 	"printer-state-reasons", "printer-state-message"}

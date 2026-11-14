@@ -234,6 +234,31 @@ func TestQueryIPPSTrustsASelfSignedCertificate(t *testing.T) {
 	}
 }
 
+func TestQueryDoesNotFollowRedirects(t *testing.T) {
+	var hits atomic.Int32
+	target := ippServer(t, func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		answer(inkAnswer())(w, r)
+	})
+	for _, code := range []int{301, 302, 307, 308} {
+		bounce := ippServer(t, func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, target.URL+"/ipp/print", code)
+		})
+		live := Query(context.Background(), "ipp://"+bounce.Listener.Addr().String()+"/ipp/print", nil)
+		if live.Reachable {
+			t.Errorf("redirect %d counted as an answer", code)
+		}
+	}
+	tbounce := httptest.NewTLSServer(http.RedirectHandler(target.URL, 307))
+	defer tbounce.Close()
+	if Query(context.Background(), "ipps://"+tbounce.Listener.Addr().String()+"/", nil).Reachable {
+		t.Error("an ipps redirect counted as an answer")
+	}
+	if n := hits.Load(); n != 0 {
+		t.Errorf("the redirect target was reached %d times", n)
+	}
+}
+
 func TestQueryIPPDoesNotSpeakTLS(t *testing.T) {
 	s := ippServer(t, answer(inkAnswer()))
 	if Query(context.Background(), "ipps://"+s.Listener.Addr().String()+"/", nil).Reachable {
@@ -246,6 +271,11 @@ func TestClientsIgnoreTheProxyEnvironment(t *testing.T) {
 		tr, ok := c.Transport.(*http.Transport)
 		if !ok || tr.Proxy != nil || c == http.DefaultClient {
 			t.Errorf("%s client: want a dedicated transport without a proxy", name)
+		}
+	}
+	for name, c := range map[string]*http.Client{"plain": plainClient, "tls": tlsClient} {
+		if c.CheckRedirect == nil {
+			t.Errorf("%s client follows redirects", name)
 		}
 	}
 	if tr := tlsClient.Transport.(*http.Transport); !tr.TLSClientConfig.InsecureSkipVerify {
