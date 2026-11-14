@@ -441,3 +441,27 @@ func TestJobsRequestAndOrder(t *testing.T) {
 		t.Error("an unknown which should be an error")
 	}
 }
+
+func TestDoGivesUpOnACupsThatNeverAnswers(t *testing.T) {
+	old := headerTimeout
+	headerTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { headerTimeout = old })
+	release := make(chan struct{})
+	sock := fake(t, func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		<-release // read the request, never answer
+	})
+	// Registered after fake, so it runs before the server's Close waits for the handler.
+	t.Cleanup(func() { close(release) })
+	// The context is only a backstop; the header timeout has to fire first.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	start := time.Now()
+	_, err := New(sock, "mika").Do(ctx, "/", ipp.NewRequest(ipp.OpCUPSGetPrinters), nil)
+	if err == nil || !strings.HasPrefix(err.Error(), "CUPS does not answer") {
+		t.Fatalf("err = %v", err)
+	}
+	if d := time.Since(start); d > time.Second {
+		t.Errorf("Do waited %v for a CUPS that never answers", d)
+	}
+}

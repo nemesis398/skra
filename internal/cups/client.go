@@ -12,6 +12,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"time"
 
 	"github.com/nemesis398/skra/internal/ipp"
 )
@@ -19,6 +20,15 @@ import (
 // maxResponse caps what Do reads from CUPS. A queue list with every media
 // size is a few hundred kilobytes at most.
 const maxResponse = 32 << 20
+
+// headerTimeout bounds the wait for CUPS to start answering, counted from the
+// end of the request body, so a streamed upload is not cut short. A variable so
+// a test can lower it. It is 45 s because CUPS-Get-Devices waits out its own
+// 10 s timeout and adding a driverless printer makes cupsd query it first.
+var headerTimeout = 45 * time.Second
+
+// dialTimeout bounds the connect to the socket.
+const dialTimeout = 5 * time.Second
 
 // Client is a CUPS client for one socket and one user.
 type Client struct {
@@ -30,8 +40,9 @@ type Client struct {
 // checks the name against the socket peer, so it has to be the user the
 // process runs as.
 func New(socket, user string) *Client {
-	var d net.Dialer
+	d := net.Dialer{Timeout: dialTimeout}
 	return &Client{user: user, http: &http.Client{Transport: &http.Transport{
+		ResponseHeaderTimeout: headerTimeout,
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return d.DialContext(ctx, "unix", socket)
 		},
@@ -41,7 +52,10 @@ func New(socket, user string) *Client {
 // Do posts req to the CUPS resource at path ("/", "/admin/", "/printers/NAME")
 // and decodes the answer. It adds requesting-user-name to the operation group
 // and sends Authorization: PeerCred up front, so each call is one request
-// with no retry. When doc is not nil it is streamed after the request.
+// with no retry. ctx should carry a deadline for the whole call: the client
+// stops waiting for CUPS to start answering after 45 s and for the connect
+// after 5 s, but it sets no limit on the body, so a long upload or a stalled
+// read is bounded only by ctx. When doc is not nil it is streamed after the request.
 //
 // A reply with an IPP error status comes back as both the decoded response
 // and its *ipp.StatusError. Req must not be reused: a second Do would add the
