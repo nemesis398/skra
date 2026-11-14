@@ -238,16 +238,8 @@ func (s *Server) view(snap Snapshot) view {
 			held++
 		}
 		jv := jobRow(j, names, now, true)
-		if (j.State == 3 || j.State == 4) && len(snap.Printers) > 1 {
-			var targets []moveTarget
-			for _, p := range snap.Printers {
-				if p.Name != j.Printer {
-					targets = append(targets, moveTarget{Name: p.Name, Label: names[p.Name]})
-				}
-			}
-			if raw, err := json.Marshal(targets); err == nil && len(targets) > 0 {
-				jv.MoveTo, jv.MoveTitle = string(raw), "Move "+quoted(jv.Name)
-			}
+		if jv.MoveTo = moveTargets(j, snap.Printers, names); jv.MoveTo != "" {
+			jv.MoveTitle = "Move " + quoted(jv.Name)
 		}
 		v.Queue = append(v.Queue, jv)
 	}
@@ -281,6 +273,24 @@ func (s *Server) view(snap Snapshot) view {
 		v.Fresh = fmt.Sprintf("updated %s · every %g s while a page is open", snap.At.Format("15:04:05"), pollEvery.Seconds())
 	}
 	return v
+}
+
+// moveTargets is the JSON of the other queues a waiting or held job can move
+// to, or "" when it cannot move.
+func moveTargets(j cups.Job, printers []cups.Printer, names map[string]string) string {
+	if (j.State != 3 && j.State != 4) || len(printers) < 2 {
+		return ""
+	}
+	var targets []moveTarget
+	for _, p := range printers {
+		if p.Name != j.Printer {
+			targets = append(targets, moveTarget{Name: p.Name, Label: names[p.Name]})
+		}
+	}
+	if raw, err := json.Marshal(targets); err == nil && len(targets) > 0 {
+		return string(raw)
+	}
+	return ""
 }
 
 // shortNames maps each queue name to the short name the overview uses for it:
