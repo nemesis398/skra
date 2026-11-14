@@ -1,0 +1,47 @@
+{{/* The pieces of the overview that both the page and the event stream draw.
+     Each is one element with an id, so the page script swaps it whole. */}}
+{{define "printers"}}<div id="printers">
+<div class="sec"><b>printers</b><span>· {{.PrinterCount}}</span><span class="rule"></span></div>
+<div class="printers">
+{{range .Printers}}<div class="pr{{if .Away}} away{{end}}">
+  <div class="top"><div class="pn">{{.Display}}{{if .Default}}<span class="tag">&#xF04CE; default</span>{{end}}</div>
+    <div class="st{{if .Class}} {{.Class}}{{end}}">{{if .Away}}&#x25CB;{{else}}&#x25CF;{{end}} {{.State}}</div></div>
+  <div class="facts">{{.Facts}}</div>
+  {{if .Inks}}<div class="ink">{{range .Inks}}<div class="c{{if .Low}} low{{end}}"><span class="k">{{.Label}}</span><span class="meter"><span style="width:{{.Pct}}%{{if .Color}};background:{{.Color}}{{end}}"></span></span><span class="v">{{.Value}}</span></div>{{end}}</div>{{end}}
+  <div class="asof">{{.AsOf}}</div>
+  <div class="acts">
+    <a class="btn sm" href="{{.Link}}"><i>&#xF03CC;</i>CUPS page</a>
+  </div></div>
+{{else}}<div class="pr"><div class="facts">{{.NoPrinters}}</div></div>
+{{end}}</div>
+</div>{{end}}
+
+{{define "queue"}}<div id="queue">
+<div class="sec"><b>queue</b><span>· {{.QueueCount}}</span><span class="rule"></span></div>
+{{if .Queue}}<table class="q">
+  <colgroup><col class="c-id"><col><col class="c-pr"><col class="c-st"><col class="c-t"><col class="c-a"></colgroup>
+  <thead><tr><th>job</th><th>name</th><th>printer</th><th>state</th><th class="r">sent</th><th></th></tr></thead>
+  <tbody>
+{{range .Queue}}  <tr><td class="jid">{{.ID}}</td><td class="jn">{{.Name}}</td><td class="jp">{{.Printer}}</td><td{{if .Class}} class="{{.Class}}"{{end}}>{{.State}}</td><td class="jt">{{.When}}</td><td class="ja"></td></tr>
+{{end}}  </tbody>
+</table>
+{{else}}<div class="empty">Nothing is waiting. Drop a file above to print it.</div>
+{{end}}</div>{{end}}
+
+{{define "recent"}}<div id="recent">
+<div class="sec"><b>last prints</b><span class="rule"></span></div>
+<table class="q">
+  <colgroup><col class="c-id"><col><col class="c-pr"><col class="c-st"><col class="c-pg"><col class="c-t"></colgroup>
+  <thead><tr><th>job</th><th>name</th><th>printer</th><th>result</th><th class="r">pages</th><th class="r">when</th></tr></thead>
+  <tbody>
+{{range .Recent}}  <tr><td class="jid">{{.ID}}</td><td class="jn">{{.Name}}</td><td class="jp">{{.Printer}}</td><td{{if .Class}} class="{{.Class}}"{{end}}>{{.State}}</td><td class="r">{{.Pages}}</td><td class="jt">{{.When}}</td></tr>
+{{end}}  </tbody>
+</table>
+</div>{{end}}
+
+{{define "need"}}<div class="stat warn" id="need"{{if not .Need}} hidden{{end}}>{{.Need}}</div>{{end}}
+
+{{define "foot"}}<footer class="foot" id="foot">
+  <span class="msg{{if .MsgBad}} bad{{end}}" id="msg">{{.Msg}}</span>
+  <span id="fresh">{{.Fresh}}</span>
+</footer>{{end}}

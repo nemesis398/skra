@@ -7,22 +7,26 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"sync"
 
 	"github.com/nemesis398/skra/internal/config"
 	webassets "github.com/nemesis398/skra/web"
 )
-
-// Deps are the collaborators the handlers use. Later tasks add the CUPS
-// client, the store and the printer query.
-type Deps struct{}
 
 // Server holds the page templates and the per-process token.
 type Server struct {
 	cfg    config.Config
 	deps   Deps
 	token  string
-	layout *template.Template
+	tpl    *template.Template
 	static http.Handler
+	hub    *Hub
+
+	// pollMu guards the poll state: the tick count and the last good data.
+	pollMu   sync.Mutex
+	ticks    int
+	haveDone bool
+	good     Snapshot
 }
 
 // New builds a Server with a fresh token. The templates are embedded, so a
@@ -32,13 +36,15 @@ func New(cfg config.Config, deps Deps) *Server {
 	if err != nil {
 		panic(err)
 	}
-	return &Server{
+	s := &Server{
 		cfg:    cfg,
 		deps:   deps,
 		token:  NewToken(),
-		layout: template.Must(template.ParseFS(webassets.Assets, "templates/*.html")),
+		tpl:    template.Must(template.ParseFS(webassets.Assets, "templates/*.html")),
 		static: http.StripPrefix("/static/", http.FileServer(http.FS(static))),
 	}
+	s.hub = NewHub(s.tickPoll, pollEvery)
+	return s
 }
 
 // Handler returns the routes behind the request guard.
@@ -46,14 +52,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /static/", s.static)
 	mux.HandleFunc("GET /{$}", s.page)
+	mux.HandleFunc("GET /events", s.events)
 	_, port, _ := net.SplitHostPort(s.cfg.Listen) // an empty port matches no Host: closed
 	return Guard(mux, port, s.token)
-}
-
-func (s *Server) page(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	if err := s.layout.ExecuteTemplate(w, "layout.html", struct{ Token string }{s.token}); err != nil {
-		http.Error(w, "Could not render the page.", http.StatusInternalServerError)
-	}
 }

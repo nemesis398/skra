@@ -16,16 +16,15 @@
     <a class="tab hist" id="tab-history" href="#history">History</a>
     <a class="tab" href="http://localhost:631/admin">CUPS <i class="ext">&#xF03CC;</i></a>
     <div class="spacer"></div>
-    <div class="stat warn" id="need" hidden></div>
+    {{template "need" .V}}
     <div class="stat clock" id="clock"></div>
   </nav>
 
-  <main id="main"></main>
+  <main id="main">
+{{template "overview" .V}}
+  </main>
 
-  <footer class="foot">
-    <span class="msg" id="msg"></span>
-    <span id="fresh"></span>
-  </footer>
+  {{template "foot" .V}}
 </div>
 <script src="/static/skra.js"></script>
 </body>

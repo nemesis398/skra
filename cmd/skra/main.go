@@ -11,6 +11,8 @@ import (
 
 	"github.com/nemesis398/skra/internal/activation"
 	"github.com/nemesis398/skra/internal/config"
+	"github.com/nemesis398/skra/internal/cups"
+	"github.com/nemesis398/skra/internal/store"
 	"github.com/nemesis398/skra/internal/web"
 )
 
@@ -26,11 +28,16 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	db, err := store.Open(cfg.StateDir)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
 	ln, activated, err := activation.Listener(cfg.Listen)
 	if err != nil {
 		return err
 	}
 	log.Printf("listening on %s (socket-activated: %t)", ln.Addr(), activated)
 
-	return http.Serve(ln, web.New(cfg, web.Deps{}).Handler())
+	return http.Serve(ln, web.New(cfg, web.Deps{CUPS: cups.New(cfg.CUPSSocket, cfg.User), Store: db}).Handler())
 }

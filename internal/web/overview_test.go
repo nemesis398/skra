@@ -1,0 +1,456 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+package web
+
+import (
+	"bufio"
+	"context"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/nemesis398/skra/internal/config"
+	"github.com/nemesis398/skra/internal/cups"
+)
+
+// fakeCUPS is a CUPS whose answers a test sets and changes.
+type fakeCUPS struct {
+	mu       sync.Mutex
+	printers []cups.Printer
+	def      string
+	active   []cups.Job
+	done     []cups.Job
+	err      error
+	calls    int
+}
+
+func (f *fakeCUPS) set(fn func(*fakeCUPS)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	fn(f)
+}
+
+func (f *fakeCUPS) Printers(context.Context) ([]cups.Printer, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	return f.printers, f.err
+}
+
+func (f *fakeCUPS) Default(context.Context) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.def, f.err
+}
+
+func (f *fakeCUPS) Jobs(_ context.Context, which string, _ int) ([]cups.Job, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if which == "completed" {
+		return f.done, f.err
+	}
+	return f.active, f.err
+}
+
+func serverFor(f *fakeCUPS) *Server {
+	return New(config.Config{Listen: "127.0.0.1:7631", User: "mika"}, Deps{CUPS: f})
+}
+
+func pageFor(t *testing.T, f *fakeCUPS) string {
+	t.Helper()
+	rec := get(serverFor(f).Handler(), "/")
+	if rec.Code != 200 {
+		t.Fatalf("GET /: status %d: %s", rec.Code, rec.Body.String())
+	}
+	return rec.Body.String()
+}
+
+func brother() cups.Printer {
+	return cups.Printer{
+		Name: "Virtual-MFC", Info: "Brother MFC-L2710DW", Location: "Study",
+		DeviceURI: "ipp://printer.local/ipp/print", MakeModel: "Brother MFC, driverless", State: 3,
+		Markers: []cups.Marker{
+			{Name: "Black", Color: "#000000", Level: 68, Low: 10},
+			{Name: "Cyan", Color: "#00FFFF", Level: 48, Low: 10},
+			{Name: "Magenta", Color: "#FF00FF", Level: 6, Low: 10},
+			{Name: "Yellow", Color: "#FFFF00", Level: 12, Low: 10},
+		},
+		MarkersAt: time.Now().Add(-time.Hour),
+	}
+}
+
+func TestOverviewShowsPrintersQueueAndRecent(t *testing.T) {
+	now := time.Now()
+	f := &fakeCUPS{
+		printers: []cups.Printer{brother()},
+		def:      "Virtual-MFC",
+		active: []cups.Job{
+			{ID: 12, Name: "Invoice.pdf", Printer: "Virtual-MFC", State: 5, Sheets: 1, Created: now},
+			{ID: 13, Name: "Held.pdf", Printer: "Virtual-MFC", State: 4, Created: now},
+		},
+		done: []cups.Job{
+			{ID: 9, Name: "Old.pdf", Printer: "Virtual-MFC", State: 9, Sheets: 2, Completed: now.Add(-time.Hour)},
+			{ID: 8, Name: "Broken.pdf", Printer: "Virtual-MFC", State: 8, Message: "paper jam", Completed: now.Add(-2 * time.Hour)},
+		},
+	}
+	body := pageFor(t, f)
+	for _, want := range []string{
+		"Brother MFC-L2710DW", "default", "ready", "Study",
+		`<span class="k">B</span>`, `<span class="k">C</span>`, "68 %", "48 %",
+		`class="c low"`, // Magenta at 6 % is below its low mark of 10
+		"print a file", "drop a PDF here",
+		"Invoice.pdf", "printing · sheet 2", "held · waits for you",
+		"Old.pdf", "printed", "Broken.pdf", "failed · paper jam",
+		"1 held", // the bar says what needs you
+		`href="http://localhost:631/printers/Virtual-MFC"`,
+		"CUPS answers", "updated ",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("page lacks %q", want)
+		}
+	}
+}
+
+func TestOverviewEscapesNames(t *testing.T) {
+	f := &fakeCUPS{
+		printers: []cups.Printer{brother()},
+		active:   []cups.Job{{ID: 1, Name: "<b>Fußball</b>", Printer: "Virtual-MFC", State: 3}},
+	}
+	body := pageFor(t, f)
+	const want = "&lt;b&gt;Fußball&lt;/b&gt;"
+	if n := strings.Count(body, want); n != 1 {
+		t.Errorf("escaped job name appears %d times, want 1", n)
+	}
+	if strings.Contains(body, "<b>Fußball") {
+		t.Error("job name reached the page unescaped")
+	}
+}
+
+func TestOverviewEncodesQueueNameInLinks(t *testing.T) {
+	p := brother()
+	p.Name = "A b/c"
+	body := pageFor(t, &fakeCUPS{printers: []cups.Printer{p}})
+	if !strings.Contains(body, `href="http://localhost:631/printers/A%20b%2Fc"`) {
+		t.Errorf("CUPS link does not encode the queue name:\n%s", body)
+	}
+}
+
+func TestOverviewCUPSDown(t *testing.T) {
+	f := &fakeCUPS{err: errors.New("dial unix /run/cups/cups.sock: no such file or directory")}
+	rec := get(serverFor(f).Handler(), "/")
+	if rec.Code != 200 {
+		t.Fatalf("status %d, want 200 while CUPS is down", rec.Code)
+	}
+	body := rec.Body.String()
+	foot := body[strings.Index(body, `<footer`):]
+	if !strings.Contains(foot, "CUPS does not answer") {
+		t.Errorf("footer lacks the failure:\n%s", foot)
+	}
+	if !strings.Contains(foot, `class="msg bad"`) {
+		t.Error("the failure is not marked bad")
+	}
+}
+
+func TestOverviewKeepsLastGoodDataWhileCUPSIsDown(t *testing.T) {
+	f := &fakeCUPS{printers: []cups.Printer{brother()}}
+	s := serverFor(f)
+	if rec := get(s.Handler(), "/"); !strings.Contains(rec.Body.String(), "Brother MFC-L2710DW") {
+		t.Fatal("first page lacks the printer")
+	}
+	f.set(func(f *fakeCUPS) { f.err = errors.New("boom") })
+	body := get(s.Handler(), "/").Body.String()
+	if !strings.Contains(body, "Brother MFC-L2710DW") || !strings.Contains(body, "CUPS does not answer") {
+		t.Error("a failed poll should keep the last printers and say CUPS does not answer")
+	}
+}
+
+func TestOverviewWithoutACUPSClient(t *testing.T) {
+	rec := get(newTestServer().Handler(), "/")
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "CUPS does not answer") {
+		t.Errorf("status %d, body lacks the CUPS failure", rec.Code)
+	}
+}
+
+func TestOverviewOddMarkers(t *testing.T) {
+	none := brother()
+	none.Name, none.Info, none.Markers, none.MarkersAt = "None", "No ink printer", nil, time.Time{}
+
+	unknown := brother()
+	unknown.Name, unknown.Info = "Unknown", "Unknown levels"
+	unknown.Markers = []cups.Marker{{Level: -1, Low: -1}, {Level: -3, Low: -1}}
+
+	six := brother()
+	six.Name, six.Info = "Six", "Six markers"
+	six.Markers = nil
+	for range 6 {
+		six.Markers = append(six.Markers, cups.Marker{Level: 50, Low: -1})
+	}
+
+	odd := brother()
+	odd.Name, odd.Info = "Odd", "Odd colors"
+	odd.Markers = []cups.Marker{{Name: "Black", Color: "not a color", Level: 10, Low: 5}, {Color: "javascript:alert(1)", Level: 20, Low: 5}}
+
+	body := pageFor(t, &fakeCUPS{printers: []cups.Printer{none, unknown, six, odd}})
+
+	if n := strings.Count(body, `<span class="v">·</span>`); n != 2 {
+		t.Errorf("levels below 0 render · %d times, want 2", n)
+	}
+	for _, label := range []string{"#1", "#2", "#3", "#4", "#5", "#6"} {
+		if !strings.Contains(body, `<span class="k">`+label+`</span>`) {
+			t.Errorf("missing label %s", label)
+		}
+	}
+	if !strings.Contains(body, "no ink levels reported yet") {
+		t.Error("a printer without markers should say so")
+	}
+	if strings.Contains(body, "javascript:") || strings.Contains(body, "not a color") || strings.Contains(body, "ZgotmplZ") {
+		t.Error("an odd marker color leaked into the page")
+	}
+}
+
+func TestOverviewAwayIsNotRed(t *testing.T) {
+	p := brother()
+	p.Reasons = []string{"offline-report"}
+	body := pageFor(t, &fakeCUPS{printers: []cups.Printer{p}})
+	if !strings.Contains(body, `class="pr away"`) || !strings.Contains(body, `class="st away"`) {
+		t.Error("an unreachable printer should render class away")
+	}
+	if !strings.Contains(body, "away") {
+		t.Error("state word away is missing")
+	}
+	if strings.Contains(body, "bad") {
+		t.Error("an unreachable printer must never render class bad")
+	}
+}
+
+func TestOverviewStateWords(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		mod     func(*cups.Printer)
+		word    string
+		class   string
+		needBar bool
+	}{
+		{"ready", func(p *cups.Printer) {}, "ready", "st", false},
+		{"printing", func(p *cups.Printer) { p.State = 4 }, "printing", "st", false},
+		{"paused", func(p *cups.Printer) { p.State = 5 }, "paused", "st need", true},
+		{"out of paper", func(p *cups.Printer) { p.Reasons = []string{"media-empty-error"} }, "out of paper", "st need", true},
+		{"jam", func(p *cups.Printer) { p.Reasons = []string{"media-jam-report"} }, "paper jam", "st need", true},
+		{"other error", func(p *cups.Printer) { p.Reasons = []string{"toner-low-warning", "cover-open-error"} }, "cover open", "st bad", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := brother()
+			tc.mod(&p)
+			body := pageFor(t, &fakeCUPS{printers: []cups.Printer{p}})
+			if !strings.Contains(body, `class="`+tc.class+`">`) || !strings.Contains(body, tc.word) {
+				t.Errorf("want class %q and word %q in:\n%s", tc.class, tc.word, body)
+			}
+			if got := strings.Contains(body, "needs you"); got != tc.needBar {
+				t.Errorf("bar says needs you = %t, want %t", got, tc.needBar)
+			}
+		})
+	}
+}
+
+func TestPollRefreshesFinishedJobsWhenTheQueueChanges(t *testing.T) {
+	f := &fakeCUPS{printers: []cups.Printer{brother()}}
+	s := serverFor(f)
+	ctx := context.Background()
+	s.poll(ctx, false) // the first poll fetches the completed jobs too
+
+	// Only the finished list changes: it is not refetched until the fifth poll.
+	f.set(func(f *fakeCUPS) { f.done = []cups.Job{{ID: 1, State: 9}} })
+	if got := s.poll(ctx, false); len(got.Done) != 0 {
+		t.Errorf("completed jobs refetched on an ordinary poll: %+v", got.Done)
+	}
+
+	// A job leaves the queue: the completed list is fetched at once.
+	f.set(func(f *fakeCUPS) { f.active = []cups.Job{{ID: 2, State: 5}} })
+	s.poll(ctx, false)
+	f.set(func(f *fakeCUPS) { f.active = nil; f.done = []cups.Job{{ID: 2, State: 9}, {ID: 1, State: 9}} })
+	if got := s.poll(ctx, false); len(got.Done) != 2 {
+		t.Errorf("a job ended but the completed list was not refreshed: %+v", got.Done)
+	}
+}
+
+// --- /events ---
+
+type sseClient struct {
+	resp   *http.Response
+	cancel context.CancelFunc
+	r      *bufio.Reader
+}
+
+func openEvents(t *testing.T, ts *httptest.Server) *sseClient {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	req, _ := http.NewRequestWithContext(ctx, "GET", ts.URL+"/events", nil)
+	req.Host = "localhost:7631"
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	c := &sseClient{resp: resp, cancel: cancel, r: bufio.NewReader(resp.Body)}
+	t.Cleanup(c.close)
+	return c
+}
+
+func (c *sseClient) close() {
+	c.cancel()
+	io.Copy(io.Discard, c.resp.Body)
+	c.resp.Body.Close()
+}
+
+// event reads one event and returns its name and data lines joined by newline.
+func (c *sseClient) event(t *testing.T) (name, data string) {
+	t.Helper()
+	type result struct{ name, data string }
+	ch := make(chan result, 1)
+	go func() {
+		var r result
+		var lines []string
+		for {
+			line, err := c.r.ReadString('\n')
+			if err != nil {
+				ch <- result{}
+				return
+			}
+			line = strings.TrimRight(line, "\n")
+			switch {
+			case line == "":
+				r.data = strings.Join(lines, "\n")
+				ch <- r
+				return
+			case strings.HasPrefix(line, "event: "):
+				r.name = strings.TrimPrefix(line, "event: ")
+			case strings.HasPrefix(line, "data: "):
+				lines = append(lines, strings.TrimPrefix(line, "data: "))
+			}
+		}
+	}()
+	select {
+	case r := <-ch:
+		if r.name == "" {
+			t.Fatal("stream ended")
+		}
+		return r.name, r.data
+	case <-time.After(2 * time.Second):
+		t.Fatal("no event within 2 s")
+	}
+	return "", ""
+}
+
+func TestEventsSendsFullSnapshotOnConnect(t *testing.T) {
+	f := &fakeCUPS{
+		printers: []cups.Printer{brother()},
+		active:   []cups.Job{{ID: 1, Name: "Held.pdf", Printer: "Virtual-MFC", State: 4}},
+	}
+	old := pollEvery
+	pollEvery = time.Hour
+	defer func() { pollEvery = old }()
+	s := serverFor(f)
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+
+	c := openEvents(t, ts)
+	if ct := c.resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/event-stream") {
+		t.Errorf("Content-Type %q", ct)
+	}
+	if cc := c.resp.Header.Get("Cache-Control"); cc != "no-store" {
+		t.Errorf("Cache-Control %q, want no-store", cc)
+	}
+	if c.resp.Header.Get("X-Frame-Options") != "DENY" {
+		t.Error("the stream lacks the guard's headers")
+	}
+	got := map[string]string{}
+	for range 5 {
+		name, data := c.event(t)
+		got[name] = data
+	}
+	for _, name := range []string{"printers", "queue", "recent", "need", "foot"} {
+		if _, ok := got[name]; !ok {
+			t.Errorf("no %q event on connect", name)
+		}
+	}
+	if !strings.Contains(got["printers"], "Brother MFC-L2710DW") || !strings.Contains(got["queue"], "Held.pdf") ||
+		!strings.Contains(got["need"], "1 held") || !strings.Contains(got["foot"], "updated ") {
+		t.Errorf("fragments are missing content: %+v", got)
+	}
+	if !strings.Contains(got["printers"], "\n") {
+		t.Error("expected a multi-line fragment to test the data framing")
+	}
+
+	// A second tab joins the same poller and gets the whole state at once.
+	c2 := openEvents(t, ts)
+	for range 5 {
+		c2.event(t)
+	}
+	if n := s.hub.Subscribers(); n != 2 {
+		t.Errorf("Subscribers() = %d, want 2", n)
+	}
+}
+
+func TestEventsPushesChangesAndStopsPolling(t *testing.T) {
+	f := &fakeCUPS{printers: []cups.Printer{brother()}}
+	old := pollEvery
+	pollEvery = 10 * time.Millisecond
+	defer func() { pollEvery = old }()
+	s := serverFor(f)
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+
+	c := openEvents(t, ts)
+	for range 5 {
+		c.event(t)
+	}
+	f.set(func(f *fakeCUPS) {
+		f.active = []cups.Job{{ID: 7, Name: "Fresh.pdf", Printer: "Virtual-MFC", State: 5}}
+	})
+	for {
+		name, data := c.event(t)
+		if name == "queue" && strings.Contains(data, "Fresh.pdf") {
+			break
+		}
+	}
+
+	c.close()
+	deadline := time.Now().Add(time.Second)
+	for s.hub.Subscribers() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the subscriber did not leave after the client closed")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	time.Sleep(30 * time.Millisecond)
+	f.mu.Lock()
+	before := f.calls
+	f.mu.Unlock()
+	time.Sleep(60 * time.Millisecond)
+	f.mu.Lock()
+	after := f.calls
+	f.mu.Unlock()
+	if before != after {
+		t.Errorf("CUPS was polled %d times with nobody watching", after-before)
+	}
+}
+
+func TestEventsRejectsAForeignHost(t *testing.T) {
+	ts := httptest.NewServer(serverFor(&fakeCUPS{}).Handler())
+	t.Cleanup(ts.Close)
+	req, _ := http.NewRequest("GET", ts.URL+"/events", nil)
+	req.Host = "evil.example:7631"
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 403 {
+		t.Errorf("status %d, want 403", resp.StatusCode)
+	}
+}
