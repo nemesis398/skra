@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/nemesis398/skra/internal/ipp"
+	"github.com/nemesis398/skra/internal/ipp/ipptest"
 )
 
 // seen is what a fake CUPS got: the path, the decoded request and the bytes
@@ -41,9 +42,9 @@ func capture(t *testing.T, jobID int) (*Client, *seen) {
 		if i := strings.IndexByte(string(body), byte(ipp.GroupEnd)); i >= 0 {
 			got.doc = string(body[i+1:])
 		}
-		m := newWire(0)
+		m := ipptest.NewWire(0)
 		if jobID != 0 {
-			m.group(ipp.GroupJob).num(ipp.TagInteger, "job-id", jobID)
+			m.Group(ipp.GroupJob).Num(ipp.TagInteger, "job-id", jobID)
 		}
 		reply(w, m)
 	})
@@ -100,7 +101,7 @@ func TestJobOpsUseTheirOperation(t *testing.T) {
 
 func TestJobOpReturnsTheCUPSMessage(t *testing.T) {
 	sock := fake(t, func(w http.ResponseWriter, r *http.Request) {
-		reply(w, newWire(0x0407).str(ipp.TagText, "status-message", "Job #7 is already canceled - can't cancel."))
+		reply(w, ipptest.NewWire(0x0407).Str(ipp.TagText, "status-message", "Job #7 is already canceled - can't cancel."))
 	})
 	err := New(sock, "mika").Cancel(context.Background(), 7)
 	if err == nil || err.Error() != "Job #7 is already canceled - can't cancel." {

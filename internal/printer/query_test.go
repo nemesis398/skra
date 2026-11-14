@@ -4,7 +4,6 @@ package printer
 
 import (
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -19,62 +18,18 @@ import (
 	"time"
 
 	"github.com/nemesis398/skra/internal/ipp"
+	"github.com/nemesis398/skra/internal/ipp/ipptest"
 )
-
-// wire builds an IPP response by hand, because package ipp only encodes requests.
-type wire struct{ b []byte }
-
-func newWire(status uint16) *wire {
-	w := &wire{b: []byte{2, 0, byte(status >> 8), byte(status), 0, 0, 0, 1}}
-	return w.group(ipp.GroupOperation).
-		attr(ipp.TagCharset, "attributes-charset", []byte("utf-8")).
-		attr(ipp.TagLanguage, "attributes-natural-language", []byte("en"))
-}
-
-func (w *wire) group(g ipp.Group) *wire { w.b = append(w.b, byte(g)); return w }
-
-func (w *wire) attr(tag ipp.Tag, name string, v []byte) *wire {
-	w.b = append(w.b, byte(tag))
-	w.b = binary.BigEndian.AppendUint16(w.b, uint16(len(name)))
-	w.b = append(w.b, name...)
-	w.b = binary.BigEndian.AppendUint16(w.b, uint16(len(v)))
-	w.b = append(w.b, v...)
-	return w
-}
-
-func (w *wire) str(tag ipp.Tag, name string, vs ...string) *wire {
-	for i, v := range vs {
-		n := name
-		if i > 0 {
-			n = ""
-		}
-		w.attr(tag, n, []byte(v))
-	}
-	return w
-}
-
-func (w *wire) num(tag ipp.Tag, name string, vs ...int) *wire {
-	for i, v := range vs {
-		n := name
-		if i > 0 {
-			n = ""
-		}
-		w.attr(tag, n, binary.BigEndian.AppendUint32(nil, uint32(int32(v))))
-	}
-	return w
-}
-
-func (w *wire) bytes() []byte { return append(append([]byte(nil), w.b...), byte(ipp.GroupEnd)) }
 
 // inkAnswer is what a four-cartridge printer sends.
 func inkAnswer() []byte {
-	return newWire(0).group(ipp.GroupPrinter).
-		str(ipp.TagName, "marker-names", "Black", "Cyan", "Magenta", "Yellow").
-		num(ipp.TagInteger, "marker-levels", 68, 48, 6, 12).
-		str(ipp.TagName, "marker-colors", "#000000", "#00FFFF", "#FF00FF", "#FFFF00").
-		str(ipp.TagKeyword, "marker-types", "ink-cartridge", "ink-cartridge", "ink-cartridge", "ink-cartridge").
-		str(ipp.TagKeyword, "printer-state-reasons", "marker-supply-low-report", "media-empty-warning").
-		str(ipp.TagText, "printer-state-message", "Sleeping").bytes()
+	return ipptest.NewWire(0).Group(ipp.GroupPrinter).
+		Str(ipp.TagName, "marker-names", "Black", "Cyan", "Magenta", "Yellow").
+		Num(ipp.TagInteger, "marker-levels", 68, 48, 6, 12).
+		Str(ipp.TagName, "marker-colors", "#000000", "#00FFFF", "#FF00FF", "#FFFF00").
+		Str(ipp.TagKeyword, "marker-types", "ink-cartridge", "ink-cartridge", "ink-cartridge", "ink-cartridge").
+		Str(ipp.TagKeyword, "printer-state-reasons", "marker-supply-low-report", "media-empty-warning").
+		Str(ipp.TagText, "printer-state-message", "Sleeping").Bytes()
 }
 
 func ippServer(t *testing.T, h http.HandlerFunc) *httptest.Server {
@@ -145,9 +100,9 @@ func TestQueryReadsMarkers(t *testing.T) {
 
 func TestQueryUnevenMarkerLists(t *testing.T) {
 	// A Brother MFC sends levels and types but no names.
-	b := newWire(0).group(ipp.GroupPrinter).
-		num(ipp.TagInteger, "marker-levels", 50, 40).
-		str(ipp.TagKeyword, "marker-types", "toner", "toner", "opc").bytes()
+	b := ipptest.NewWire(0).Group(ipp.GroupPrinter).
+		Num(ipp.TagInteger, "marker-levels", 50, 40).
+		Str(ipp.TagKeyword, "marker-types", "toner", "toner", "opc").Bytes()
 	s := ippServer(t, answer(b))
 	live := Query(context.Background(), "ipp://"+s.Listener.Addr().String()+"/", nil)
 	if !live.Reachable || len(live.Markers) != 3 || live.Markers[2].Level != -1 || live.Markers[0].Name != "" {
@@ -198,7 +153,7 @@ func TestQueryTimeoutIsTwoSeconds(t *testing.T) {
 }
 
 func TestQueryFailuresAreAway(t *testing.T) {
-	refused := newWire(0x0406).bytes() // client-error-not-found
+	refused := ipptest.NewWire(0x0406).Bytes() // client-error-not-found
 	for name, h := range map[string]http.HandlerFunc{
 		"ipp error":   answer(refused),
 		"html":        answer([]byte("<html>nope</html>")),

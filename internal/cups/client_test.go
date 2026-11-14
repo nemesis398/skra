@@ -4,7 +4,6 @@ package cups
 
 import (
 	"context"
-	"encoding/binary"
 	"io"
 	"net"
 	"net/http"
@@ -16,60 +15,8 @@ import (
 	"time"
 
 	"github.com/nemesis398/skra/internal/ipp"
+	"github.com/nemesis398/skra/internal/ipp/ipptest"
 )
-
-// wire builds an IPP response by hand, because package ipp only encodes requests.
-type wire struct{ b []byte }
-
-func newWire(status uint16) *wire {
-	w := &wire{b: []byte{2, 0, byte(status >> 8), byte(status), 0, 0, 0, 1}}
-	return w.group(ipp.GroupOperation).
-		attr(ipp.TagCharset, "attributes-charset", []byte("utf-8")).
-		attr(ipp.TagLanguage, "attributes-natural-language", []byte("en"))
-}
-
-func (w *wire) group(g ipp.Group) *wire { w.b = append(w.b, byte(g)); return w }
-
-func (w *wire) attr(tag ipp.Tag, name string, v []byte) *wire {
-	w.b = append(w.b, byte(tag))
-	w.b = binary.BigEndian.AppendUint16(w.b, uint16(len(name)))
-	w.b = append(w.b, name...)
-	w.b = binary.BigEndian.AppendUint16(w.b, uint16(len(v)))
-	w.b = append(w.b, v...)
-	return w
-}
-
-func (w *wire) str(tag ipp.Tag, name string, vs ...string) *wire {
-	for i, v := range vs {
-		n := name
-		if i > 0 {
-			n = ""
-		}
-		w.attr(tag, n, []byte(v))
-	}
-	return w
-}
-
-func (w *wire) num(tag ipp.Tag, name string, vs ...int) *wire {
-	for i, v := range vs {
-		n := name
-		if i > 0 {
-			n = ""
-		}
-		w.attr(tag, n, binary.BigEndian.AppendUint32(nil, uint32(int32(v))))
-	}
-	return w
-}
-
-func (w *wire) boolean(name string, v bool) *wire {
-	b := byte(0)
-	if v {
-		b = 1
-	}
-	return w.attr(ipp.TagBoolean, name, []byte{b})
-}
-
-func (w *wire) bytes() []byte { return append(append([]byte(nil), w.b...), byte(ipp.GroupEnd)) }
 
 // fake is a CUPS stand-in on a unix socket. Socket paths are limited to about
 // 108 bytes, so the directory is short and lives under os.TempDir.
@@ -92,9 +39,9 @@ func fake(t *testing.T, h http.HandlerFunc) string {
 	return sock
 }
 
-func reply(w http.ResponseWriter, m *wire) {
+func reply(w http.ResponseWriter, m *ipptest.Wire) {
 	w.Header().Set("Content-Type", "application/ipp")
-	w.Write(m.bytes())
+	w.Write(m.Bytes())
 }
 
 func TestDoSendsPeerCredAndUser(t *testing.T) {
@@ -103,7 +50,7 @@ func TestDoSendsPeerCredAndUser(t *testing.T) {
 	sock := fake(t, func(w http.ResponseWriter, r *http.Request) {
 		gotAuth, gotType, gotPath = r.Header.Get("Authorization"), r.Header.Get("Content-Type"), r.URL.Path
 		gotBody, _ = io.ReadAll(r.Body)
-		reply(w, newWire(0))
+		reply(w, ipptest.NewWire(0))
 	})
 	c := New(sock, "mika")
 	req := ipp.NewRequest(ipp.OpGetPrinterAttributes).Op(ipp.URI("printer-uri", "ipp://localhost/"))
@@ -132,7 +79,7 @@ func TestDoStreamsTheDocumentAfterTheRequest(t *testing.T) {
 	var gotBody []byte
 	sock := fake(t, func(w http.ResponseWriter, r *http.Request) {
 		gotBody, _ = io.ReadAll(r.Body)
-		reply(w, newWire(0))
+		reply(w, ipptest.NewWire(0))
 	})
 	c := New(sock, "mika")
 	if _, err := c.Do(context.Background(), "/printers/x", ipp.NewRequest(ipp.OpPrintJob), strings.NewReader("%PDF-doc")); err != nil {
@@ -179,7 +126,7 @@ func TestDoMapsHTTPErrors(t *testing.T) {
 
 func TestDoReturnsIPPStatusErrors(t *testing.T) {
 	sock := fake(t, func(w http.ResponseWriter, r *http.Request) {
-		reply(w, newWire(ipp.StatusNotFound).str(ipp.TagText, "status-message", "The printer or class does not exist."))
+		reply(w, ipptest.NewWire(ipp.StatusNotFound).Str(ipp.TagText, "status-message", "The printer or class does not exist."))
 	})
 	_, err := New(sock, "mika").Do(context.Background(), "/", ipp.NewRequest(ipp.OpGetPrinterAttributes), nil)
 	se, ok := err.(*ipp.StatusError)
@@ -194,38 +141,38 @@ func TestPrintersParses(t *testing.T) {
 		body, _ := io.ReadAll(r.Body)
 		req, _ := ipp.Decode(body)
 		asked = req.Of(ipp.GroupOperation)[0].Strings("requested-attributes")
-		reply(w, newWire(0).
-			group(ipp.GroupPrinter).
-			str(ipp.TagName, "printer-name", "Zeta").
-			num(ipp.TagEnum, "printer-state", 3).
-			group(ipp.GroupPrinter).
-			str(ipp.TagName, "printer-name", "Brother-MFC-J6975DW").
-			str(ipp.TagText, "printer-info", "Brother").
-			str(ipp.TagText, "printer-location", "Study").
-			str(ipp.TagText, "printer-make-and-model", "Brother MFC").
-			str(ipp.TagURI, "device-uri", "ipp://192.168.1.5/ipp/print").
-			str(ipp.TagText, "printer-state-message", "Idle").
-			str(ipp.TagKeyword, "printer-state-reasons", "none", "marker-supply-low-warning").
-			num(ipp.TagEnum, "printer-state", 4).
-			num(ipp.TagInteger, "queued-job-count", 2).
-			boolean("printer-is-accepting-jobs", true).
-			boolean("printer-is-shared", false).
-			str(ipp.TagKeyword, "sides-supported", "one-sided", "two-sided-long-edge").
-			str(ipp.TagKeyword, "sides-default", "two-sided-long-edge").
-			str(ipp.TagKeyword, "print-color-mode-supported", "color", "monochrome").
-			str(ipp.TagKeyword, "print-color-mode-default", "color").
-			str(ipp.TagKeyword, "media-supported", "iso_a4_210x297mm", "na_letter_8.5x11in").
-			str(ipp.TagKeyword, "media-default", "iso_a4_210x297mm").
-			num(ipp.TagEnum, "print-quality-supported", 3, 4, 5).
-			num(ipp.TagEnum, "print-quality-default", 4).
-			str(ipp.TagName, "printer-error-policy", "retry-job").
-			str(ipp.TagName, "printer-error-policy-supported", "retry-job", "abort-job").
-			str(ipp.TagKeyword, "printer-commands", "Clean", "PrintSelfTestPage").
-			num(ipp.TagInteger, "marker-levels", 80, 5, -3, 40).
-			str(ipp.TagKeyword, "marker-colors", "#000000", "#00FFFF", "#FF00FF", "#FFFF00").
-			str(ipp.TagKeyword, "marker-types", "toner", "toner", "toner", "toner").
-			num(ipp.TagInteger, "marker-low-levels", 10, 10, 10, 10).
-			num(ipp.TagInteger, "marker-change-time", 1700000000))
+		reply(w, ipptest.NewWire(0).
+			Group(ipp.GroupPrinter).
+			Str(ipp.TagName, "printer-name", "Zeta").
+			Num(ipp.TagEnum, "printer-state", 3).
+			Group(ipp.GroupPrinter).
+			Str(ipp.TagName, "printer-name", "Brother-MFC-J6975DW").
+			Str(ipp.TagText, "printer-info", "Brother").
+			Str(ipp.TagText, "printer-location", "Study").
+			Str(ipp.TagText, "printer-make-and-model", "Brother MFC").
+			Str(ipp.TagURI, "device-uri", "ipp://192.168.1.5/ipp/print").
+			Str(ipp.TagText, "printer-state-message", "Idle").
+			Str(ipp.TagKeyword, "printer-state-reasons", "none", "marker-supply-low-warning").
+			Num(ipp.TagEnum, "printer-state", 4).
+			Num(ipp.TagInteger, "queued-job-count", 2).
+			Boolean("printer-is-accepting-jobs", true).
+			Boolean("printer-is-shared", false).
+			Str(ipp.TagKeyword, "sides-supported", "one-sided", "two-sided-long-edge").
+			Str(ipp.TagKeyword, "sides-default", "two-sided-long-edge").
+			Str(ipp.TagKeyword, "print-color-mode-supported", "color", "monochrome").
+			Str(ipp.TagKeyword, "print-color-mode-default", "color").
+			Str(ipp.TagKeyword, "media-supported", "iso_a4_210x297mm", "na_letter_8.5x11in").
+			Str(ipp.TagKeyword, "media-default", "iso_a4_210x297mm").
+			Num(ipp.TagEnum, "print-quality-supported", 3, 4, 5).
+			Num(ipp.TagEnum, "print-quality-default", 4).
+			Str(ipp.TagName, "printer-error-policy", "retry-job").
+			Str(ipp.TagName, "printer-error-policy-supported", "retry-job", "abort-job").
+			Str(ipp.TagKeyword, "printer-commands", "Clean", "PrintSelfTestPage").
+			Num(ipp.TagInteger, "marker-levels", 80, 5, -3, 40).
+			Str(ipp.TagKeyword, "marker-colors", "#000000", "#00FFFF", "#FF00FF", "#FFFF00").
+			Str(ipp.TagKeyword, "marker-types", "toner", "toner", "toner", "toner").
+			Num(ipp.TagInteger, "marker-low-levels", 10, 10, 10, 10).
+			Num(ipp.TagInteger, "marker-change-time", 1700000000))
 	})
 	ps, err := New(sock, "mika").Printers(context.Background())
 	if err != nil {
@@ -323,7 +270,7 @@ func TestPrinterAsksForOneQueue(t *testing.T) {
 		body, _ := io.ReadAll(r.Body)
 		req, _ := ipp.Decode(body)
 		path, uri = r.URL.EscapedPath(), req.Of(ipp.GroupOperation)[0].String("printer-uri")
-		reply(w, newWire(0).group(ipp.GroupPrinter).str(ipp.TagName, "printer-name", "A b"))
+		reply(w, ipptest.NewWire(0).Group(ipp.GroupPrinter).Str(ipp.TagName, "printer-name", "A b"))
 	})
 	p, err := New(sock, "mika").Printer(context.Background(), "A b")
 	if err != nil || p.Name != "A b" {
@@ -335,7 +282,7 @@ func TestPrinterAsksForOneQueue(t *testing.T) {
 }
 
 func TestPrinterNotFoundAndEmpty(t *testing.T) {
-	sock := fake(t, func(w http.ResponseWriter, r *http.Request) { reply(w, newWire(0)) })
+	sock := fake(t, func(w http.ResponseWriter, r *http.Request) { reply(w, ipptest.NewWire(0)) })
 	if _, err := New(sock, "mika").Printer(context.Background(), "x"); err == nil {
 		t.Error("an answer without a printer group should be an error")
 	}
@@ -343,13 +290,13 @@ func TestPrinterNotFoundAndEmpty(t *testing.T) {
 
 func TestDefault(t *testing.T) {
 	sock := fake(t, func(w http.ResponseWriter, r *http.Request) {
-		reply(w, newWire(0).group(ipp.GroupPrinter).str(ipp.TagName, "printer-name", "Brother"))
+		reply(w, ipptest.NewWire(0).Group(ipp.GroupPrinter).Str(ipp.TagName, "printer-name", "Brother"))
 	})
 	if got, err := New(sock, "mika").Default(context.Background()); err != nil || got != "Brother" {
 		t.Errorf("Default = %q, %v", got, err)
 	}
 	none := fake(t, func(w http.ResponseWriter, r *http.Request) {
-		reply(w, newWire(ipp.StatusNotFound).str(ipp.TagText, "status-message", "No default"))
+		reply(w, ipptest.NewWire(ipp.StatusNotFound).Str(ipp.TagText, "status-message", "No default"))
 	})
 	if got, err := New(none, "mika").Default(context.Background()); err != nil || got != "" {
 		t.Errorf("no default: %q, %v", got, err)
@@ -358,17 +305,17 @@ func TestDefault(t *testing.T) {
 
 func TestJobPrinterName(t *testing.T) {
 	sock := fake(t, func(w http.ResponseWriter, r *http.Request) {
-		reply(w, newWire(0).group(ipp.GroupJob).
-			num(ipp.TagInteger, "job-id", 12).
-			str(ipp.TagName, "job-name", "Karte").
-			num(ipp.TagEnum, "job-state", 9).
-			str(ipp.TagKeyword, "job-state-reasons", "job-completed-successfully").
-			str(ipp.TagURI, "job-printer-uri", "ipp://localhost:631/printers/Brother-MFC-J6975DW").
-			str(ipp.TagText, "job-printer-state-message", "ok").
-			num(ipp.TagInteger, "job-media-sheets-completed", 3).
-			num(ipp.TagInteger, "time-at-creation", 1700000000).
-			num(ipp.TagInteger, "time-at-completed", 1700000060).
-			str(ipp.TagName, "job-originating-user-name", "mika"))
+		reply(w, ipptest.NewWire(0).Group(ipp.GroupJob).
+			Num(ipp.TagInteger, "job-id", 12).
+			Str(ipp.TagName, "job-name", "Karte").
+			Num(ipp.TagEnum, "job-state", 9).
+			Str(ipp.TagKeyword, "job-state-reasons", "job-completed-successfully").
+			Str(ipp.TagURI, "job-printer-uri", "ipp://localhost:631/printers/Brother-MFC-J6975DW").
+			Str(ipp.TagText, "job-printer-state-message", "ok").
+			Num(ipp.TagInteger, "job-media-sheets-completed", 3).
+			Num(ipp.TagInteger, "time-at-creation", 1700000000).
+			Num(ipp.TagInteger, "time-at-completed", 1700000060).
+			Str(ipp.TagName, "job-originating-user-name", "mika"))
 	})
 	js, err := New(sock, "mika").Jobs(context.Background(), "completed", 10)
 	if err != nil || len(js) != 1 {
@@ -405,14 +352,14 @@ func TestJobsRequestAndOrder(t *testing.T) {
 		req, _ := ipp.Decode(body)
 		op = req.Of(ipp.GroupOperation)[0]
 		which = op.String("which-jobs")
-		m := newWire(0)
+		m := ipptest.NewWire(0)
 		if which == "completed" {
-			m.group(ipp.GroupJob).num(ipp.TagInteger, "job-id", 1).num(ipp.TagInteger, "time-at-completed", 100).
-				group(ipp.GroupJob).num(ipp.TagInteger, "job-id", 2).num(ipp.TagInteger, "time-at-completed", 300).
-				group(ipp.GroupJob).num(ipp.TagInteger, "job-id", 3)
+			m.Group(ipp.GroupJob).Num(ipp.TagInteger, "job-id", 1).Num(ipp.TagInteger, "time-at-completed", 100).
+				Group(ipp.GroupJob).Num(ipp.TagInteger, "job-id", 2).Num(ipp.TagInteger, "time-at-completed", 300).
+				Group(ipp.GroupJob).Num(ipp.TagInteger, "job-id", 3)
 		} else {
-			m.group(ipp.GroupJob).num(ipp.TagInteger, "job-id", 7).
-				group(ipp.GroupJob).num(ipp.TagInteger, "job-id", 5)
+			m.Group(ipp.GroupJob).Num(ipp.TagInteger, "job-id", 7).
+				Group(ipp.GroupJob).Num(ipp.TagInteger, "job-id", 5)
 		}
 		reply(w, m)
 	})
