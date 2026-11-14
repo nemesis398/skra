@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -95,15 +96,7 @@ func (s *Server) poll(ctx context.Context, withDone bool) Snapshot {
 }
 
 func sameJobs(a, b []cups.Job) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i].ID != b[i].ID || a[i].State != b[i].State {
-			return false
-		}
-	}
-	return true
+	return slices.EqualFunc(a, b, func(x, y cups.Job) bool { return x.ID == y.ID && x.State == y.State })
 }
 
 // tickPoll is the hub's poll function.
@@ -264,14 +257,7 @@ func printerState(p cups.Printer) (word, class string) {
 		plain = append(plain, reasonSuffix.ReplaceAllString(r, ""))
 	}
 	has := func(names ...string) bool {
-		for _, r := range plain {
-			for _, n := range names {
-				if r == n {
-					return true
-				}
-			}
-		}
-		return false
+		return slices.ContainsFunc(plain, func(r string) bool { return slices.Contains(names, r) })
 	}
 	switch {
 	case has("offline"):
