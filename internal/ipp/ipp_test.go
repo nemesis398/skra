@@ -50,17 +50,24 @@ func TestEncodeGroupOrderAndEmptyGroups(t *testing.T) {
 		Printer(Name("printer-name", "A")).
 		Job(Int("copies", 2)).
 		Encode()
-	i, j := bytes.IndexByte(b[8:], 0x02), bytes.IndexByte(b[8:], 0x04)
-	if i < 0 || j < 0 || i > j {
-		t.Errorf("job group must come before printer group (job at %d, printer at %d)", i, j)
+	resp, err := Decode(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var order []Group
+	for _, g := range resp.Groups {
+		order = append(order, g.Group)
+	}
+	if want := []Group{GroupOperation, GroupJob, GroupPrinter}; !reflect.DeepEqual(order, want) {
+		t.Errorf("group order = %v, want %v", order, want)
 	}
 
 	// No job or printer group: operation group and end only.
 	b = NewRequest(OpCUPSGetPrinters).Encode()
-	if bytes.Count(b, []byte{0x03}) < 1 || b[len(b)-1] != 0x03 {
+	if b[len(b)-1] != 0x03 {
 		t.Fatalf("missing end tag: % x", b)
 	}
-	resp, err := Decode(b)
+	resp, err = Decode(b)
 	if err != nil {
 		t.Fatal(err)
 	}
