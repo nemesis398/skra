@@ -428,7 +428,7 @@ func when(t, now time.Time) string {
 	if t.IsZero() {
 		return "·"
 	}
-	t, now = t.In(now.Location()), now.In(now.Location())
+	t = t.In(now.Location())
 	if t.YearDay() == now.YearDay() && t.Year() == now.Year() {
 		return t.Format("15:04")
 	}
