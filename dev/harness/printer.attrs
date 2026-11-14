@@ -1,0 +1,56 @@
+# ippeveprinter attributes, ipptool file syntax. With -a, ippeveprinter
+# serves only what is listed here (plus a few core attributes), so the file
+# carries everything "lpadmin -m everywhere" needs besides the supplies.
+ATTR text printer-make-and-model "Virtual MFC"
+ATTR text printer-info "Virtual MFC"
+ATTR text printer-device-id "MFG:Virtual;MDL:Virtual MFC;CMD:PWG,URF;"
+
+# Supplies: four inks. The colors are quoted because # starts a comment.
+ATTR name marker-names Black,Cyan,Magenta,Yellow
+ATTR keyword marker-types ink-cartridge,ink-cartridge,ink-cartridge,ink-cartridge
+ATTR name marker-colors "#000000","#00ffff","#ff00ff","#ffff00"
+ATTR integer marker-levels 68,48,56,12
+ATTR integer marker-low-levels 10,10,10,10
+ATTR integer marker-high-levels 100,100,100,100
+
+ATTR boolean color-supported true
+ATTR keyword print-color-mode-supported color,monochrome
+ATTR keyword print-color-mode-default color
+ATTR keyword sides-supported one-sided,two-sided-long-edge,two-sided-short-edge
+ATTR keyword sides-default one-sided
+ATTR integer copies-default 1
+ATTR rangeOfInteger copies-supported 1-99
+ATTR integer pages-per-minute 10
+ATTR integer pages-per-minute-color 8
+ATTR enum print-quality-supported 3,4,5
+ATTR enum print-quality-default 4
+ATTR resolution printer-resolution-supported 600dpi
+ATTR resolution printer-resolution-default 600dpi
+ATTR enum orientation-requested-supported 3
+ATTR enum orientation-requested-default 3
+ATTR boolean page-ranges-supported false
+
+ATTR mimeMediaType document-format-supported application/octet-stream,image/pwg-raster,image/urf
+ATTR mimeMediaType document-format-default application/octet-stream
+ATTR resolution pwg-raster-document-resolution-supported 300dpi,600dpi
+ATTR keyword pwg-raster-document-type-supported black_1,sgray_8,srgb_8
+ATTR keyword pwg-raster-document-sheet-back normal
+ATTR keyword urf-supported CP1,IS1-4-5-19,MT1-2-3-4-5-6,RS600,SRGB24,V1.4,W8,DM1
+
+ATTR keyword media-supported na_letter_8.5x11in,na_legal_8.5x14in,iso_a4_210x297mm,iso_a5_148x210mm
+ATTR keyword media-default iso_a4_210x297mm
+ATTR keyword media-ready iso_a4_210x297mm,na_letter_8.5x11in
+ATTR keyword media-source-supported auto,main,manual
+ATTR keyword media-type-supported auto,stationery,photographic,envelope
+ATTR keyword output-bin-supported face-down
+ATTR keyword output-bin-default face-down
+ATTR integer media-bottom-margin-supported 0,635
+ATTR integer media-left-margin-supported 0,635
+ATTR integer media-right-margin-supported 0,635
+ATTR integer media-top-margin-supported 0,635
+ATTR enum finishings-supported 3
+ATTR enum finishings-default 3
+ATTR keyword print-content-optimize-supported auto
+ATTR keyword print-content-optimize-default auto
+ATTR keyword print-rendering-intent-supported auto
+ATTR keyword print-rendering-intent-default auto

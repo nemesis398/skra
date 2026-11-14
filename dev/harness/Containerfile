@@ -1,0 +1,9 @@
+FROM registry.fedoraproject.org/fedora:44
+RUN dnf -y install cups cups-printerapp cups-filters procps-ng avahi dbus-daemon \
+    && dnf clean all \
+    && mkdir -p /etc/skra /var/spool/skra
+COPY cupsd.conf /etc/cups/cupsd.conf
+COPY printer.attrs /etc/skra/printer.attrs
+COPY entrypoint.sh printer-start /usr/local/bin/
+RUN chmod 0755 /usr/local/bin/entrypoint.sh /usr/local/bin/printer-start
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

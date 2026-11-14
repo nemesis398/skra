@@ -1,4 +1,4 @@
-.PHONY: build test integration run
+.PHONY: build test integration run harness-up harness-down printer-stop printer-start
 
 build:
 	go build -o skra ./cmd/skra
@@ -6,8 +6,20 @@ build:
 test:
 	go test ./...
 
-integration:
+integration: harness-up
 	go test -tags integration ./...
+
+harness-up:
+	./dev/harness.sh up
+
+harness-down:
+	./dev/harness.sh down
+
+printer-stop:
+	./dev/harness.sh printer-stop
+
+printer-start:
+	./dev/harness.sh printer-start
 
 run: build
 	./skra
