@@ -84,6 +84,16 @@ function disconnect() {
   source = null;
 }
 
+// parseList reads the JSON list in a data attribute; a missing or broken one
+// is an empty list.
+function parseList(raw) {
+  try {
+    return JSON.parse(raw || "[]");
+  } catch (err) {
+    return [];
+  }
+}
+
 // --- the confirm dialog ---
 // One floating, framed dialog. It resolves false for the safe button or Escape
 // and gives the focus back to where it was. For a plain confirm it resolves
@@ -178,12 +188,7 @@ async function send(url, body, button) {
 
 async function moveJob(b) {
   const { job } = b.dataset;
-  let targets = [];
-  try {
-    targets = JSON.parse(b.dataset.targets || "[]");
-  } catch (err) {
-    targets = [];
-  }
+  const targets = parseList(b.dataset.targets);
   if (targets.length === 0) return;
   const to = await confirmBox(b.dataset.moveTitle, `Choose the printer to move job ${job} to.`, b.dataset.moveLabel,
     "Keep it here", `[data-act="move"][data-job="${job}"]`, targets.map((t) => [t.name, t.label]), "\u{F0054}");
@@ -246,12 +251,7 @@ function seg(key, choices) {
 function renderOpts() {
   const el = $("opts");
   if (!el) return;
-  let printers = [];
-  try {
-    printers = JSON.parse(el.dataset.printers || "[]");
-  } catch (err) {
-    printers = [];
-  }
+  const printers = parseList(el.dataset.printers);
   if (!printers.some((p) => p.name === opts.printer)) opts.printer = el.dataset.default || printers[0]?.name || "";
   const p = printers.find((x) => x.name === opts.printer);
   if (!p) {
