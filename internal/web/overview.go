@@ -5,6 +5,7 @@ package web
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -91,7 +92,9 @@ func (s *Server) poll(ctx context.Context, withDone bool) Snapshot {
 		s.haveDone = true
 	}
 	snap.At = time.Now()
+	s.goodMu.Lock()
 	s.good = snap
+	s.goodMu.Unlock()
 	return snap
 }
 
@@ -126,7 +129,7 @@ type fragment struct{ event, html string }
 func (s *Server) fragments(snap Snapshot) []fragment {
 	v := s.view(snap)
 	var out []fragment
-	for _, name := range []string{"printers", "queue", "recent", "need", "foot"} {
+	for _, name := range []string{"printers", "opts", "queue", "recent", "need", "foot"} {
 		var buf bytes.Buffer
 		if err := s.tpl.ExecuteTemplate(&buf, name, v); err != nil {
 			continue // a template bug must not end the stream
@@ -148,12 +151,27 @@ type view struct {
 	Msg          string
 	MsgBad       bool
 	Fresh        string
+	// Opts is the JSON the print form is drawn from, and DefaultName the
+	// queue it starts on.
+	Opts        string
+	DefaultName string
+}
+
+// optPrinter is one queue in the print form: what it can do for the
+// choices the form offers.
+type optPrinter struct {
+	Name         string   `json:"name"`
+	Label        string   `json:"label"`
+	Sides        []string `json:"sides"`
+	Color        []string `json:"color"`
+	SidesDefault string   `json:"sidesDefault"`
+	ColorDefault string   `json:"colorDefault"`
 }
 
 type printerView struct {
-	Display, State, Class, Facts, AsOf, Link string
-	Default, Away                            bool
-	Inks                                     []inkView
+	Name, Display, State, Class, Facts, AsOf, Link string
+	Default, Away                                  bool
+	Inks                                           []inkView
 }
 
 type inkView struct {
@@ -165,6 +183,11 @@ type inkView struct {
 type jobView struct {
 	ID                                       int
 	Name, Printer, State, Class, When, Pages string
+	// CanHold and CanRelease say which of the two buttons the row offers. A
+	// job that is printing carries the confirm texts of the dialog that
+	// stands before its cancel.
+	CanHold, CanRelease                     bool
+	ConfirmTitle, ConfirmText, ConfirmLabel string
 }
 
 func (s *Server) view(snap Snapshot) view {
@@ -190,13 +213,16 @@ func (s *Server) view(snap Snapshot) view {
 		}
 		v.Printers = append(v.Printers, pv)
 	}
-	names := map[string]string{}
+	names := shortNames(snap.Printers)
+	opts := make([]optPrinter, 0, len(snap.Printers))
 	for _, p := range snap.Printers {
-		names[p.Name] = p.Name
-		if f := strings.Fields(p.Info); len(f) > 0 {
-			names[p.Name] = f[0]
-		}
+		opts = append(opts, optPrinter{Name: p.Name, Label: names[p.Name], Sides: p.SidesSupported, Color: p.ColorSupported,
+			SidesDefault: p.SidesDefault, ColorDefault: p.ColorDefault})
 	}
+	if raw, err := json.Marshal(opts); err == nil {
+		v.Opts = string(raw)
+	}
+	v.DefaultName = snap.Default
 	for _, j := range snap.Active {
 		if j.State == 4 {
 			held++
@@ -233,6 +259,19 @@ func (s *Server) view(snap Snapshot) view {
 		v.Fresh = fmt.Sprintf("updated %s · every %g s while a page is open", snap.At.Format("15:04:05"), pollEvery.Seconds())
 	}
 	return v
+}
+
+// shortNames maps each queue name to the short name the overview uses for it:
+// the first word of its description, or the queue name when it has none.
+func shortNames(printers []cups.Printer) map[string]string {
+	names := make(map[string]string, len(printers))
+	for _, p := range printers {
+		names[p.Name] = p.Name
+		if f := strings.Fields(p.Info); len(f) > 0 {
+			names[p.Name] = f[0]
+		}
+	}
+	return names
 }
 
 func plural(n int, one, many string) string {
@@ -286,6 +325,7 @@ func printerState(p cups.Printer) (word, class string) {
 func printerCell(p cups.Printer, def string, now time.Time) printerView {
 	word, class := printerState(p)
 	pv := printerView{
+		Name:    p.Name,
 		Display: p.Info,
 		State:   word,
 		Class:   class,
@@ -399,10 +439,16 @@ func jobRow(j cups.Job, names map[string]string, now time.Time, active bool) job
 		jv.State = w
 	}
 	switch j.State {
+	case 3:
+		jv.CanHold = true
 	case 4:
 		jv.State, jv.Class = glyphHeld+" held · waits for you", "held"
+		jv.CanRelease = true
 	case 5:
 		jv.State = fmt.Sprintf("printing · sheet %d", j.Sheets+1)
+		jv.ConfirmTitle = "Cancel " + quoted(jv.Name) + "?"
+		jv.ConfirmText = fmt.Sprintf("It is printing on the %s. The sheet in the printer may still come out.", jv.Printer)
+		jv.ConfirmLabel = fmt.Sprintf("Cancel job %d", j.ID)
 	case 7:
 		jv.Class = "off"
 	case 6, 8:

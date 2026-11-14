@@ -23,10 +23,13 @@ type Server struct {
 	hub    *Hub
 
 	// pollMu guards the poll state: the tick count and the last good data.
+	// good is only written with goodMu held too, so an action can read the
+	// names in it without waiting for a poll that is under way.
 	pollMu   sync.Mutex
 	ticks    int
 	haveDone bool
 	good     Snapshot
+	goodMu   sync.RWMutex
 }
 
 // New builds a Server with a fresh token. The templates are embedded, so a
@@ -53,6 +56,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /static/", s.static)
 	mux.HandleFunc("GET /{$}", s.page)
 	mux.HandleFunc("GET /events", s.events)
+	s.actionRoutes(mux)
 	_, port, _ := net.SplitHostPort(s.cfg.Listen) // an empty port matches no Host: closed
 	return Guard(mux, port, s.token)
 }

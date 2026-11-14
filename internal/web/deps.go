@@ -4,6 +4,7 @@ package web
 
 import (
 	"context"
+	"io"
 
 	"github.com/nemesis398/skra/internal/cups"
 	"github.com/nemesis398/skra/internal/store"
@@ -15,6 +16,14 @@ type CUPS interface {
 	Printers(ctx context.Context) ([]cups.Printer, error)
 	Default(ctx context.Context) (string, error)
 	Jobs(ctx context.Context, which string, limit int) ([]cups.Job, error)
+
+	Hold(ctx context.Context, id int) error
+	Release(ctx context.Context, id int) error
+	Cancel(ctx context.Context, id int) error
+	Restart(ctx context.Context, id int) error
+	Move(ctx context.Context, id int, to string) error
+	Print(ctx context.Context, printer, name, format string, o cups.JobOptions, doc io.Reader) (int, error)
+	PrintTestPage(ctx context.Context, printer string, hold bool) (int, error)
 }
 
 var _ CUPS = (*cups.Client)(nil)

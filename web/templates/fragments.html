@@ -10,11 +10,16 @@
   {{if .Inks}}<div class="ink">{{range .Inks}}<div class="c{{if .Low}} low{{end}}"><span class="k">{{.Label}}</span><span class="meter"><span style="width:{{.Pct}}%"></span></span><span class="v">{{.Value}}</span></div>{{end}}</div>{{end}}
   <div class="asof">{{.AsOf}}</div>
   <div class="acts">
+    <button type="button" class="btn sm" data-act="testpage" data-printer="{{.Name}}"><i>&#xF0219;</i>test page</button>
     <a class="btn sm" href="{{.Link}}"><i>&#xF03CC;</i>CUPS page</a>
   </div></div>
 {{else}}<div class="pr"><div class="facts">{{.NoPrinters}}</div></div>
 {{end}}</div>
 </div>{{end}}
+
+{{/* The print form's choices. skra.js draws the buttons from the JSON in
+     data-printers and keeps what was picked across a swap. */}}
+{{define "opts"}}<div class="opts" id="opts" data-printers="{{.Opts}}" data-default="{{.DefaultName}}"></div>{{end}}
 
 {{define "queue"}}<div id="queue">
 <div class="sec"><b>queue</b><span>· {{.QueueCount}}</span><span class="rule"></span></div>
@@ -22,7 +27,7 @@
   <colgroup><col class="c-id"><col><col class="c-pr"><col class="c-st"><col class="c-t"><col class="c-a"></colgroup>
   <thead><tr><th>job</th><th>name</th><th>printer</th><th>state</th><th class="r">sent</th><th></th></tr></thead>
   <tbody>
-{{range .Queue}}  <tr><td class="jid">{{.ID}}</td><td class="jn">{{.Name}}</td><td class="jp">{{.Printer}}</td><td{{if .Class}} class="{{.Class}}"{{end}}>{{.State}}</td><td class="jt">{{.When}}</td><td class="ja"></td></tr>
+{{range .Queue}}  <tr><td class="jid">{{.ID}}</td><td class="jn">{{.Name}}</td><td class="jp">{{.Printer}}</td><td{{if .Class}} class="{{.Class}}"{{end}}>{{.State}}</td><td class="jt">{{.When}}</td><td class="ja">{{if .CanRelease}}<button type="button" class="btn sm" data-act="release" data-job="{{.ID}}"><i>&#xF040A;</i>release</button>{{end}}{{if .CanHold}}<button type="button" class="btn sm" data-act="hold" data-job="{{.ID}}"><i>&#xF03E4;</i>hold</button>{{end}}<button type="button" class="btn sm" data-act="cancel" data-job="{{.ID}}"{{if .ConfirmText}} data-confirm-title="{{.ConfirmTitle}}" data-confirm="{{.ConfirmText}}" data-confirm-label="{{.ConfirmLabel}}"{{end}}><i>&#xF0156;</i>cancel</button></td></tr>
 {{end}}  </tbody>
 </table>
 {{else}}<div class="empty">Nothing is waiting. Drop a file above to print it.</div>

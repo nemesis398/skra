@@ -27,6 +27,13 @@ type fakeCUPS struct {
 	done     []cups.Job
 	err      error
 	calls    int
+
+	// The actions record what they were asked in acts ("cancel 12"); actErr
+	// is what every action then answers. print stands in for Print.
+	acts    []string
+	actErr  error
+	printed int
+	print   func(printer, name, format string, o cups.JobOptions, doc io.Reader) (int, error)
 }
 
 func (f *fakeCUPS) set(fn func(*fakeCUPS)) {
@@ -369,11 +376,11 @@ func TestEventsSendsFullSnapshotOnConnect(t *testing.T) {
 		t.Error("the stream lacks the guard's headers")
 	}
 	got := map[string]string{}
-	for range 5 {
+	for range 6 {
 		name, data := c.event(t)
 		got[name] = data
 	}
-	for _, name := range []string{"printers", "queue", "recent", "need", "foot"} {
+	for _, name := range []string{"printers", "opts", "queue", "recent", "need", "foot"} {
 		if _, ok := got[name]; !ok {
 			t.Errorf("no %q event on connect", name)
 		}
@@ -388,7 +395,7 @@ func TestEventsSendsFullSnapshotOnConnect(t *testing.T) {
 
 	// A second tab joins the same poller and gets the whole state at once.
 	c2 := openEvents(t, ts)
-	for range 5 {
+	for range 6 {
 		c2.event(t)
 	}
 	if n := s.hub.Subscribers(); n != 2 {
@@ -406,7 +413,7 @@ func TestEventsPushesChangesAndStopsPolling(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	c := openEvents(t, ts)
-	for range 5 {
+	for range 6 {
 		c.event(t)
 	}
 	f.set(func(f *fakeCUPS) {
@@ -524,12 +531,12 @@ func TestEventsSurviveCarriageReturnInJobName(t *testing.T) {
 	ts := httptest.NewServer(serverFor(f).Handler())
 	t.Cleanup(ts.Close)
 	c := openEvents(t, ts)
-	// The reader splits on \n only, so read raw bytes until all five events are in.
+	// The reader splits on \n only, so read raw bytes until all six events are in.
 	var raw strings.Builder
 	deadline := time.Now().Add(2 * time.Second)
-	for len(parseSSE(raw.String())) < 5 {
+	for len(parseSSE(raw.String())) < 6 {
 		if time.Now().After(deadline) {
-			t.Fatalf("fewer than five events:\n%q", raw.String())
+			t.Fatalf("fewer than six events:\n%q", raw.String())
 		}
 		b, err := c.r.ReadByte()
 		if err != nil {
@@ -538,8 +545,8 @@ func TestEventsSurviveCarriageReturnInJobName(t *testing.T) {
 		raw.WriteByte(b)
 	}
 	evs := parseSSE(raw.String())
-	if len(evs) != 5 {
-		t.Fatalf("got %d events, want 5: %+v", len(evs), evs)
+	if len(evs) != 6 {
+		t.Fatalf("got %d events, want 6: %+v", len(evs), evs)
 	}
 	for _, e := range evs {
 		if e.event == "queue" && (!strings.Contains(e.html, "foo") || !strings.Contains(e.html, "bar") || !strings.HasSuffix(strings.TrimSpace(e.html), "</div>")) {

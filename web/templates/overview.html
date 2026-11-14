@@ -1,11 +1,11 @@
-{{/* The overview: the printers and the queue come from fragments.html. The
-     drop zone is static; the upload arrives with the print step. */}}
+{{/* The overview: the printers, the print form's choices and the queue come
+     from fragments.html. The drop zone around the choices is static. */}}
 {{define "overview"}}{{template "printers" .}}
 
 <div class="sec"><b>print a file</b><span class="rule"></span></div>
 <div class="drop" id="drop">
-  <div class="hint"><i>&#xF0226;</i><span><b>drop a PDF here</b> or press <b>o</b> to <button type="button" id="choose" disabled>choose one</button></span></div>
-  <div class="opts" id="opts"></div>
+  <div class="hint"><i>&#xF0226;</i><span><b>drop a PDF here</b> or press <b>o</b> to <button type="button" id="choose">choose one</button></span></div>
+  {{template "opts" .}}
   <input type="file" id="file" accept="application/pdf,image/jpeg,image/png,text/plain" hidden>
 </div>
 
