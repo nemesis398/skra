@@ -46,10 +46,14 @@
 
 {{/* The log section, which skra.js loads from /printers/log when the tab opens
      and again on "refresh log". The level switch is off when cupsd.conf is
-     managed or CUPS does not answer. The lines are text: html/template
-     escapes them. */}}
+     managed or CUPS does not answer. For a user other than root, picking a
+     level opens the password row under the switch, since CUPS takes a change
+     of cupsd.conf only with the login password. The row is no form, so the
+     browser never submits the password in an address; skra.js posts it. The
+     lines are text: html/template escapes them. */}}
 {{define "log"}}<div class="panel">
   <div class="frow"><span class="k">log level</span><span><div class="seg" role="group" aria-label="log level">{{range .Levels}}<button type="button"{{if .On}} class="on"{{end}} aria-pressed="{{.On}}" data-act="log-level" data-level="{{.Value}}"{{if $.Locked}} disabled{{end}}>{{.Label}}</button>{{end}}</div></span><span class="hint">{{.Hint}}</span></div>
+  {{if .AskPassword}}<div class="frow" id="log-pw" hidden><label class="k" for="log-password">password for {{.User}}</label><span><input class="f" type="password" id="log-password" name="password" autocomplete="current-password" spellcheck="false" autocapitalize="off"></span><span class="btns"><button type="button" class="btn sm" data-act="log-send"><i>&#xF0193;</i>change log level</button><button type="button" class="btn sm" data-act="log-cancel">cancel</button></span></div>{{end}}
   <div class="frow"><span class="k">cups.service journal</span><span class="btns"><button type="button" class="btn sm" data-act="log-refresh"><i>&#xF0450;</i>refresh log</button></span><span class="hint">the last {{.Count}} lines, newest at the bottom</span></div>
 </div>
 {{if .Error}}<div class="wait">{{.Error}}</div>{{else if not .Lines}}<div class="wait">The journal has no CUPS lines yet.</div>{{else}}<pre class="logbox" id="logbox" tabindex="0">{{range .Lines}}{{if .TS}}<span class="ts">{{.TS}}</span>{{end}}{{.Rest}}

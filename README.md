@@ -30,7 +30,9 @@ exits after five idle minutes.
   printing fails. Maintenance commands the printer offers, such as cleaning
   the print heads, sit beside them.
 - **CUPS log:** the last lines of the `cups.service` journal, with a switch for
-  debug logging.
+  the log level (warn, info or debug). Changing the level asks for your login
+  password, because CUPS takes a change of `cupsd.conf` from no other user
+  than root without one.
 - **Scan:** scan from the feeder or the glass, see each page, turn or drop
   it, scan more, and save the pages as one PDF or as a PNG or JPEG file per
   page. See [Scan](#-scan).
@@ -95,8 +97,17 @@ skra talks to CUPS over the local socket `/run/cups/cups.sock`, never over TCP.
 Every request carries `Authorization: PeerCred <user>` and
 `requesting-user-name <user>`. CUPS reads your user from the connection and
 grants admin operations to members of `wheel` (or `lpadmin` or `sys` on other
-distributions) without a password. skra asks for no password, holds none and
-stores none, and the YubiKey step in a CUPS web login never comes into play.
+distributions) without a password, and the YubiKey step in a CUPS web login
+never comes into play.
+
+The log-level switch is the one exception. It writes `cupsd.conf`, and CUPS
+takes peer credentials for such a write from root alone, so for any other
+user it asks for the login password. skra sends it once, with
+`Authorization: Basic` on that one request over the local socket, and CUPS
+checks it through PAM and the user against its `SystemGroup`. skra writes the
+password nowhere: not to the action log, which records the old and the new
+level, not to its own log, and not into any page or answer. It forgets the
+password when the request is done. Running as root, skra asks for none.
 
 The service adds no new rights: any program running as you can send the same
 requests with `lpadmin` today. It adds a new door, and the door is guarded:
@@ -178,6 +189,13 @@ ends the process.
   remembers, up to 200. It keeps no archive of its own.
 - **The CUPS log needs journal access.** Reading it runs `journalctl`, which
   your user may not be allowed to do, and the section then says so.
+- **The log level needs your password.** CUPS never takes a configuration
+  write over its socket from a user other than root on peer credentials
+  alone (`scheduler/auth.c` in CUPS 2.4), so the switch asks for the login
+  password each time. Only a member of CUPS's `SystemGroup` gets through, and
+  after several wrong passwords the system may lock the account for a while.
+  CUPS starts using the new level when it reloads, which waits for a job that
+  is printing; the switch says so when that happens.
 - **Declarative systems.** On NixOS or another system that declares queues in
   its configuration, those queues come back after a rebuild. List them in
   `declared_queues` so skra shows them read-only.

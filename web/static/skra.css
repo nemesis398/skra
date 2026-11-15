@@ -80,6 +80,8 @@ button { font:inherit; color:inherit; background:none; border:0; cursor:pointer;
 .seg button:disabled { color:var(--o0); cursor:default; }
 .seg button:disabled:hover { color:var(--o0); }
 .seg button.on:disabled { border-bottom-color:var(--o0); }
+/* a level picked but not yet sent, while the password row is open */
+.seg button.pick { color:var(--text); border-bottom-color:var(--o1); }
 
 table.q { width:calc(100% - 2.462rem); margin:0.308rem 1.231rem 0; border-collapse:collapse; table-layout:fixed; }
 table.q th { text-align:left; font-weight:400; color:var(--o1); font-size:0.923rem; padding:2px 0.615rem; }

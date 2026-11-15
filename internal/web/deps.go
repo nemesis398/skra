@@ -43,7 +43,7 @@ type CUPS interface {
 	Add(ctx context.Context, spec cups.AddSpec) error
 
 	LogLevel(ctx context.Context) (string, error)
-	SetLogLevel(ctx context.Context, level string) error
+	SetLogLevel(ctx context.Context, level, password string) error
 }
 
 var _ CUPS = (*cups.Client)(nil)

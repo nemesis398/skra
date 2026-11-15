@@ -51,12 +51,14 @@ type fakeCUPS struct {
 	addErr     error
 
 	// The log level cupsd.conf has, what reading it answers, the levels
-	// SetLogLevel was asked for, and what it answers.
-	logLevel  string
-	logErr    error
-	setLogs   []string
-	setLogErr error
-	logReads  int
+	// SetLogLevel was asked for with the passwords it got, and what it
+	// answers.
+	logLevel     string
+	logErr       error
+	setLogs      []string
+	setPasswords []string
+	setLogErr    error
+	logReads     int
 }
 
 func (f *fakeCUPS) set(fn func(*fakeCUPS)) {

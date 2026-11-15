@@ -526,6 +526,7 @@ async function loadLog() {
       return;
     }
     slot.innerHTML = text;
+    logPick = ""; // the new section has its password row closed and empty
     const box = $("logbox");
     if (box) box.scrollTop = box.scrollHeight;
   } catch (err) {
@@ -533,25 +534,80 @@ async function loadLog() {
   }
 }
 
+// The level switch. For a user other than root the section has a password
+// row, #log-pw, because CUPS takes a change of cupsd.conf only with the login
+// password: picking a level opens the row, and the level goes from there with
+// the password. The password is read from the field when it is sent, and the
+// row closes and the field empties after every answer; nothing keeps it.
+let logPick = "";
+
 async function logAction(b) {
-  if (b.dataset.act === "log-refresh") {
+  const { act, level } = b.dataset;
+  if (act === "log-refresh") {
     b.disabled = true;
     await loadLog();
     if (b.isConnected) b.disabled = false;
     return;
   }
-  const { level } = b.dataset;
+  if (act === "log-cancel") return closeLogPassword();
+  if (act === "log-send") return sendLogPassword();
   if (logBusy || b.classList.contains("on")) return;
+  const row = $("log-pw");
+  if (!row) return setLogLevel(level, "", b);
+  logPick = level;
+  for (const x of b.parentElement.children) x.classList.toggle("pick", x === b);
+  row.hidden = false;
+  $("log-password")?.focus();
+}
+
+function closeLogPassword() {
+  logPick = "";
+  const field = $("log-password");
+  if (field) field.value = "";
+  const row = $("log-pw");
+  if (row) row.hidden = true;
+  for (const x of document.querySelectorAll('#log [data-act="log-level"]')) x.classList.remove("pick");
+}
+
+function sendLogPassword() {
+  const field = $("log-password");
+  if (logBusy || !logPick || !field) return;
+  if (field.value === "") {
+    say("Type your password first.", true);
+    field.focus();
+    return;
+  }
+  setLogLevel(logPick, field.value, document.querySelector('#log [data-act="log-send"]'));
+}
+
+async function setLogLevel(level, password, button) {
   logBusy = true;
   say(`Setting the log level to ${level}. CUPS restarts its scheduler, this takes a few seconds.`, false, true);
   try {
-    await send("/printers/log/level", new URLSearchParams({ level }), b);
+    const body = new URLSearchParams({ level });
+    if (password) body.set("password", password);
+    try {
+      await send("/printers/log/level", body, button);
+    } finally {
+      closeLogPassword();
+    }
     // Whatever the answer was, the section shows what cupsd.conf says now.
     await loadLog();
   } finally {
     logBusy = false;
   }
 }
+
+// Enter in the password field sends, Escape closes the row.
+document.addEventListener("keydown", (e) => {
+  if (e.target.id !== "log-password") return;
+  if (e.key === "Enter") {
+    e.preventDefault();
+    sendLogPassword();
+  } else if (e.key === "Escape") {
+    closeLogPassword();
+  }
+});
 
 if ($("log")) loadLog();
 

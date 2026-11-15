@@ -5,6 +5,8 @@ package web
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -25,10 +27,11 @@ func (f *fakeCUPS) LogLevel(context.Context) (string, error) {
 	return f.logLevel, f.logErr
 }
 
-func (f *fakeCUPS) SetLogLevel(_ context.Context, level string) error {
+func (f *fakeCUPS) SetLogLevel(_ context.Context, level, password string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.setLogs = append(f.setLogs, level)
+	f.setPasswords = append(f.setPasswords, password)
 	if f.setLogErr == nil {
 		f.logLevel = level
 	}
@@ -39,6 +42,12 @@ func (f *fakeCUPS) levelsSet() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.setLogs...)
+}
+
+func (f *fakeCUPS) passwordsSent() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.setPasswords...)
 }
 
 func (f *fakeCUPS) levelReads() int {
@@ -71,12 +80,17 @@ var sampleLog = []string{
 
 func logServer(t *testing.T, f *fakeCUPS, j *journal, managed bool) (*Server, http.Handler) {
 	t.Helper()
+	return logServerAs(t, "mika", f, j, managed)
+}
+
+func logServerAs(t *testing.T, user string, f *fakeCUPS, j *journal, managed bool) (*Server, http.Handler) {
+	t.Helper()
 	db, err := store.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
-	s := New(config.Config{Listen: "127.0.0.1:7631", User: "mika", CupsdConfManaged: managed},
+	s := New(config.Config{Listen: "127.0.0.1:7631", User: user, CupsdConfManaged: managed},
 		Deps{CUPS: f, Store: db, ReadLog: j.read}, NewToken())
 	return s, s.Handler()
 }
@@ -213,6 +227,19 @@ func TestManagedConfReadOnly(t *testing.T) {
 	if f.levelReads() == 0 {
 		t.Error("the level was not read for display")
 	}
+	if strings.Contains(body, `type="password"`) {
+		t.Error("a managed cupsd.conf still asks for the password")
+	}
+}
+
+// The managed hint says why the switch is off even when CUPS does not answer.
+func TestManagedHintWinsOverACUPSError(t *testing.T) {
+	f := &fakeCUPS{logErr: errors.New("CUPS does not answer: connection refused")}
+	_, h := logServer(t, f, &journal{lines: sampleLog}, true)
+	body := get(h, "/printers/log").Body.String()
+	if !strings.Contains(body, managedText) || strings.Contains(body, "connection refused") {
+		t.Errorf("hint:\n%s", body)
+	}
 }
 
 func TestSetLogLevelAnswersAndLogsTheChange(t *testing.T) {
@@ -223,12 +250,15 @@ func TestSetLogLevelAnswersAndLogsTheChange(t *testing.T) {
 	} {
 		f := &fakeCUPS{logLevel: tc.from}
 		s, h := logServer(t, f, &journal{}, false)
-		rec := postTo(s, h, "/printers/log/level", url.Values{"level": {tc.to}})
+		rec := postTo(s, h, "/printers/log/level", url.Values{"level": {tc.to}, "password": {testPassword}})
 		if rec.Code != 200 || rec.Body.String() != tc.say {
 			t.Errorf("%s: status %d, body %q", tc.to, rec.Code, rec.Body.String())
 		}
 		if got := f.levelsSet(); len(got) != 1 || got[0] != tc.to {
 			t.Errorf("%s: CUPS was asked to set %v", tc.to, got)
+		}
+		if got := f.passwordsSent(); len(got) != 1 || got[0] != testPassword {
+			t.Errorf("%s: CUPS got the passwords %q", tc.to, got)
 		}
 		ev := lastEvent(t, s)
 		if ev.Action != "cups.loglevel" || ev.Detail != tc.from+" → "+tc.to || !ev.OK || ev.Actor != "mika" {
@@ -295,6 +325,135 @@ func TestSetLogLevelFailures(t *testing.T) {
 			t.Errorf("event = %+v", ev)
 		}
 	})
+}
+
+// testPassword is what the tests type into the password field. None of them
+// may find it anywhere but in what CUPS was given.
+const testPassword = "hunter2-skra"
+
+// The password goes to CUPS and nowhere else: not into the answer, the
+// history, the log or the page, whatever CUPS says.
+func TestPasswordNeverStored(t *testing.T) {
+	var logged strings.Builder
+	oldOut, oldFlags := log.Writer(), log.Flags()
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(oldOut); log.SetFlags(oldFlags) })
+
+	for _, tc := range []struct {
+		name string
+		err  error
+		code int
+	}{
+		{"success", nil, 200},
+		{"wrong password", cups.ErrWrongPassword, 502},
+		{"not in the system group", cups.ErrNotSystemGroup, 502},
+		{"no password", cups.ErrNeedsPassword, 502},
+		{"not back", cups.ErrNotBack, 502},
+		{"reload waits", cups.ErrReloadWaits, 200},
+		{"other", errors.New("CUPS answered HTTP 500"), 502},
+	} {
+		f := &fakeCUPS{logLevel: "warn", setLogErr: tc.err}
+		s, h := logServer(t, f, &journal{lines: sampleLog}, false)
+		rec := postTo(s, h, "/printers/log/level", url.Values{"level": {"debug"}, "password": {testPassword}})
+		body := rec.Body.String()
+		if rec.Code != tc.code {
+			t.Errorf("%s: status %d, body %q", tc.name, rec.Code, body)
+		}
+		if tc.err != nil && body != tc.err.Error() {
+			t.Errorf("%s: body %q, want %q", tc.name, body, tc.err.Error())
+		}
+		if got := f.passwordsSent(); len(got) != 1 || got[0] != testPassword {
+			t.Errorf("%s: CUPS got %q", tc.name, got)
+		}
+		for name, h := range rec.Header() {
+			if strings.Contains(strings.Join(h, " "), testPassword) {
+				t.Errorf("%s: the password is in the header %s", tc.name, name)
+			}
+		}
+		if strings.Contains(body, testPassword) {
+			t.Errorf("%s: the password is in the answer %q", tc.name, body)
+		}
+		events, err := s.deps.Store.Recent(context.Background(), 100)
+		if err != nil || len(events) != 1 {
+			t.Fatalf("%s: events %+v, %v", tc.name, events, err)
+		}
+		for _, ev := range events {
+			if row := fmt.Sprintf("%+v", ev); strings.Contains(row, testPassword) {
+				t.Errorf("%s: the password is in the history: %s", tc.name, row)
+			}
+			if !strings.HasPrefix(ev.Detail, "warn → debug") {
+				t.Errorf("%s: detail %q", tc.name, ev.Detail)
+			}
+		}
+		if page := get(h, "/printers/log").Body.String(); strings.Contains(page, testPassword) {
+			t.Errorf("%s: the password is in the log section", tc.name)
+		}
+	}
+	if strings.Contains(logged.String(), testPassword) {
+		t.Errorf("the password is in the log output:\n%s", logged.String())
+	}
+}
+
+// When CUPS waits for a printing job before it uses the new level, the change
+// is made and the answer says so instead of the level.
+func TestSetLogLevelSaysWhenTheReloadWaits(t *testing.T) {
+	f := &fakeCUPS{logLevel: "warn", setLogErr: cups.ErrReloadWaits}
+	s, h := logServer(t, f, &journal{}, false)
+	rec := postTo(s, h, "/printers/log/level", url.Values{"level": {"debug"}, "password": {testPassword}})
+	if rec.Code != 200 || rec.Body.String() != cups.ErrReloadWaits.Error() {
+		t.Errorf("status %d, body %q", rec.Code, rec.Body.String())
+	}
+	if ev := lastEvent(t, s); !ev.OK || ev.Detail != "warn → debug" {
+		t.Errorf("event = %+v", ev)
+	}
+}
+
+func TestSetLogLevelRefusesALongPassword(t *testing.T) {
+	f := &fakeCUPS{logLevel: "warn"}
+	s, h := logServer(t, f, &journal{}, false)
+	long := strings.Repeat("p", 1025)
+	rec := postTo(s, h, "/printers/log/level", url.Values{"level": {"debug"}, "password": {long}})
+	if rec.Code != 400 || rec.Body.String() != "The password is longer than 1024 bytes." {
+		t.Errorf("status %d, body %q", rec.Code, rec.Body.String())
+	}
+	if len(f.levelsSet()) != 0 || f.levelReads() != 0 {
+		t.Errorf("CUPS was called: reads %d, sets %v", f.levelReads(), f.levelsSet())
+	}
+	if ev, _ := s.deps.Store.Recent(context.Background(), 1); len(ev) != 0 {
+		t.Errorf("an event was logged: %+v", ev)
+	}
+	rec = postTo(s, h, "/printers/log/level", url.Values{"level": {"debug"}, "password": {long[:1024]}})
+	if rec.Code != 200 || len(f.passwordsSent()) != 1 || f.passwordsSent()[0] != long[:1024] {
+		t.Errorf("1024 bytes: status %d, sent %d", rec.Code, len(f.passwordsSent()))
+	}
+}
+
+func TestSwitchShowsThePasswordRow(t *testing.T) {
+	f := &fakeCUPS{logLevel: "warn"}
+	_, h := logServerAs(t, "mika", f, &journal{lines: sampleLog}, false)
+	body := get(h, "/printers/log").Body.String()
+	row := regexp.MustCompile(`<input[^>]*type="password"[^>]*>`).FindString(body)
+	if row == "" || !strings.Contains(row, `autocomplete="current-password"`) || !strings.Contains(row, `name="password"`) {
+		t.Errorf("password field = %q in:\n%s", row, body)
+	}
+	for _, want := range []string{"password for mika", "change log level", `data-act="log-send"`, `data-act="log-cancel"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("no %q in:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "<form") {
+		t.Error("the field is in a form, which a browser may submit with the password in the address")
+	}
+	// The level buttons stay on: they open the row.
+	if m := levelButton("debug").FindString(body); m == "" || strings.Contains(m, "disabled") {
+		t.Errorf("debug button = %q", m)
+	}
+
+	_, h = logServerAs(t, "root", &fakeCUPS{logLevel: "warn"}, &journal{lines: sampleLog}, false)
+	body = get(h, "/printers/log").Body.String()
+	if strings.Contains(body, `type="password"`) || strings.Contains(body, "current-password") || strings.Contains(body, "password for") {
+		t.Errorf("root is asked for a password:\n%s", body)
+	}
 }
 
 func TestSetLogLevelNeedsTheToken(t *testing.T) {

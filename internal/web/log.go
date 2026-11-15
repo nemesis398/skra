@@ -4,6 +4,7 @@ package web
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"regexp"
 	"slices"
@@ -15,6 +16,9 @@ import (
 const logLines = 200
 
 const managedText = "cupsd.conf is managed by the system configuration."
+
+// maxPassword is the longest password the level switch takes, in bytes.
+const maxPassword = 1024
 
 // logLevels are the levels the switch offers, in the order it shows them.
 var logLevels = []string{"warn", "info", "debug"}
@@ -55,11 +59,19 @@ func splitStamp(line string) logLine {
 
 type logView struct {
 	Levels []choice
-	Locked bool   // the switch is off: managed, or the level could not be read
+	// Locked disables the level buttons, because cupsd.conf is managed or
+	// CUPS did not say which level it sets. Hint says which of the two.
+	Locked bool
 	Hint   string // beside the switch
-	Lines  []logLine
-	Error  string // why there are no lines
-	Count  int
+	// User is the configured user. AskPassword is set when the switch is not
+	// locked and User is not root: CUPS then takes a change of cupsd.conf only
+	// with the user's password, so picking a level opens a row that asks for
+	// it.
+	User        string
+	AskPassword bool
+	Lines       []logLine
+	Error       string // why there are no lines
+	Count       int
 }
 
 // logFragment renders the log section: the level switch, the refresh button
@@ -72,10 +84,10 @@ func (s *Server) logFragment(w http.ResponseWriter, r *http.Request) {
 
 	level, err := s.deps.CUPS.LogLevel(ctx)
 	switch {
-	case err != nil:
-		v.Locked, v.Hint = true, err.Error()
 	case s.cfg.CupsdConfManaged:
 		v.Locked, v.Hint = true, managedText
+	case err != nil:
+		v.Locked, v.Hint = true, err.Error()
 	case slices.Contains(logLevels, level):
 		v.Hint = "CUPS restarts its scheduler for a moment when this changes."
 	default:
@@ -84,6 +96,7 @@ func (s *Server) logFragment(w http.ResponseWriter, r *http.Request) {
 	for _, l := range logLevels {
 		v.Levels = append(v.Levels, choice{Value: l, Label: l, On: err == nil && l == level})
 	}
+	v.User, v.AskPassword = s.cfg.User, !v.Locked && s.cfg.User != "root"
 
 	lines, err := s.readLog(ctx, logLines)
 	switch {
@@ -100,6 +113,10 @@ func (s *Server) logFragment(w http.ResponseWriter, r *http.Request) {
 
 // setLogLevel changes the LogLevel of cupsd.conf through CUPS and answers when
 // CUPS is back. The scheduler restarts for it, so it can take several seconds.
+//
+// The form field password goes to CUPS with the one PUT and nowhere else: the
+// history records the levels, the answers are fixed texts or CUPS's errors,
+// which never carry it, and nothing is logged.
 func (s *Server) setLogLevel(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.CupsdConfManaged {
 		reply(w, http.StatusForbidden, managedText)
@@ -110,19 +127,32 @@ func (s *Server) setLogLevel(w http.ResponseWriter, r *http.Request) {
 		reply(w, http.StatusBadRequest, "Choose warn, info or debug.")
 		return
 	}
+	password := r.PostFormValue("password")
+	if len(password) > maxPassword {
+		reply(w, http.StatusBadRequest, "The password is longer than 1024 bytes.")
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), actionTimeout)
 	defer cancel()
 	old, err := s.deps.CUPS.LogLevel(ctx)
 	if err != nil {
 		old = "?"
 	} else {
-		err = s.deps.CUPS.SetLogLevel(ctx, level)
+		err = s.deps.CUPS.SetLogLevel(ctx, level, password)
+	}
+	// The change is made when CUPS only waits for a job before it uses it.
+	waits := errors.Is(err, cups.ErrReloadWaits)
+	if waits {
+		err = nil
 	}
 	s.record(r, "cups.loglevel", "cupsd.conf", old+" → "+level, err)
 	s.hub.Refresh()
-	if err != nil {
+	switch {
+	case err != nil:
 		reply(w, http.StatusBadGateway, err.Error())
-		return
+	case waits:
+		reply(w, http.StatusOK, cups.ErrReloadWaits.Error())
+	default:
+		reply(w, http.StatusOK, logSaid[level])
 	}
-	reply(w, http.StatusOK, logSaid[level])
 }

@@ -24,6 +24,27 @@ var ErrJournalNotReadable = errors.New("The journal is not readable for this use
 // take the file.
 var ErrNotBack = errors.New("CUPS has not come back yet; look again in a moment.")
 
+// The refusals of a change of cupsd.conf. CUPS takes PeerCred for a PUT from
+// root alone (scheduler/auth.c), so any other user sends the login password
+// with Basic, and CUPS checks it through PAM and the user against its
+// SystemGroup.
+var (
+	// ErrNeedsPassword is CUPS's 401 to a PUT that carried no password.
+	ErrNeedsPassword = errors.New("CUPS changes cupsd.conf only with your password.")
+	// ErrWrongPassword is CUPS's 401 to a PUT with a password.
+	ErrWrongPassword = errors.New("CUPS did not accept the password. Check it and try again; after several wrong tries the system may lock the account for a while.")
+	// ErrNotSystemGroup is CUPS's 403: the login was good, the user is not
+	// in the system group.
+	ErrNotSystemGroup = errors.New("CUPS refused this: only members of its system group may change cupsd.conf.")
+)
+
+// ErrReloadWaits is what SetLogLevel answers when cupsd.conf has the new
+// level but a job kept printing all along. CUPS puts off the reload that
+// makes it use the file until its printing jobs are done, or until its
+// ReloadTimeout, so the level may not be in use yet. The change itself is
+// made.
+var ErrReloadWaits = errors.New("cupsd.conf sets the new level; CUPS starts using it once the job that is printing is done.")
+
 const (
 	// confPath is the resource CUPS serves its configuration file at.
 	confPath = "/admin/conf/cupsd.conf"
@@ -35,6 +56,11 @@ const (
 	minLines, maxLines = 1, 1000
 	// logPollTry bounds one look at cupsd.conf while CUPS restarts.
 	logPollTry = 2 * time.Second
+	// maxDrain caps what is read of CUPS's answer to a PUT, which is a short
+	// status page.
+	maxDrain = 64 << 10
+	// maxPassword is the longest password SetLogLevel sends.
+	maxPassword = 1024
 )
 
 // The journal read is a variable each, so tests can lower or replace them.
@@ -182,21 +208,26 @@ func (t *tailBuffer) complete() string {
 
 // --- the LogLevel in cupsd.conf ---
 
-// logDirective reads one line of cupsd.conf. It answers the text before the
-// directive (leading whitespace) and what follows its value, when the line is
-// an active LogLevel directive, whatever the case of its name.
-func logDirective(line string) (indent, value string, ok bool) {
+// logDirective reads one line of cupsd.conf. When the line is an active
+// LogLevel directive, whatever the case of its name, it answers the text
+// before the directive (leading whitespace), its value, and the inline comment
+// after it with the blanks before the "#", or "" when there is none.
+func logDirective(line string) (indent, value, comment string, ok bool) {
 	rest := strings.TrimLeft(line, " \t")
 	indent = line[:len(line)-len(rest)]
 	if len(rest) < len("LogLevel") || !strings.EqualFold(rest[:len("LogLevel")], "LogLevel") {
-		return "", "", false
+		return "", "", "", false
 	}
 	rest = rest[len("LogLevel"):]
 	if rest != "" && rest[0] != ' ' && rest[0] != '\t' {
-		return "", "", false // another directive that starts the same
+		return "", "", "", false // another directive that starts the same
 	}
-	rest, _, _ = strings.Cut(rest, "#")
-	return indent, strings.TrimSpace(rest), true
+	if i := strings.IndexByte(rest, '#'); i >= 0 {
+		rest, comment = rest[:i], rest[i:]
+		trimmed := strings.TrimRight(rest, " \t")
+		comment = rest[len(trimmed):] + comment
+	}
+	return indent, strings.TrimSpace(rest), comment, true
 }
 
 // eachLine calls fn with every line of text, without its line end, and the line
@@ -221,7 +252,7 @@ func eachLine(text string, fn func(line, end string)) {
 func parseLogLevel(conf string) string {
 	level := "warn"
 	eachLine(conf, func(line, _ string) {
-		if _, v, ok := logDirective(line); ok && v != "" {
+		if _, v, _, ok := logDirective(line); ok && v != "" {
 			level, _, _ = strings.Cut(strings.ToLower(v), " ")
 		}
 	})
@@ -229,14 +260,15 @@ func parseLogLevel(conf string) string {
 }
 
 // replaceLogLevel sets every active LogLevel line of conf to level and leaves
-// every other byte as it was: comments, line ends, and a missing final line
-// end. A conf without such a line gets one at the end.
+// every other byte as it was: comments, an inline comment on the LogLevel line
+// itself, line ends, and a missing final line end. A conf without such a line
+// gets one at the end.
 func replaceLogLevel(conf, level string) string {
 	var b strings.Builder
 	found := false
 	eachLine(conf, func(line, end string) {
-		if indent, _, ok := logDirective(line); ok {
-			line, found = indent+"LogLevel "+level, true
+		if indent, _, comment, ok := logDirective(line); ok {
+			line, found = indent+"LogLevel "+level+comment, true
 		}
 		b.WriteString(line)
 		b.WriteString(end)
@@ -253,7 +285,7 @@ func replaceLogLevel(conf, level string) string {
 
 // readConf fetches cupsd.conf.
 func (c *Client) readConf(ctx context.Context) (string, error) {
-	resp, err := c.raw(ctx, http.MethodGet, confPath, nil)
+	resp, err := c.raw(ctx, http.MethodGet, confPath, nil, "")
 	if err != nil {
 		return "", err
 	}
@@ -282,15 +314,30 @@ func (c *Client) LogLevel(ctx context.Context) (string, error) {
 }
 
 // SetLogLevel sets the LogLevel of cupsd.conf to warn, info or debug through
-// CUPS itself and returns once CUPS has restarted its scheduler and reports
-// the level, or with ErrNotBack when that takes more than ten seconds. Only
-// the LogLevel line changes. A level that is set already is not written, so
-// the scheduler does not restart for nothing.
-func (c *Client) SetLogLevel(ctx context.Context, level string) error {
+// CUPS itself. Only the LogLevel line changes. A level that is set already is
+// not written, so the scheduler does not restart for nothing.
+//
+// cupsd.conf is read with PeerCred. The PUT goes with PeerCred when password
+// is empty, which CUPS takes from root alone, and otherwise with Basic and
+// the configured user and password; the password is sent with that one
+// request and kept nowhere. A refusal is ErrNeedsPassword, ErrWrongPassword
+// or ErrNotSystemGroup.
+//
+// After the PUT it waits until CUPS reports the level with no job printing,
+// which is when CUPS has reloaded or reloads at once. It answers ErrNotBack
+// when CUPS does not report the level within ten seconds, and ErrReloadWaits
+// when it does but a job keeps printing.
+func (c *Client) SetLogLevel(ctx context.Context, level, password string) error {
 	switch level {
 	case "warn", "info", "debug":
 	default:
 		return fmt.Errorf("%q is not a log level: use warn, info or debug", level)
+	}
+	if len(password) > maxPassword {
+		return errors.New("the password is longer than 1024 bytes")
+	}
+	if password != "" && strings.Contains(c.user, ":") {
+		return errors.New("the user name has a colon, which a Basic login cannot carry")
 	}
 	conf, err := c.readConf(ctx)
 	if err != nil {
@@ -299,43 +346,86 @@ func (c *Client) SetLogLevel(ctx context.Context, level string) error {
 	if parseLogLevel(conf) == level {
 		return nil
 	}
-	resp, err := c.raw(ctx, http.MethodPut, confPath, strings.NewReader(replaceLogLevel(conf, level)))
-	if err != nil {
+	if err := c.putConf(ctx, replaceLogLevel(conf, level), password); err != nil {
 		return err
-	}
-	io.Copy(io.Discard, resp.Body)
-	resp.Body.Close()
-	switch resp.StatusCode {
-	case http.StatusOK, http.StatusCreated, http.StatusNoContent:
-	default:
-		return httpFailure(resp.StatusCode)
 	}
 	return c.waitForLogLevel(ctx, level)
 }
 
-// waitForLogLevel looks at cupsd.conf every logPollEvery until CUPS answers
-// and reports level. CUPS restarts its scheduler after a change of its
-// configuration, so the first looks may find it away; the first look waits
-// one interval so it is not made before the restart has begun.
+// putConf sends text as cupsd.conf, with password as SetLogLevel says, and
+// answers how CUPS took it. It reads at most maxDrain of the answer.
+func (c *Client) putConf(ctx context.Context, text, password string) error {
+	resp, err := c.raw(ctx, http.MethodPut, confPath, strings.NewReader(text), password)
+	if err != nil {
+		return err
+	}
+	io.Copy(io.Discard, io.LimitReader(resp.Body, maxDrain))
+	resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusOK, http.StatusCreated, http.StatusNoContent:
+		return nil
+	case http.StatusUnauthorized:
+		if password == "" {
+			return ErrNeedsPassword
+		}
+		return ErrWrongPassword
+	case http.StatusForbidden:
+		return ErrNotSystemGroup
+	}
+	return httpFailure(resp.StatusCode)
+}
+
+// waitForLogLevel looks at CUPS every logPollEvery until it reports level in
+// cupsd.conf and no job printing. CUPS restarts its scheduler after a change
+// of its configuration, so the first looks may find it away; the first look
+// waits one interval so it is not made before the restart has begun. GET
+// serves the file as it is on disk, which says nothing of the reload, and
+// CUPS puts the reload off while a job prints: a look with a printing job
+// does not count.
 func (c *Client) waitForLogLevel(ctx context.Context, level string) error {
 	pctx, cancel := context.WithTimeout(ctx, logPollFor)
 	defer cancel()
 	tick := time.NewTicker(logPollEvery)
 	defer tick.Stop()
+	held := false // CUPS reported the level while a job was printing
 	for {
 		select {
 		case <-pctx.Done():
 			if ctx.Err() != nil {
 				return fmt.Errorf("CUPS does not answer: %w", ctx.Err())
 			}
+			if held {
+				return ErrReloadWaits
+			}
 			return ErrNotBack
 		case <-tick.C:
 		}
 		actx, acancel := context.WithTimeout(pctx, logPollTry)
 		got, err := c.LogLevel(actx)
+		busy := false
+		if err == nil && got == level {
+			busy, err = c.printing(actx)
+		}
 		acancel()
 		if err == nil && got == level {
-			return nil
+			if !busy {
+				return nil
+			}
+			held = true
 		}
 	}
+}
+
+// printing reports whether CUPS has a job that is printing.
+func (c *Client) printing(ctx context.Context) (bool, error) {
+	jobs, err := c.Jobs(ctx, "not-completed", 0)
+	if err != nil {
+		return false, err
+	}
+	for _, j := range jobs {
+		if j.State == 5 {
+			return true, nil
+		}
+	}
+	return false, nil
 }

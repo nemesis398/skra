@@ -4,6 +4,7 @@ package cups
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"io"
 	"net/http"
@@ -14,6 +15,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/nemesis398/skra/internal/ipp"
+	"github.com/nemesis398/skra/internal/ipp/ipptest"
 )
 
 func TestReplaceLogLevel(t *testing.T) {
@@ -33,7 +37,10 @@ func TestReplaceLogLevel(t *testing.T) {
 		{"no final newline stays so", "A 1\nLogLevel warn", "debug", "A 1\nLogLevel debug"},
 		{"CRLF stays", "A 1\r\nLogLevel warn\r\nB 2\r\n", "debug", "A 1\r\nLogLevel debug\r\nB 2\r\n"},
 		{"a longer directive is another one", "LogLevelFoo bar\n", "debug", "LogLevelFoo bar\nLogLevel debug\n"},
-		{"a tab after the name", "LogLevel\twarn # why\n", "info", "LogLevel info\n"},
+		{"a tab after the name", "LogLevel\twarn\n", "info", "LogLevel info\n"},
+		{"an inline comment stays", "LogLevel\twarn # why\n", "info", "LogLevel info # why\n"},
+		{"a comment with no value", "  LogLevel #x\r\n", "debug", "  LogLevel debug #x\r\n"},
+		{"a comment against the value", "LogLevel warn#x\n", "debug", "LogLevel debug#x\n"},
 	} {
 		if got := replaceLogLevel(tc.in, tc.level); got != tc.want {
 			t.Errorf("%s:\n got %q\nwant %q", tc.name, got, tc.want)
@@ -237,29 +244,76 @@ func TestRunCommandCapsOutputAndKeepsTheEnd(t *testing.T) {
 
 // --- cupsd.conf over the socket ---
 
-// confServer is a CUPS whose cupsd.conf is the text in conf. A PUT replaces it
-// and, like the restart of the scheduler, makes the next down requests fail.
+// testPassword is the password of the users the fake CUPS knows.
+const testPassword = "hunter2-skra"
+
+// confServer is a CUPS whose cupsd.conf is the text in conf, guarded the way
+// CUPS 2.4 guards Fedora's <Location /admin/conf> (scheduler/auth.c): a GET
+// passes with any PeerCred, a PUT passes with PeerCred only for root and
+// otherwise needs Basic with the password of a member of the system group.
+// mika is a member, guest has the same password and is not. A PUT replaces
+// the text and, like the restart of the scheduler, makes the next down GETs
+// fail. Get-Jobs answers a printing job to the first printing asks.
 type confServer struct {
-	mu     sync.Mutex
-	conf   string
-	puts   []string
-	types  []string
-	auths  []string
-	down   int
-	gets   atomic.Int32
-	status int
+	mu       sync.Mutex
+	conf     string
+	puts     []string
+	types    []string
+	auths    []string // the Authorization of every request, in order
+	putAuths []string
+	down     int
+	printing int
+	jobAsks  int
+	gets     atomic.Int32
+	status   int
+}
+
+// refusal is the status CUPS answers a request for cupsd.conf with before it
+// looks at the resource, or 0 when it lets the request through.
+func refusal(r *http.Request) int {
+	if r.Method != "PUT" || r.Header.Get("Authorization") == "PeerCred root" {
+		return 0
+	}
+	user, pw, ok := r.BasicAuth()
+	switch {
+	case !ok || pw != testPassword:
+		return 401
+	case user == "mika":
+		return 0
+	case user == "guest":
+		return 403
+	}
+	return 401
 }
 
 func (cs *confServer) handler(w http.ResponseWriter, r *http.Request) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
+	cs.auths = append(cs.auths, r.Header.Get("Authorization"))
+	if r.Method == "POST" && r.URL.Path == "/" {
+		cs.jobAsks++
+		m := ipptest.NewWire(0)
+		if cs.printing > 0 {
+			cs.printing--
+			m.Group(ipp.GroupJob).Num(ipp.TagInteger, "job-id", 7).Num(ipp.TagEnum, "job-state", 5)
+		}
+		m.Group(ipp.GroupJob).Num(ipp.TagInteger, "job-id", 8).Num(ipp.TagEnum, "job-state", 3)
+		reply(w, m)
+		return
+	}
 	if r.URL.Path != "/admin/conf/cupsd.conf" {
 		w.WriteHeader(404)
 		return
 	}
-	cs.auths = append(cs.auths, r.Header.Get("Authorization"))
 	if cs.status != 0 {
 		w.WriteHeader(cs.status)
+		return
+	}
+	if r.Method == "PUT" {
+		cs.putAuths = append(cs.putAuths, r.Header.Get("Authorization"))
+	}
+	if code := refusal(r); code != 0 {
+		w.WriteHeader(code)
 		return
 	}
 	switch r.Method {
@@ -306,11 +360,13 @@ func TestLogLevelReadsTheConfig(t *testing.T) {
 	}
 }
 
+// Root needs no password: CUPS takes PeerCred root for the PUT, as under
+// "make dev" in the harness.
 func TestSetLogLevelPutsOnlyTheLineAndWaitsForCUPS(t *testing.T) {
 	fastPolling(t)
 	cs := &confServer{conf: "# keep me\nLogLevel warn\nListen /run/cups/cups.sock\n"}
-	c := New(fake(t, cs.handler), "mika")
-	if err := c.SetLogLevel(context.Background(), "debug"); err != nil {
+	c := New(fake(t, cs.handler), "root")
+	if err := c.SetLogLevel(context.Background(), "debug", ""); err != nil {
 		t.Fatal(err)
 	}
 	want := "# keep me\nLogLevel debug\nListen /run/cups/cups.sock\n"
@@ -324,9 +380,110 @@ func TestSetLogLevelPutsOnlyTheLineAndWaitsForCUPS(t *testing.T) {
 		t.Errorf("returned while CUPS was still down for %d more requests", cs.down)
 	}
 	for _, a := range cs.auths {
-		if a != "PeerCred mika" {
+		if a != "PeerCred root" {
 			t.Errorf("Authorization = %q", a)
 		}
+	}
+	if cs.jobAsks == 0 {
+		t.Error("CUPS was not asked whether a job is printing")
+	}
+}
+
+func TestSetLogLevelSendsThePassword(t *testing.T) {
+	fastPolling(t)
+	cs := &confServer{conf: "LogLevel warn\n"}
+	c := New(fake(t, cs.handler), "mika")
+	if err := c.SetLogLevel(context.Background(), "info", testPassword); err != nil {
+		t.Fatal(err)
+	}
+	if len(cs.puts) != 1 || cs.puts[0] != "LogLevel info\n" {
+		t.Errorf("PUT bodies = %q", cs.puts)
+	}
+	basic := "Basic " + base64.StdEncoding.EncodeToString([]byte("mika:"+testPassword))
+	if len(cs.putAuths) != 1 || cs.putAuths[0] != basic {
+		t.Errorf("PUT Authorization = %q, want %q", cs.putAuths, basic)
+	}
+	// Everything else is PeerCred: the password goes with the PUT alone.
+	puts := 0
+	for _, a := range cs.auths {
+		switch a {
+		case basic:
+			puts++
+		case "PeerCred mika":
+		default:
+			t.Errorf("Authorization = %q", a)
+		}
+	}
+	if puts != 1 || len(cs.auths) < 3 {
+		t.Errorf("%d requests with the password among %q", puts, cs.auths)
+	}
+}
+
+func TestSetLogLevelWithoutPasswordAsks(t *testing.T) {
+	fastPolling(t)
+	cs := &confServer{conf: "LogLevel warn\n"}
+	err := New(fake(t, cs.handler), "mika").SetLogLevel(context.Background(), "debug", "")
+	if !errors.Is(err, ErrNeedsPassword) || err.Error() != "CUPS changes cupsd.conf only with your password." {
+		t.Errorf("err = %v", err)
+	}
+	if len(cs.putAuths) != 1 || cs.putAuths[0] != "PeerCred mika" || cs.conf != "LogLevel warn\n" {
+		t.Errorf("PUT auths %q, conf %q", cs.putAuths, cs.conf)
+	}
+}
+
+func TestWrongPassword(t *testing.T) {
+	fastPolling(t)
+	cs := &confServer{conf: "LogLevel warn\n"}
+	err := New(fake(t, cs.handler), "mika").SetLogLevel(context.Background(), "debug", "hunter3-skra")
+	want := "CUPS did not accept the password. Check it and try again; after several wrong tries the system may lock the account for a while."
+	if !errors.Is(err, ErrWrongPassword) || err.Error() != want {
+		t.Errorf("err = %v", err)
+	}
+	if cs.conf != "LogLevel warn\n" || cs.jobAsks != 0 {
+		t.Errorf("conf %q, job asks %d", cs.conf, cs.jobAsks)
+	}
+}
+
+func TestNotInSystemGroup(t *testing.T) {
+	fastPolling(t)
+	cs := &confServer{conf: "LogLevel warn\n"}
+	err := New(fake(t, cs.handler), "guest").SetLogLevel(context.Background(), "debug", testPassword)
+	if !errors.Is(err, ErrNotSystemGroup) || err.Error() != "CUPS refused this: only members of its system group may change cupsd.conf." {
+		t.Errorf("err = %v", err)
+	}
+	if cs.conf != "LogLevel warn\n" {
+		t.Errorf("conf %q", cs.conf)
+	}
+}
+
+func TestSetLogLevelRefusesAColonInTheUser(t *testing.T) {
+	cs := &confServer{conf: "LogLevel warn\n"}
+	err := New(fake(t, cs.handler), "mi:ka").SetLogLevel(context.Background(), "debug", testPassword)
+	if err == nil || strings.Contains(err.Error(), testPassword) {
+		t.Errorf("err = %v", err)
+	}
+	if len(cs.putAuths) != 0 {
+		t.Errorf("PUT sent: %q", cs.putAuths)
+	}
+}
+
+// A job that is printing holds the reload of the scheduler back, so cupsd.conf
+// says the new level before CUPS uses it.
+func TestSetLogLevelWaitsForThePrintingJob(t *testing.T) {
+	fastPolling(t)
+	cs := &confServer{conf: "LogLevel warn\n", printing: 3}
+	if err := New(fake(t, cs.handler), "root").SetLogLevel(context.Background(), "info", ""); err != nil {
+		t.Fatal(err)
+	}
+	if cs.printing != 0 || cs.jobAsks != 4 {
+		t.Errorf("returned with %d printing answers left, after %d asks", cs.printing, cs.jobAsks)
+	}
+
+	cs = &confServer{conf: "LogLevel warn\n", printing: 1 << 20}
+	err := New(fake(t, cs.handler), "root").SetLogLevel(context.Background(), "info", "")
+	want := "cupsd.conf sets the new level; CUPS starts using it once the job that is printing is done."
+	if !errors.Is(err, ErrReloadWaits) || err.Error() != want {
+		t.Errorf("err = %v", err)
 	}
 }
 
@@ -334,7 +491,7 @@ func TestSetLogLevelSkipsAPutWhenNothingChanges(t *testing.T) {
 	fastPolling(t)
 	cs := &confServer{conf: "LogLevel info\n"}
 	c := New(fake(t, cs.handler), "mika")
-	if err := c.SetLogLevel(context.Background(), "info"); err != nil {
+	if err := c.SetLogLevel(context.Background(), "info", testPassword); err != nil {
 		t.Fatal(err)
 	}
 	if len(cs.puts) != 0 {
@@ -342,7 +499,7 @@ func TestSetLogLevelSkipsAPutWhenNothingChanges(t *testing.T) {
 	}
 	cs = &confServer{conf: "ErrorLog stderr\n"} // no line means warn
 	c = New(fake(t, cs.handler), "mika")
-	if err := c.SetLogLevel(context.Background(), "warn"); err != nil || len(cs.puts) != 0 {
+	if err := c.SetLogLevel(context.Background(), "warn", ""); err != nil || len(cs.puts) != 0 {
 		t.Errorf("err %v, PUT %q", err, cs.puts)
 	}
 }
@@ -351,7 +508,7 @@ func TestSetLogLevelRefusesOtherLevelsWithoutCUPS(t *testing.T) {
 	var asked atomic.Int32
 	c := New(fake(t, func(http.ResponseWriter, *http.Request) { asked.Add(1) }), "mika")
 	for _, level := range []string{"", "error", "debug2", "none", "DEBUG ", "warn\nListen *:631"} {
-		if err := c.SetLogLevel(context.Background(), level); err == nil {
+		if err := c.SetLogLevel(context.Background(), level, testPassword); err == nil {
 			t.Errorf("level %q accepted", level)
 		}
 	}
@@ -360,19 +517,26 @@ func TestSetLogLevelRefusesOtherLevelsWithoutCUPS(t *testing.T) {
 	}
 }
 
-func TestSetLogLevelGivesUpWhenCUPSStaysAway(t *testing.T) {
-	fastPolling(t)
-	cs := &confServer{conf: "LogLevel warn\n"}
-	cs.down = 0
-	sock := fake(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "GET" && len(cs.puts) > 0 {
+// awayAfterPut answers like cs until the first PUT and then never gives
+// cupsd.conf back.
+func awayAfterPut(t *testing.T, cs *confServer) string {
+	return fake(t, func(w http.ResponseWriter, r *http.Request) {
+		cs.mu.Lock()
+		put := len(cs.puts) > 0
+		cs.mu.Unlock()
+		if r.Method == "GET" && put {
 			w.WriteHeader(503) // the scheduler never comes back
 			return
 		}
 		cs.handler(w, r)
 	})
+}
+
+func TestSetLogLevelGivesUpWhenCUPSStaysAway(t *testing.T) {
+	fastPolling(t)
+	cs := &confServer{conf: "LogLevel warn\n"}
 	start := time.Now()
-	err := New(sock, "mika").SetLogLevel(context.Background(), "debug")
+	err := New(awayAfterPut(t, cs), "root").SetLogLevel(context.Background(), "debug", "")
 	if !errors.Is(err, ErrNotBack) || err.Error() != "CUPS has not come back yet; look again in a moment." {
 		t.Errorf("err = %v", err)
 	}
@@ -389,21 +553,58 @@ func TestSetLogLevelStopsWhenTheContextEnds(t *testing.T) {
 	logPollEvery = 5 * time.Millisecond
 	t.Cleanup(func() { logPollEvery = oldEvery })
 	cs := &confServer{conf: "LogLevel warn\n"}
-	sock := fake(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "GET" && len(cs.puts) > 0 {
-			w.WriteHeader(503)
-			return
-		}
-		cs.handler(w, r)
-	})
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	if err := New(sock, "mika").SetLogLevel(ctx, "debug"); err == nil {
-		t.Error("no error")
+	err := New(awayAfterPut(t, cs), "root").SetLogLevel(ctx, "debug", "")
+	if !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrNotBack) {
+		t.Errorf("err = %v, want the deadline of the context", err)
 	}
 	if time.Since(start) > 2*time.Second {
 		t.Errorf("took %v", time.Since(start))
+	}
+}
+
+// The answer to the PUT is read to a bound only, so a CUPS that keeps
+// talking does not hold the change.
+func TestSetLogLevelBoundsTheAnswerToThePut(t *testing.T) {
+	fastPolling(t)
+	cs := &confServer{conf: "LogLevel warn\n"}
+	stop := make(chan struct{})
+	sock := fake(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "PUT" {
+			cs.handler(w, r)
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		cs.mu.Lock()
+		cs.puts, cs.conf = append(cs.puts, string(body)), string(body)
+		cs.mu.Unlock()
+		w.WriteHeader(201)
+		chunk := []byte(strings.Repeat("x", 4096))
+		for {
+			select {
+			case <-stop:
+				return
+			case <-r.Context().Done():
+				return
+			default:
+			}
+			if _, err := w.Write(chunk); err != nil {
+				return
+			}
+		}
+	})
+	t.Cleanup(func() { close(stop) }) // runs before the fake closes, which waits for the handler
+	done := make(chan error, 1)
+	go func() { done <- New(sock, "root").SetLogLevel(context.Background(), "debug", "") }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("err = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("SetLogLevel is still reading the answer to the PUT")
 	}
 }
 
@@ -421,22 +622,23 @@ func TestLogLevelMapsHTTPErrors(t *testing.T) {
 		if _, err := c.LogLevel(context.Background()); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("GET %d: err = %v, want %q", tc.status, err, tc.want)
 		}
-		if err := c.SetLogLevel(context.Background(), "debug"); err == nil || !strings.Contains(err.Error(), tc.want) {
+		if err := c.SetLogLevel(context.Background(), "debug", testPassword); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("SetLogLevel %d: err = %v, want %q", tc.status, err, tc.want)
 		}
 	}
-	// A refused PUT, with the GET allowed.
+	// A PUT that fails otherwise, with the GET allowed.
 	var puts atomic.Int32
 	sock := fake(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "PUT" {
 			puts.Add(1)
-			w.WriteHeader(403)
+			w.WriteHeader(500)
 			return
 		}
 		io.WriteString(w, "LogLevel warn\n")
 	})
-	if err := New(sock, "mika").SetLogLevel(context.Background(), "debug"); err == nil || !strings.Contains(err.Error(), "CUPS refused this") || puts.Load() != 1 {
-		t.Errorf("refused PUT: err = %v, puts %d", err, puts.Load())
+	err := New(sock, "mika").SetLogLevel(context.Background(), "debug", testPassword)
+	if err == nil || err.Error() != "CUPS answered HTTP 500" || puts.Load() != 1 {
+		t.Errorf("failed PUT: err = %v, puts %d", err, puts.Load())
 	}
 }
 

@@ -113,10 +113,11 @@ func httpFailure(code int) error {
 }
 
 // raw sends a plain HTTP request to the CUPS resource at path, over the same
-// socket and with the same PeerCred login as Do. The caller closes the body of
-// the response and checks its status. A body is sent as text/plain, which is
-// what CUPS takes for a configuration file. Do stays IPP only.
-func (c *Client) raw(ctx context.Context, method, path string, body io.Reader) (*http.Response, error) {
+// socket and with the same PeerCred login as Do, or with Basic and the user
+// and password when password is not empty. The caller closes the body of the
+// response and checks its status. A body is sent as text/plain, which is what
+// CUPS takes for a configuration file. Do stays IPP only.
+func (c *Client) raw(ctx context.Context, method, path string, body io.Reader, password string) (*http.Response, error) {
 	if c.user == "" {
 		return nil, errors.New("no user configured")
 	}
@@ -127,7 +128,11 @@ func (c *Client) raw(ctx context.Context, method, path string, body io.Reader) (
 	if body != nil {
 		hr.Header.Set("Content-Type", "text/plain")
 	}
-	hr.Header.Set("Authorization", "PeerCred "+c.user)
+	if password != "" {
+		hr.SetBasicAuth(c.user, password)
+	} else {
+		hr.Header.Set("Authorization", "PeerCred "+c.user)
+	}
 	resp, err := c.http.Do(hr)
 	if err != nil {
 		return nil, fmt.Errorf("CUPS does not answer: %w", err)
