@@ -32,11 +32,11 @@ func NewToken() string {
 // service exited when idle can still act once the socket starts it again.
 //
 // The file is made with O_EXCL and mode 0600. A file that is there but is not
-// a regular file (a symlink included), is readable by the group or by others,
-// is longer than tokenFileMax, or does not hold a token of 32 bytes or more,
-// with at most one line end after it, is refused, so the service does not
+// a regular file (a symlink included), has any permission bit for the group
+// or for others, is longer than tokenFileMax, or does not hold a token of 32
+// bytes or more, with at most one line end after it, is refused, so the
+// service does not start. Deleting the file makes a new token at the next
 // start.
-// Deleting the file makes a new token at the next start.
 func LoadToken(dir string) (string, error) {
 	path := filepath.Join(dir, "token")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -86,7 +86,7 @@ func readToken(path string) (string, error) {
 		return bad("is not a regular file")
 	}
 	if perm := fi.Mode().Perm(); perm&0o077 != 0 {
-		return bad(fmt.Sprintf("is readable by others (mode %04o, want 0600)", perm))
+		return bad(fmt.Sprintf("has mode %04o, so %s; want 0600", perm, openTo(perm)))
 	}
 	raw, err := io.ReadAll(io.LimitReader(f, tokenFileMax+1))
 	if err != nil {
@@ -113,4 +113,34 @@ func readToken(path string) (string, error) {
 		return bad(fmt.Sprintf("holds a token that is too short (%d bytes, want %d)", len(b), tokenBytes))
 	}
 	return tok, nil
+}
+
+// openTo says who besides the owner may do what with a file of mode perm,
+// such as "the group can read it and others can read and write it".
+func openTo(perm fs.FileMode) string {
+	can := func(bits fs.FileMode) string {
+		var what []string
+		for _, b := range []struct {
+			bit  fs.FileMode
+			verb string
+		}{{4, "read"}, {2, "write"}, {1, "execute"}} {
+			if bits&b.bit != 0 {
+				what = append(what, b.verb)
+			}
+		}
+		if len(what) == 1 {
+			return what[0] + " it"
+		}
+		return strings.Join(what[:len(what)-1], ", ") + " and " + what[len(what)-1] + " it"
+	}
+	group, others := perm>>3&7, perm&7
+	switch {
+	case group == others:
+		return "the group and others can " + can(group)
+	case others == 0:
+		return "the group can " + can(group)
+	case group == 0:
+		return "others can " + can(others)
+	}
+	return "the group can " + can(group) + " and others can " + can(others)
 }

@@ -189,8 +189,13 @@ func TestLoadTokenRefusesABadFile(t *testing.T) {
 		{"a trailing space", NewToken() + " ", 0o600, "not a token"},
 		{"a bare carriage return", NewToken() + "\r", 0o600, "not a token"},
 		{"only a newline", "\n", 0o600, "is empty"},
-		{"readable by others", NewToken(), 0o644, "readable by others"},
-		{"readable by the group", NewToken(), 0o640, "readable by others"},
+		{"readable by others", NewToken(), 0o644, "mode 0644, so the group and others can read it; want 0600"},
+		{"readable by the group", NewToken(), 0o640, "mode 0640, so the group can read it; want 0600"},
+		{"writable by the group", NewToken(), 0o620, "mode 0620, so the group can write it; want 0600"},
+		{"executable by others", NewToken(), 0o601, "mode 0601, so others can execute it; want 0600"},
+		{"open to all", NewToken(), 0o677, "mode 0677, so the group and others can read, write and execute it; want 0600"},
+		{"group read and write", NewToken(), 0o660, "the group can read and write it;"},
+		{"group write, others read", NewToken(), 0o624, "mode 0624, so the group can write it and others can read it; want 0600"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
