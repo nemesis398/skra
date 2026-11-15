@@ -56,7 +56,7 @@ func splitStamp(line string) logLine {
 
 type logView struct {
 	Levels []choice
-	Locked bool   // the switch is off: managed, or the level is unknown
+	Locked bool   // the switch is off: managed, or the level could not be read
 	Hint   string // beside the switch
 	Lines  []logLine
 	Error  string // why there are no lines
