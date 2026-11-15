@@ -3,8 +3,15 @@
 package printer
 
 import (
+	"context"
+	"errors"
+	"maps"
 	"net/netip"
+	"slices"
 	"testing"
+	"time"
+
+	"github.com/godbus/dbus/v5"
 )
 
 func TestParseDNSSD(t *testing.T) {
@@ -81,5 +88,64 @@ func TestOwnResult(t *testing.T) {
 		if got := ownResult(flags); got != want {
 			t.Errorf("ownResult(%d) = %v, want %v", flags, got, want)
 		}
+	}
+}
+
+func browserSignal(path dbus.ObjectPath, member string, body ...any) *dbus.Signal {
+	return &dbus.Signal{Path: path, Name: "org.freedesktop.Avahi.ServiceBrowser." + member, Body: body}
+}
+
+func TestCollect(t *testing.T) {
+	const path = dbus.ObjectPath("/Client1/ServiceBrowser1")
+	signals := make(chan *dbus.Signal, 8)
+	signals <- browserSignal(path, "ItemNew", int32(3), int32(0), "Brother MFC-J6975DW", "_uscan._tcp", "local", uint32(0))
+	// The same service over IPv6 and on another interface.
+	signals <- browserSignal(path, "ItemNew", int32(3), int32(1), "Brother MFC-J6975DW", "_uscan._tcp", "local", uint32(0))
+	signals <- browserSignal(path, "ItemNew", int32(1), int32(0), "Brother MFC-J6975DW", "_uscan._tcp", "local", uint32(4))
+	// Another browser's signal on the shared connection.
+	signals <- browserSignal("/Client1/ServiceBrowser2", "ItemNew", int32(3), int32(0), "Other", "_uscan._tcp", "local", uint32(0))
+	signals <- browserSignal(path, "ItemNew", int32(1), int32(0), "EPSON ET-4850 Series", "_uscan._tcp", "local", uint32(12))
+	signals <- browserSignal(path, "CacheExhausted")
+	signals <- browserSignal(path, "AllForNow")
+	signals <- browserSignal(path, "ItemNew", int32(3), int32(0), "Late", "_uscan._tcp", "local", uint32(0))
+	items, err := collect(context.Background(), signals, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []item{{"Brother MFC-J6975DW", "_uscan._tcp", "local"}, {"EPSON ET-4850 Series", "_uscan._tcp", "local"}}
+	if !slices.Equal(items, want) {
+		t.Errorf("collect = %v, want %v", items, want)
+	}
+}
+
+func TestCollectFailureAndWait(t *testing.T) {
+	const path = dbus.ObjectPath("/Client1/ServiceBrowser1")
+	signals := make(chan *dbus.Signal, 1)
+	signals <- browserSignal(path, "Failure", "Too many objects")
+	if _, err := collect(context.Background(), signals, path); err == nil || err.Error() != "Too many objects" {
+		t.Errorf("Failure: err = %v", err)
+	}
+
+	defer func(d time.Duration) { browseWait = d }(browseWait)
+	browseWait = 10 * time.Millisecond
+	signals <- browserSignal(path, "ItemNew", int32(3), int32(0), "Brother", "_uscan._tcp", "local", uint32(0))
+	items, err := collect(context.Background(), signals, path)
+	if err != nil || len(items) != 1 {
+		t.Errorf("no AllForNow: %v, %v", items, err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	browseWait = time.Minute
+	if _, err := collect(ctx, signals, path); !errors.Is(err, context.Canceled) {
+		t.Errorf("cancelled: err = %v", err)
+	}
+}
+
+func TestTXTMap(t *testing.T) {
+	got := txtMap([][]byte{[]byte("txtvers=1"), []byte("UUID=e3248000"), []byte("uuid=second"), []byte("rs=eSCL"), []byte("duplex"), []byte("=nokey"), []byte("ty=Brother MFC-J6975DW")})
+	want := map[string]string{"txtvers": "1", "uuid": "e3248000", "rs": "eSCL", "duplex": "", "ty": "Brother MFC-J6975DW"}
+	if !maps.Equal(got, want) {
+		t.Errorf("txtMap = %v, want %v", got, want)
 	}
 }

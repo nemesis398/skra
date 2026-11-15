@@ -37,10 +37,11 @@ run: build
 
 # dev runs skra against the test harness instead of the laptop's CUPS, with
 # the fake eSCL scanner on 127.0.0.1:8632 beside it, stopped when skra exits.
-# The config and state live under .dev/, beside the harness's run/ directory.
+# The config, state and scans live under .dev/, beside the harness's run/
+# directory. The config lists the fake scanner, so it shows without avahi.
 dev: build harness-up
 	@mkdir -p .dev/config/skra
-	@printf '{"cups_socket": "%s/.dev/run/cups.sock", "user": "root", "state_dir": "%s/.dev/state"}\n' "$(CURDIR)" "$(CURDIR)" > .dev/config/skra/config.json
+	@printf '{"cups_socket": "%s/.dev/run/cups.sock", "user": "root", "state_dir": "%s/.dev/state", "scanners": [{"name": "skrá fake scanner", "url": "http://127.0.0.1:8632/eSCL"}], "scan_folder": "%s/.dev/scans"}\n' "$(CURDIR)" "$(CURDIR)" "$(CURDIR)" > .dev/config/skra/config.json
 	go build -o .dev/fakescanner ./cmd/fakescanner
 	.dev/fakescanner & scanner=$$!; \
 	trap 'kill $$scanner' EXIT; \

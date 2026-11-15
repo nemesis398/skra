@@ -11,8 +11,10 @@ import (
 	"fmt"
 	"io/fs"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -25,6 +27,18 @@ type Config struct {
 	DeclaredQueues   []string `json:"declared_queues"`
 	CupsdConfManaged bool     `json:"cupsd_conf_managed"`
 	IdleExit         string   `json:"idle_exit"`
+	// Scanners are scanners Mika names by hand, listed before the ones the
+	// network announces.
+	Scanners []Scanner `json:"scanners"`
+	// ScanFolder is the folder scans are saved to unless Mika picks another.
+	ScanFolder string `json:"scan_folder"`
+}
+
+// Scanner is a scanner in the config: a name to show and the URL of its eSCL
+// root, such as http://192.0.2.7:80/eSCL.
+type Scanner struct {
+	Name string `json:"name"`
+	URL  string `json:"url"`
 }
 
 func defaults() Config {
@@ -34,6 +48,7 @@ func defaults() Config {
 		User:       os.Getenv("USER"),
 		StateDir:   filepath.Join(os.Getenv("HOME"), ".local", "state", "skra"),
 		IdleExit:   "5m",
+		ScanFolder: filepath.Join(os.Getenv("HOME"), "Nextcloud", "Documents", "Scans"),
 	}
 }
 
@@ -49,7 +64,8 @@ func DefaultPath() string {
 
 // Load reads path over the defaults. A missing file gives the defaults. An
 // unknown key, a listen address on another host than 127.0.0.1 or localhost,
-// or an idle_exit that is not a duration is an error.
+// an idle_exit that is not a duration, or a scanner without a name or without
+// a plain http or https URL is an error.
 func Load(path string) (Config, error) {
 	cfg := defaults()
 	data, err := os.ReadFile(path)
@@ -76,6 +92,34 @@ func validate(cfg Config) error {
 	}
 	if _, err := time.ParseDuration(cfg.IdleExit); err != nil {
 		return fmt.Errorf("idle_exit: %w", err)
+	}
+	for i, sc := range cfg.Scanners {
+		if err := checkScanner(sc); err != nil {
+			return fmt.Errorf("scanners[%d]: %w", i, err)
+		}
+	}
+	return nil
+}
+
+// checkScanner accepts a scanner with a name and an http or https URL that
+// has a host and no user name or password. The scanner client refuses the
+// same URLs; the check here only reports them when skra starts.
+func checkScanner(sc Scanner) error {
+	if strings.TrimSpace(sc.Name) == "" {
+		return errors.New("no name")
+	}
+	u, err := url.Parse(sc.URL)
+	if err != nil {
+		return err
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("%q is not an http or https address", sc.URL)
+	}
+	if u.User != nil {
+		return fmt.Errorf("%q carries a user name", sc.URL)
+	}
+	if u.Hostname() == "" {
+		return fmt.Errorf("no host in %q", sc.URL)
 	}
 	return nil
 }

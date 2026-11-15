@@ -124,3 +124,52 @@ func TestDefaultPath(t *testing.T) {
 		t.Errorf("DefaultPath = %q", got)
 	}
 }
+
+func TestConfigScanners(t *testing.T) {
+	cfg, err := Load(writeConfig(t, `{"scanners":[{"name":"skrá fake scanner","url":"http://127.0.0.1:8632/eSCL"}]}`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Scanners) != 1 || cfg.Scanners[0] != (Scanner{Name: "skrá fake scanner", URL: "http://127.0.0.1:8632/eSCL"}) {
+		t.Errorf("Scanners = %+v", cfg.Scanners)
+	}
+	for _, sc := range []string{
+		`{"name":"x","url":"http://mika:secret@192.0.2.7/eSCL"}`,
+		`{"name":"x","url":"http://mika@192.0.2.7/eSCL"}`,
+		`{"name":"x","url":"ftp://192.0.2.7/eSCL"}`,
+		`{"name":"x","url":"ipp://192.0.2.7/eSCL"}`,
+		`{"name":"x","url":"192.0.2.7/eSCL"}`,
+		`{"name":"x","url":"http:///eSCL"}`,
+		`{"name":"x","url":"http://%zz/eSCL"}`,
+		`{"name":"x","url":""}`,
+		`{"name":"","url":"http://192.0.2.7/eSCL"}`,
+		`{"name":"  ","url":"http://192.0.2.7/eSCL"}`,
+		`{"url":"http://192.0.2.7/eSCL"}`,
+	} {
+		_, err := Load(writeConfig(t, `{"scanners":[`+sc+`]}`))
+		if err == nil || !strings.Contains(err.Error(), "scanners") {
+			t.Errorf("scanner %s: err = %v", sc, err)
+		}
+	}
+	if _, err := Load(writeConfig(t, `{"scanners":[{"name":"Brother","url":"https://192.0.2.7:443/eSCL"}]}`)); err != nil {
+		t.Errorf("https scanner refused: %v", err)
+	}
+}
+
+func TestScanFolder(t *testing.T) {
+	t.Setenv("HOME", "/home/x")
+	cfg, err := Load("/nonexistent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ScanFolder != "/home/x/Nextcloud/Documents/Scans" {
+		t.Errorf("ScanFolder = %q", cfg.ScanFolder)
+	}
+	if len(cfg.Scanners) != 0 {
+		t.Errorf("Scanners = %v, want none by default", cfg.Scanners)
+	}
+	cfg, err = Load(writeConfig(t, `{"scan_folder":"/srv/scans"}`))
+	if err != nil || cfg.ScanFolder != "/srv/scans" {
+		t.Errorf("ScanFolder = %q, %v", cfg.ScanFolder, err)
+	}
+}
