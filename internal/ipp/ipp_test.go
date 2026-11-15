@@ -6,7 +6,9 @@ import (
 	"bytes"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestEncodeGetPrinterAttributes(t *testing.T) {
@@ -63,11 +65,7 @@ func TestEncodeGroupOrderAndEmptyGroups(t *testing.T) {
 	}
 
 	// No job or printer group: operation group and end only.
-	b = NewRequest(OpCUPSGetPrinters).Encode()
-	if b[len(b)-1] != 0x03 {
-		t.Fatalf("missing end tag: % x", b)
-	}
-	resp, err = Decode(b)
+	resp, err = Decode(NewRequest(OpCUPSGetPrinters).Encode())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -288,11 +286,122 @@ func TestDecodeMalformed(t *testing.T) {
 		"unbalanced end collection": append(append(append(header(0), byte(GroupJob)), attr(nil, 0x37, "", nil)...), byte(GroupEnd)),
 		"length past the end":       append(append(header(0), byte(GroupJob)), byte(TagName), 0x00, 0x01, 'n', 0xff, 0xff, 'x'),
 		"no end tag":                attr(append(header(0), byte(GroupJob)), TagName, "n", []byte("x")),
+		"reserved tag 0x00":         append(attr(append(header(0), 0x00), TagName, "n", []byte("x")), byte(GroupEnd)),
+		"group inside a collection": append(append(attr(append(header(0), byte(GroupPrinter)), 0x34, "col", nil), byte(GroupJob)), attr(nil, 0x37, "", nil)...),
 	}
 	for name, b := range cases {
 		if _, err := Decode(b); err == nil {
 			t.Errorf("%s: no error", name)
 		}
+	}
+}
+
+// A value after a skipped collection carries no name, so it belongs to the
+// collection and is dropped with it, not attached to the attribute before.
+func TestDecodeDropsAdditionalValueAfterSkippedCollection(t *testing.T) {
+	b := header(0)
+	b = append(b, byte(GroupPrinter))
+	b = attr(b, TagName, "printer-name", []byte("A"))
+	b = attr(b, 0x34, "media-col-ready", nil)
+	b = attr(b, 0x37, "", nil)
+	b = attr(b, 0x34, "", nil) // the collection's second value
+	b = attr(b, 0x37, "", nil)
+	b = attr(b, TagKeyword, "", []byte("stray"))
+	b = attr(b, TagKeyword, "sides-default", []byte("one-sided"))
+	b = append(b, byte(GroupEnd))
+	resp, err := Decode(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := resp.Of(GroupPrinter)[0]
+	if got := g.Strings("printer-name"); !reflect.DeepEqual(got, []string{"A"}) {
+		t.Errorf("printer-name = %q, want only A", got)
+	}
+	if g.String("sides-default") != "one-sided" {
+		t.Errorf("sides-default = %q", g.String("sides-default"))
+	}
+}
+
+// An integer of the wrong length decodes to nil in its place, so the values
+// after it keep their positions.
+func TestDecodeWrongLengthIntegerKeepsItsPlace(t *testing.T) {
+	b := header(0)
+	b = append(b, byte(GroupPrinter))
+	b = attr(b, TagInteger, "marker-levels", []byte{0, 0, 0, 50})
+	b = attr(b, TagInteger, "", []byte{0, 60})
+	b = attr(b, TagInteger, "", []byte{0, 0, 0, 70})
+	b = append(b, byte(GroupEnd))
+	resp, err := Decode(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := resp.Of(GroupPrinter)[0]
+	if got := g.Attrs[0].Values; !reflect.DeepEqual(got, []any{int32(50), nil, int32(70)}) {
+		t.Errorf("Values = %#v, want 50, nil, 70", got)
+	}
+	if got := g.Ints("marker-levels"); !reflect.DeepEqual(got, []int{50, 70}) {
+		t.Errorf("Ints = %v, want [50 70]", got)
+	}
+	if got := g.IntsAt("marker-levels", -1); !reflect.DeepEqual(got, []int{50, -1, 70}) {
+		t.Errorf("IntsAt = %v, want [50 -1 70]", got)
+	}
+	if g.IntsAt("absent", -1) != nil {
+		t.Error("IntsAt(absent) should be nil")
+	}
+}
+
+func TestStringsAtKeepsPositions(t *testing.T) {
+	g := AttrGroup{Attrs: []Attr{{Tag: TagName, Name: "marker-names", Values: []any{"Black", nil, int32(3), "Yellow"}}}}
+	if got := g.StringsAt("marker-names"); !reflect.DeepEqual(got, []string{"Black", "", "", "Yellow"}) {
+		t.Errorf("StringsAt = %q", got)
+	}
+	if g.StringsAt("absent") != nil {
+		t.Error("StringsAt(absent) should be nil")
+	}
+}
+
+// A value longer than its 16-bit length is cut back to the start of a UTF-8
+// character, and one of exactly 65535 bytes goes through whole.
+func TestLongestField(t *testing.T) {
+	long := strings.Repeat("a", 65534) + "ü" // 65536 bytes; byte 65535 is inside ü
+	resp, err := Decode(NewRequest(OpPrintJob).Op(Name("job-name", long)).Encode())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := resp.Of(GroupOperation)[0].String("job-name")
+	if got != long[:65534] || !utf8.ValidString(got) {
+		t.Errorf("cut value = %d bytes, valid %v, want the 65534 a's", len(got), utf8.ValidString(got))
+	}
+
+	exact := strings.Repeat("b", 65535)
+	resp, err = Decode(NewRequest(OpPrintJob).Op(Name("job-name", exact)).Encode())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := resp.Of(GroupOperation)[0].String("job-name"); got != exact {
+		t.Errorf("65535-byte value came back as %d bytes", len(got))
+	}
+}
+
+// With leaves the request it copies alone, also when either is extended later.
+func TestRequestWith(t *testing.T) {
+	r := NewRequest(OpCUPSGetPrinters).Op(Keyword("requested-attributes", "printer-name"))
+	w := r.With(Name("requesting-user-name", "mika"))
+	r.Op(Name("other", "x"))
+
+	op := func(req *Request) AttrGroup {
+		t.Helper()
+		resp, err := Decode(req.Encode())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp.Of(GroupOperation)[0]
+	}
+	if g := op(r); g.String("requesting-user-name") != "" || g.String("other") != "x" {
+		t.Errorf("original = %+v", g.Attrs)
+	}
+	if g := op(w); g.String("requesting-user-name") != "mika" || g.String("other") != "" || g.String("requested-attributes") != "printer-name" {
+		t.Errorf("copy = %+v", g.Attrs)
 	}
 }
 

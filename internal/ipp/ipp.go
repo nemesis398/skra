@@ -10,6 +10,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
+	"unicode/utf8"
 )
 
 // Tag is a value tag.
@@ -45,8 +47,9 @@ const (
 )
 
 // Attr is one attribute. Values hold int32, bool or string; a value the
-// decoder does not interpret (dateTime, resolution, rangeOfInteger, a value
-// of the wrong length, an out-of-band marker) is nil.
+// decoder does not interpret (octetString, dateTime, resolution,
+// rangeOfInteger, textWithLanguage, nameWithLanguage, a value of the wrong
+// length, an out-of-band marker) is nil and keeps its place in the list.
 type Attr struct {
 	Tag    Tag
 	Name   string
@@ -74,8 +77,11 @@ func Name(name string, v ...string) Attr    { return strs(TagName, name, v) }
 func Text(name string, v ...string) Attr    { return strs(TagText, name, v) }
 func URI(name string, v ...string) Attr     { return strs(TagURI, name, v) }
 func Mime(name string, v ...string) Attr    { return strs(TagMime, name, v) }
-func Int(name string, v ...int) Attr        { return ints(TagInteger, name, v) }
-func Enum(name string, v ...int) Attr       { return ints(TagEnum, name, v) }
+
+// Int and Enum store each value as an int32, the size of an IPP integer. A
+// value outside the int32 range wraps around without an error.
+func Int(name string, v ...int) Attr  { return ints(TagInteger, name, v) }
+func Enum(name string, v ...int) Attr { return ints(TagEnum, name, v) }
 
 func Bool(name string, v bool) Attr {
 	return Attr{Tag: TagBoolean, Name: name, Values: []any{v}}
@@ -119,6 +125,21 @@ func (g AttrGroup) Strings(name string) []string {
 	return out
 }
 
+// StringsAt returns one entry per value of name, in wire order, with "" for a
+// value that is not a string. Index i is the i-th value, so lists that run in
+// parallel (marker-names, marker-levels) still line up.
+func (g AttrGroup) StringsAt(name string) []string {
+	a := g.find(name)
+	if a == nil {
+		return nil
+	}
+	out := make([]string, len(a.Values))
+	for i, v := range a.Values {
+		out[i], _ = v.(string)
+	}
+	return out
+}
+
 // Int returns the first integer or enum value of name.
 func (g AttrGroup) Int(name string) (int, bool) {
 	if n := g.Ints(name); len(n) > 0 {
@@ -137,6 +158,24 @@ func (g AttrGroup) Ints(name string) []int {
 	for _, v := range a.Values {
 		if n, ok := v.(int32); ok {
 			out = append(out, int(n))
+		}
+	}
+	return out
+}
+
+// IntsAt returns one entry per value of name, in wire order, with missing for
+// a value that is not an integer or enum (one of the wrong length, say). Index
+// i is the i-th value, so lists that run in parallel still line up.
+func (g AttrGroup) IntsAt(name string, missing int) []int {
+	a := g.find(name)
+	if a == nil {
+		return nil
+	}
+	out := make([]int, len(a.Values))
+	for i, v := range a.Values {
+		out[i] = missing
+		if n, ok := v.(int32); ok {
+			out[i] = int(n)
 		}
 	}
 	return out
@@ -174,6 +213,16 @@ func NewRequest(op uint16) *Request {
 // Op adds attributes to the operation group.
 func (r *Request) Op(a ...Attr) *Request { r.oper = append(r.oper, a...); return r }
 
+// With returns a copy of r with a added to the operation group. r stays as
+// it was, so it can be sent again; later additions to either do not reach the
+// other.
+func (r *Request) With(a ...Attr) *Request {
+	c := *r
+	c.oper = append(slices.Clip(r.oper), a...)
+	c.job, c.printer = slices.Clip(r.job), slices.Clip(r.printer)
+	return &c
+}
+
 // Job adds attributes to the job group.
 func (r *Request) Job(a ...Attr) *Request { r.job = append(r.job, a...); return r }
 
@@ -182,7 +231,8 @@ func (r *Request) Printer(a ...Attr) *Request { r.printer = append(r.printer, a.
 
 // Encode returns the wire form: version 2.0, request id 1, then the operation,
 // job and printer groups (the last two only when not empty) and the end tag.
-// A name or value longer than 65535 bytes is cut to fit its 16-bit length.
+// A name or value longer than 65535 bytes is cut to fit its 16-bit length, back
+// to the start of a UTF-8 character so the cut does not split one.
 func (r *Request) Encode() []byte {
 	b := []byte{2, 0, byte(r.op >> 8), byte(r.op), 0, 0, 0, 1}
 	for _, g := range []struct {
@@ -210,7 +260,13 @@ func (r *Request) Encode() []byte {
 
 func appendField(b, f []byte) []byte {
 	if len(f) > math.MaxUint16 {
-		f = f[:math.MaxUint16]
+		n := math.MaxUint16
+		// f[n] is the first byte left out; step back over at most three
+		// continuation bytes so the cut falls before the character they end.
+		for k := 0; k < utf8.UTFMax-1 && !utf8.RuneStart(f[n]); k++ {
+			n--
+		}
+		f = f[:n]
 	}
 	b = binary.BigEndian.AppendUint16(b, uint16(len(f)))
 	return append(b, f...)
@@ -282,10 +338,11 @@ func (r *Response) Err() error {
 
 var errTruncated = errors.New("ipp: message truncated")
 
-// Decode parses an IPP message. Collections are skipped whole; dateTime,
-// resolution and rangeOfInteger values decode to nil. Bytes after the
-// end-of-attributes tag (document data) are ignored. It returns an error, never
-// panics, on malformed input.
+// Decode parses an IPP message. Collections are skipped whole; octetString,
+// dateTime, resolution, rangeOfInteger, textWithLanguage and nameWithLanguage
+// values decode to nil, and so does an out-of-band value. Tag 0x00 is reserved
+// and an error. Bytes after the end-of-attributes tag (document data) are
+// ignored. It returns an error, never panics, on malformed input.
 func Decode(b []byte) (*Response, error) {
 	if len(b) < 8 {
 		return nil, errTruncated
@@ -311,6 +368,9 @@ func Decode(b []byte) (*Response, error) {
 		t := Tag(b[i])
 		i++
 		if t < 0x10 {
+			if t == 0x00 {
+				return nil, errors.New("ipp: reserved tag 0x00")
+			}
 			if Group(t) == GroupEnd {
 				if depth != 0 {
 					return nil, errors.New("ipp: unterminated collection")
@@ -372,7 +432,10 @@ func Decode(b []byte) (*Response, error) {
 		case t == TagInteger || t == TagEnum || t == TagBoolean:
 			v = nil // wrong length
 		case t < 0x40:
-			v = nil // out-of-band, dateTime, resolution, range
+			// out-of-band (0x10-0x1f), octetString 0x30, dateTime 0x31,
+			// resolution 0x32, rangeOfInteger 0x33, textWithLanguage 0x35,
+			// nameWithLanguage 0x36
+			v = nil
 		default:
 			v = string(val)
 		}
