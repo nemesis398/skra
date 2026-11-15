@@ -30,7 +30,13 @@ func ctxFor(t *testing.T) context.Context {
 // ends, so later runs do not see stale jobs.
 func held(t *testing.T, c *cups.Client, tag string) int {
 	t.Helper()
-	id, err := c.Print(ctxFor(t), queue, "skra-test "+t.Name()+" "+tag, "text/plain", cups.JobOptions{Hold: true}, strings.NewReader("hello from skra\n"))
+	return heldOn(t, c, queue, tag)
+}
+
+// heldOn is held for another queue.
+func heldOn(t *testing.T, c *cups.Client, q, tag string) int {
+	t.Helper()
+	id, err := c.Print(ctxFor(t), q, "skra-test "+t.Name()+" "+tag, "text/plain", cups.JobOptions{Hold: true}, strings.NewReader("hello from skra\n"))
 	if err != nil {
 		t.Fatal(err)
 	}

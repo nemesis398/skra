@@ -8,7 +8,6 @@ import (
 	"context"
 	"os/exec"
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/nemesis398/skra/internal/cups"
@@ -37,17 +36,6 @@ func commandQueue(t *testing.T, name string) {
 		"printf '*cupsFilter: \"application/vnd.cups-command 0 commandtops\"\n*cupsCommands: \"Clean PrintSelfTestPage ReportLevels\"\n' >> /tmp/"+name+".ppd; "+
 		"lpadmin -p "+name+" -P /tmp/"+name+".ppd; rm /tmp/"+name+".ppd; lpadmin -p "+name+" -E; cupsdisable "+name)
 	t.Cleanup(func() { exec.Command("podman", "exec", "skra-harness", "lpadmin", "-x", name).Run() })
-}
-
-// heldOn prints a held job on the queue and cancels it when the test ends.
-func heldOn(t *testing.T, c *cups.Client, q, tag string) int {
-	t.Helper()
-	id, err := c.Print(ctxFor(t), q, "skra-test "+t.Name()+" "+tag, "text/plain", cups.JobOptions{Hold: true}, strings.NewReader("hello from skra\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	cancelAtEnd(t, c, id)
-	return id
 }
 
 // TestSettingsRoundTrip changes the defaults of Virtual-MFC, reads them back
