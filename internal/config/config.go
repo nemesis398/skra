@@ -64,8 +64,9 @@ func DefaultPath() string {
 
 // Load reads path over the defaults. A missing file gives the defaults. An
 // unknown key, a listen address on another host than 127.0.0.1 or localhost,
-// an idle_exit that is not a duration, or a scanner without a name or without
-// a plain http or https URL is an error.
+// an idle_exit that is not a duration, a scanner without a name or without a
+// plain http or https URL, or a scan_folder that is empty or neither absolute
+// nor under ~/ is an error.
 func Load(path string) (Config, error) {
 	cfg := defaults()
 	data, err := os.ReadFile(path)
@@ -80,10 +81,29 @@ func Load(path string) (Config, error) {
 	if err := dec.Decode(&cfg); err != nil {
 		return Config{}, fmt.Errorf("parse %s: %w", path, err)
 	}
+	if cfg.ScanFolder, err = scanFolder(cfg.ScanFolder); err != nil {
+		return Config{}, fmt.Errorf("scan_folder: %w", err)
+	}
 	if err := validate(cfg); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+// scanFolder turns a leading ~/ into the home directory and requires an
+// absolute path after that, so a scan is never saved relative to wherever
+// skra was started. The path comes back cleaned.
+func scanFolder(dir string) (string, error) {
+	if dir == "" {
+		return "", errors.New("empty; name the folder scans are saved to")
+	}
+	if rest, ok := strings.CutPrefix(dir, "~/"); ok {
+		dir = filepath.Join(os.Getenv("HOME"), rest)
+	}
+	if !filepath.IsAbs(dir) {
+		return "", fmt.Errorf("%q is not an absolute path; write it as /… or ~/…", dir)
+	}
+	return filepath.Clean(dir), nil
 }
 
 func validate(cfg Config) error {

@@ -173,3 +173,26 @@ func TestScanFolder(t *testing.T) {
 		t.Errorf("ScanFolder = %q, %v", cfg.ScanFolder, err)
 	}
 }
+
+// A scan folder may start with ~/ for the home directory. Anything else must
+// be an absolute path, so a save never lands relative to wherever skra was
+// started, and an empty one is refused.
+func TestScanFolderPath(t *testing.T) {
+	t.Setenv("HOME", "/home/x")
+	for in, want := range map[string]string{
+		`~/Nextcloud/Documents/Scans`: "/home/x/Nextcloud/Documents/Scans",
+		`~/Scans/`:                    "/home/x/Scans",
+		`/srv//scans/`:                "/srv/scans",
+	} {
+		cfg, err := Load(writeConfig(t, `{"scan_folder":"`+in+`"}`))
+		if err != nil || cfg.ScanFolder != want {
+			t.Errorf("scan_folder %q: got %q, %v; want %q", in, cfg.ScanFolder, err, want)
+		}
+	}
+	for _, in := range []string{``, `  `, `Scans`, `./Scans`, `~Scans`, `~`, `~mika/Scans`} {
+		_, err := Load(writeConfig(t, `{"scan_folder":"`+in+`"}`))
+		if err == nil || !strings.Contains(err.Error(), "scan_folder") {
+			t.Errorf("scan_folder %q: err = %v", in, err)
+		}
+	}
+}
