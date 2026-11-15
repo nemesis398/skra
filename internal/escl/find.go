@@ -5,6 +5,7 @@ package escl
 import (
 	"cmp"
 	"context"
+	"log"
 	"net"
 	"net/url"
 	"slices"
@@ -60,10 +61,19 @@ func Find(ctx context.Context, cfg []config.Scanner, b Browser) []Scanner {
 		return out
 	}
 
+	// A failed browse is logged, so a scanner missing from the list can be
+	// traced to avahi.
+	browse := func(regtype string) []Found {
+		found, err := b.Browse(ctx, regtype)
+		if err != nil {
+			log.Printf("skra: browsing %s: %v", regtype, err)
+		}
+		return found
+	}
 	var wg sync.WaitGroup
 	var plain, secure []Found
-	wg.Go(func() { plain, _ = b.Browse(ctx, regtypeHTTP) })
-	wg.Go(func() { secure, _ = b.Browse(ctx, regtypeHTTPS) })
+	wg.Go(func() { plain = browse(regtypeHTTP) })
+	wg.Go(func() { secure = browse(regtypeHTTPS) })
 	wg.Wait()
 
 	// The https announcements go first, so they win for the same scanner.

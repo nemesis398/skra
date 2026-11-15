@@ -3,9 +3,13 @@
 package escl
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
+	"os"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 
@@ -104,9 +108,26 @@ func TestFindKeepsConfiguredOnBrowseError(t *testing.T) {
 		"_uscans._tcp": errors.New("no system bus"),
 	}}
 	cfg := []config.Scanner{{Name: "Brother", URL: "http://192.168.178.31/eSCL"}}
+	var logged bytes.Buffer
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
 	got := Find(context.Background(), cfg, b)
 	if !slices.Equal(got, []Scanner{{Name: "Brother", URL: "http://192.168.178.31/eSCL", Declared: true}}) {
 		t.Errorf("Find = %+v", got)
+	}
+	// Each failed type is in the log, so a scanner that is missing can be
+	// traced to avahi.
+	lines := strings.Split(strings.TrimSpace(logged.String()), "\n")
+	for _, regtype := range []string{"_uscan._tcp", "_uscans._tcp"} {
+		n := 0
+		for _, l := range lines {
+			if strings.Contains(l, "browsing "+regtype+": no system bus") {
+				n++
+			}
+		}
+		if n != 1 {
+			t.Errorf("the log has %d lines for %s, want 1:\n%s", n, regtype, logged.String())
+		}
 	}
 	// One type failing does not hide what the other found.
 	b = &fakeBrowser{
