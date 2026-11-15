@@ -1041,9 +1041,9 @@ func TestSettingsShowNotSetForAnEmptyDefault(t *testing.T) {
 		if m == nil || m[1] != `<option value="" selected>(not set)</option>` {
 			t.Errorf("%s: first option %q, want a selected (not set) with value \"\"", id, m)
 		}
-		if n := strings.Count(body, " selected>"); n != 2 {
-			t.Errorf("%d selected options, want 2", n)
-		}
+	}
+	if n := strings.Count(body, " selected>"); n != 2 {
+		t.Errorf("%d selected options, want 2", n)
 	}
 	// What the browser posts for an untouched panel plus one change.
 	form := same(p)
