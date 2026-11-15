@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"slices"
 	"strconv"
 	"time"
@@ -35,7 +36,6 @@ const (
 	scanRunningText   = "A scan is running. Wait for it or stop it."
 	unknownScanner    = "That scanner is not in the list. Reload the page and pick it again."
 	noScansText       = "Scanning is not set up here: skrá has no place to keep scans."
-	scanGoneText      = "That scan is gone. Reload the page to start a new one."
 	scanStartingText  = "Starting the scan…"
 	scanNoPagesText   = "The scanner sent no pages."
 	scanTooLongFormat = "The scan ran for %g minutes, the longest one may run, and was stopped. Scan more for the rest."
@@ -85,6 +85,15 @@ var scanErrors = []struct {
 	{scan.ErrPageTooBig, "bad"},
 }
 
+// scanReply answers a start or a stop with msg and tells the page, in the
+// X-Skra-Class header, which color to show it in: "need", "away" or "bad",
+// as the scan messages of the event stream. A scanner that is away is never
+// a failure, so its answer must not come out red.
+func scanReply(w http.ResponseWriter, status int, msg, class string) {
+	w.Header().Set("X-Skra-Class", class)
+	reply(w, status, msg)
+}
+
 // scanErrText is what the page says for err, and its class.
 func scanErrText(err error) (msg, class string) {
 	for _, e := range scanErrors {
@@ -96,15 +105,19 @@ func scanErrText(err error) (msg, class string) {
 }
 
 // scanJob is the last scan of one session. Only one runs per session; the
-// fields below done change with s.scanMu held.
+// fields below done change with s.scanMu held. created says the job's start
+// made the session; such a session is discarded again when the job took no
+// page, and gone says that happened.
 type scanJob struct {
 	session *scan.Session
 	scanner escl.Scanner
 	started time.Time
+	created bool
 	cancel  context.CancelFunc
 	done    chan struct{} // closed when the job has ended
 
 	running    bool
+	gone       bool
 	msg, class string
 }
 
@@ -282,11 +295,15 @@ func (s *Server) scanForm(w http.ResponseWriter, r *http.Request) {
 	s.fragment(w, "scanform", formFor(caps), renderFailedText)
 }
 
-// scanJobView is one scan as the event stream draws it.
+// scanJobView is one scan as the event stream draws it. Scanner and DPI are
+// the eSCL root and the resolution the session's pages share, which the page
+// holds its form to while the scan has pages. Gone marks a scan whose
+// session was discarded because it took no page.
 type scanJobView struct {
-	ID, Msg, Class string
-	Running        bool
-	Pages          []int // page numbers, counted from 1
+	ID, Msg, Class, Scanner string
+	DPI                     int
+	Running, Gone           bool
+	Pages                   []int // page numbers, counted from 1
 }
 
 // scanViews lists the scans the service knows, oldest first.
@@ -299,7 +316,8 @@ func (s *Server) scanViews() []scanJobView {
 	s.scanMu.Lock()
 	rows := make([]row, 0, len(s.scanJobs))
 	for id, j := range s.scanJobs {
-		rows = append(rows, row{scanJobView{ID: id, Msg: j.msg, Class: j.class, Running: j.running}, j.session, j.started})
+		rows = append(rows, row{scanJobView{ID: id, Msg: j.msg, Class: j.class, Running: j.running, Gone: j.gone,
+			Scanner: j.session.Scanner.URL, DPI: j.session.Settings.Resolution}, j.session, j.started})
 	}
 	s.scanMu.Unlock()
 	slices.SortFunc(rows, func(a, b row) int { return a.started.Compare(b.started) })
@@ -427,77 +445,85 @@ func sourceWords(set escl.Settings) string {
 // answers 202 with the session's ID while the pages come in the background.
 func (s *Server) startScan(w http.ResponseWriter, r *http.Request) {
 	if s.deps.Scans == nil {
-		reply(w, http.StatusServiceUnavailable, noScansText)
+		scanReply(w, http.StatusServiceUnavailable, noScansText, "bad")
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		reply(w, http.StatusBadRequest, "The form could not be read. Reload the page and try again.")
+		scanReply(w, http.StatusBadRequest, "The form could not be read. Reload the page and try again.", "bad")
 		return
 	}
 	req, refused := parseScanForm(r.PostForm)
 	if refused != "" {
-		reply(w, http.StatusBadRequest, refused)
+		scanReply(w, http.StatusBadRequest, refused, "bad")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), actionTimeout)
 	defer cancel()
 
+	// A session that is gone, such as one a scan discarded because it took
+	// no page, leaves nothing to scan more into: the scan starts a new one.
 	var sess *scan.Session
 	if id := r.PostForm.Get("session"); id != "" {
 		var err error
-		if sess, err = s.deps.Scans.Get(id); err != nil {
-			reply(w, http.StatusNotFound, scanGoneText)
+		sess, err = s.deps.Scans.Get(id)
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+			sess = nil
+		case err != nil:
+			scanReply(w, http.StatusBadRequest, "That is not a scan. Reload the page and try again.", "bad")
+			return
+		case s.scanRunning(id):
+			scanReply(w, http.StatusConflict, scanRunningText, "need")
 			return
 		}
-		if s.scanRunning(id) {
-			reply(w, http.StatusConflict, scanRunningText)
-			return
-		}
+	}
+	if sess != nil {
 		// A page's size in the PDF comes from the resolution the session
 		// was opened with, so the pages of one scan share it.
 		if sess.Scanner.URL != req.scanner || sess.Settings.Resolution != req.resolution {
-			reply(w, http.StatusBadRequest, fmt.Sprintf("Scan more on %s at %d dpi, as the pages before, or save this scan first.",
-				sess.Scanner.Name, sess.Settings.Resolution))
+			scanReply(w, http.StatusBadRequest, fmt.Sprintf("Scan more on %s at %d dpi, as the pages before, or save this scan first.",
+				sess.Scanner.Name, sess.Settings.Resolution), "need")
 			return
 		}
 	}
 	sc, ok := s.knownScanner(ctx, req.scanner)
 	if !ok {
-		reply(w, http.StatusBadRequest, unknownScanner)
+		scanReply(w, http.StatusBadRequest, unknownScanner, "bad")
 		return
 	}
 	c, err := s.scannerClient(sc.URL)
 	if err != nil {
-		reply(w, http.StatusBadRequest, "skrá cannot speak to "+sc.Name+": "+err.Error())
+		scanReply(w, http.StatusBadRequest, "skrá cannot speak to "+sc.Name+": "+err.Error(), "bad")
 		return
 	}
 	caps, err := s.scannerCaps(ctx, c, sc.URL, false)
 	if err != nil {
-		msg, _ := scanErrText(err)
-		reply(w, http.StatusBadGateway, msg)
+		msg, class := scanErrText(err)
+		scanReply(w, http.StatusBadGateway, msg, class)
 		return
 	}
 	set, refused := scanSettingsFor(req, caps)
 	if refused != "" {
-		reply(w, http.StatusBadRequest, refused)
+		scanReply(w, http.StatusBadRequest, refused, "bad")
 		return
 	}
-	if sess == nil {
+	created := sess == nil
+	if created {
 		if sess, err = s.deps.Scans.New(sc, set); err != nil {
-			reply(w, http.StatusInternalServerError, "Could not keep the scan: "+err.Error())
+			scanReply(w, http.StatusInternalServerError, "Could not keep the scan: "+err.Error(), "bad")
 			return
 		}
 	}
 
 	// The job outlives this request: it ends on stop or after scanLimit.
 	jctx, jcancel := context.WithTimeout(context.Background(), scanLimit)
-	j := &scanJob{session: sess, scanner: sc, started: time.Now(), cancel: jcancel, done: make(chan struct{}),
-		running: true, msg: scanStartingText}
+	j := &scanJob{session: sess, scanner: sc, started: time.Now(), created: created, cancel: jcancel,
+		done: make(chan struct{}), running: true, msg: scanStartingText}
 	s.scanMu.Lock()
 	if old := s.scanJobs[sess.ID]; old != nil && old.running {
 		s.scanMu.Unlock()
 		jcancel()
-		reply(w, http.StatusConflict, scanRunningText)
+		scanReply(w, http.StatusConflict, scanRunningText, "need")
 		return
 	}
 	s.scanJobs[sess.ID] = j
@@ -507,7 +533,7 @@ func (s *Server) startScan(w http.ResponseWriter, r *http.Request) {
 		sourceWords(set), scanColorWords[set.Color], set.Resolution, req.size.Name, sess.ID), nil)
 	go s.runScan(jctx, j, c, set, s.holdIdle())
 	s.hub.Refresh()
-	reply(w, http.StatusAccepted, sess.ID)
+	scanReply(w, http.StatusAccepted, sess.ID, "")
 }
 
 // scanningText is the message while page n of a job is on its way.
@@ -557,7 +583,14 @@ func (s *Server) runScan(ctx context.Context, j *scanJob, c ScannerClient, set e
 		_ = c.Cancel(cctx, job) // the scan has ended here either way
 		cancel()
 	}
+	// A scan that took nothing into a session it made leaves no session
+	// behind: there is nothing to save, and the next start is free to pick
+	// another scanner or resolution.
+	gone := j.created && n == 0 && len(j.session.PageList()) == 0 && s.deps.Scans.Discard(j.session.ID) == nil
 	msg, class := scanOutcome(ctx, err, n)
+	s.scanMu.Lock()
+	j.gone = gone
+	s.scanMu.Unlock()
 	s.setScan(j, msg, class, false)
 	close(j.done)
 }
@@ -590,7 +623,7 @@ func (s *Server) stopScan(w http.ResponseWriter, r *http.Request) {
 	running := j != nil && j.running
 	s.scanMu.Unlock()
 	if !running {
-		reply(w, http.StatusConflict, "No scan is running there.")
+		scanReply(w, http.StatusConflict, "No scan is running there.", "need")
 		return
 	}
 	j.cancel()
@@ -599,6 +632,6 @@ func (s *Server) stopScan(w http.ResponseWriter, r *http.Request) {
 	case <-time.After(stopWait):
 	}
 	s.record(r, "scan.stop", j.scanner.Name, "scan "+id, nil)
-	msg, _, _, _ := s.scanState(id)
-	reply(w, http.StatusOK, msg)
+	msg, class, _, _ := s.scanState(id)
+	scanReply(w, http.StatusOK, msg, class)
 }

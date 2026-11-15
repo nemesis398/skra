@@ -145,6 +145,7 @@ select.f option { background:var(--mantle); color:var(--text); }
 .scanmsg.need { color:var(--peach); }
 .scanmsg.bad { color:var(--red); }
 .scanmsg.away, .wait.away { color:var(--o0); }
+#scan-note { padding:0.308rem 0.615rem 0; }
 .strip { display:flex; flex-wrap:wrap; gap:0.615rem; }
 .strip .pg { width:6.154rem; aspect-ratio:210 / 297; background:var(--mantle); outline:1px solid var(--s0);
   display:flex; align-items:flex-end; justify-content:center; padding-bottom:0.308rem; }

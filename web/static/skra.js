@@ -657,8 +657,10 @@ document.addEventListener("drop", (e) => {
 // are fragments loaded when it opens, and the form again when another scanner
 // is picked. A scan runs on the server. The event stream's scan fragment holds
 // every scan the service knows; the page shows the one it started, or, when
-// it started none, one that runs. An answer that comes after a newer question
-// is dropped.
+// it started none, one that runs, and forgets a scan whose session is gone
+// because it took no page. While the scan has pages the scanner and the
+// resolution stay those of its pages. An answer that comes after a newer
+// question is dropped.
 let scanSession = "";
 let scanRunning = false;
 let lastScans = "";
@@ -681,6 +683,7 @@ async function loadScanners() {
     say("Could not reach skrá. Is it still running?", true);
     return;
   }
+  tieScanForm();
   await loadScanForm();
 }
 
@@ -721,6 +724,39 @@ function showScanButtons() {
   start.disabled = scanRunning || !document.querySelector("#scan-form [data-group]");
   scanButton("stop").hidden = !scanRunning;
   start.querySelector("span").textContent = $("scan-job").querySelector(".pg") ? "scan more" : "scan";
+  tieScanForm();
+}
+
+// tieScanForm holds the scanner and the resolution to those of the shown
+// scan's pages, which the server keeps for the whole scan, and frees them
+// when the scan has none.
+function tieScanForm() {
+  const job = $("scan-job").querySelector(".scanjob");
+  const tied = job && job.dataset.session === scanSession && job.querySelector(".pg") ? job : null;
+  const scanner = $("scan-scanner");
+  if (scanner) {
+    if (tied && [...scanner.options].some((o) => o.value === tied.dataset.scanner)) scanner.value = tied.dataset.scanner;
+    scanner.disabled = Boolean(tied);
+    scanner.title = tied ? "This scan stays on this scanner. Save it to change." : "";
+  }
+  for (const b of document.querySelectorAll('#scan-form [data-group="resolution"] button')) {
+    const keep = !tied || b.dataset.pick === tied.dataset.dpi;
+    b.disabled = !keep;
+    b.title = keep ? "" : `This scan is at ${tied.dataset.dpi} dpi. Save it to change.`;
+    if (tied) {
+      b.classList.toggle("on", b.dataset.pick === tied.dataset.dpi);
+      b.setAttribute("aria-pressed", String(b.dataset.pick === tied.dataset.dpi));
+    }
+  }
+}
+
+// scanNote shows the answer to a start beside the form, in the color the
+// server names: a scanner that is away is never red.
+function scanNote(text, cls) {
+  const el = $("scan-note");
+  el.textContent = text;
+  el.className = cls ? `scanmsg ${cls}` : "scanmsg";
+  el.hidden = !text;
 }
 
 // scanFields reads the form: the button rows by group, with "feeder · both
@@ -745,9 +781,10 @@ async function startScan(b) {
     const res = await post("/scan/start", scanFields());
     const text = (await res.text()).trim();
     if (res.status !== 202) {
-      say(text || `skrá answered ${res.status}.`, true);
+      scanNote(text || `skrá answered ${res.status}.`, res.headers.get("X-Skra-Class") ?? "bad");
       return;
     }
+    scanNote("");
     scanSession = text;
     scanRunning = true;
     showScans(); // the first news may have come before the answer
@@ -772,6 +809,7 @@ function showScans() {
   if (!mine) return;
   $("scan-job").replaceChildren(mine);
   scanRunning = mine.dataset.running === "true";
+  if (mine.dataset.gone === "true") scanSession = "";
   showScanButtons();
 }
 

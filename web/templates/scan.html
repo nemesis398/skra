@@ -5,6 +5,7 @@
 <div class="panel" id="scan">
   <div class="frow"><label class="k" for="scan-scanner">scanner</label><span id="scan-scanners" data-src="/scan/scanners"><span class="wait">looking for scanners</span></span><span class="btns"><button type="button" class="btn sm" data-scan="find"><i>&#xF0450;</i>look again</button></span></div>
   <div id="scan-form"></div>
+  <div class="scanmsg" id="scan-note" hidden></div>
   <div class="row"><button type="button" class="btn" data-scan="stop" hidden><i>&#xF04DB;</i>stop</button><button type="button" class="btn" data-scan="start" disabled><i>&#xF06AB;</i><span>scan</span></button></div>
 </div>
 <div class="sec"><b>pages</b><span class="rule"></span></div>
@@ -23,8 +24,9 @@
 {{end}}{{end}}
 
 {{/* The event stream's scan fragment: every scan the service knows, with
-     its last message and its pages. skra.js shows the one the page started. */}}
-{{define "scan"}}<div id="scans">{{range .}}<div class="scanjob" data-session="{{.ID}}" data-running="{{.Running}}">
+     its last message, its pages, and the scanner and resolution they share.
+     skra.js shows the one the page started, and forgets it when it is gone. */}}
+{{define "scan"}}<div id="scans">{{range .}}<div class="scanjob" data-session="{{.ID}}" data-running="{{.Running}}" data-gone="{{.Gone}}" data-scanner="{{.Scanner}}" data-dpi="{{.DPI}}">
 <div class="scanmsg{{if .Class}} {{.Class}}{{end}}">{{.Msg}}</div>
 <div class="strip">{{range .Pages}}<div class="pg"><span class="n">{{.}}</span></div>{{end}}</div>
 </div>{{end}}</div>{{end}}

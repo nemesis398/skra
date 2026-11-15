@@ -362,9 +362,12 @@ func TestScanMoreAppends(t *testing.T) {
 	if rec := postTo(rig.s, rig.h, "/scan/start", form); rec.Code != 400 {
 		t.Errorf("scan more at another resolution: status %d, want 400", rec.Code)
 	}
-	form = rig.feeder(strings.Repeat("0", 32))
-	if rec := postTo(rig.s, rig.h, "/scan/start", form); rec.Code != 404 {
-		t.Errorf("scan more into a missing session: status %d, want 404", rec.Code)
+	if rec := postTo(rig.s, rig.h, "/scan/start", form); rec.Header().Get("X-Skra-Class") != "need" {
+		t.Errorf("the refusal of another resolution has class %q, want need", rec.Header().Get("X-Skra-Class"))
+	}
+	frag, err := rig.s.scanFragment()
+	if err != nil || !strings.Contains(frag, `data-gone="false" data-scanner="`+rig.url+`" data-dpi="100"`) {
+		t.Errorf("the fragment does not say which scanner and resolution the scan keeps (%v):\n%s", err, frag)
 	}
 }
 
@@ -553,5 +556,94 @@ func TestScanHoldsTheIdleClock(t *testing.T) {
 	}
 	if n := rig.pages(t, strings.TrimSpace(id.String())); n != 3 {
 		t.Errorf("session holds %d pages when the service exits, want 3", n)
+	}
+}
+
+// hangUpOnPages hangs up on every page request, as a scanner does that left
+// the network before the first sheet.
+func hangUpOnPages(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/NextDocument") {
+			if conn, _, err := http.NewResponseController(w).Hijack(); err == nil {
+				conn.Close()
+			}
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// A first scan that takes no page leaves no session: the page forgets it, and
+// a start on another resolution, even one that still names it, begins anew.
+func TestAFailedFirstScanLeavesNoSession(t *testing.T) {
+	rig := newScanRig(t, 3, hangUpOnPages)
+	id := rig.start(t, rig.feeder(""))
+	if msg, class := rig.waitDone(t, id); msg != escl.ErrAway.Error() || class != "away" {
+		t.Fatalf("first scan ended with %q in %q", msg, class)
+	}
+	if sessions, _ := rig.s.deps.Scans.List(); len(sessions) != 0 {
+		t.Errorf("an empty first scan left %d sessions", len(sessions))
+	}
+	frag, err := rig.s.scanFragment()
+	if err != nil || !strings.Contains(frag, `data-session="`+id+`" data-running="false" data-gone="true"`) {
+		t.Errorf("the fragment does not mark the scan gone (%v):\n%s", err, frag)
+	}
+	form := rig.feeder(id)
+	form.Set("resolution", "200")
+	rec := postTo(rig.s, rig.h, "/scan/start", form)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("start on another resolution after an empty scan: status %d: %s", rec.Code, rec.Body.String())
+	}
+	if again := strings.TrimSpace(rec.Body.String()); again == id {
+		t.Error("the new scan reuses the discarded session")
+	}
+}
+
+// A scan more that takes no page keeps the session and the pages before.
+func TestScanMoreThatTakesNothingKeepsTheSession(t *testing.T) {
+	rig := newScanRig(t, 2, nil)
+	id := rig.start(t, rig.feeder(""))
+	rig.waitDone(t, id)
+	rig.fake.SetState("empty", false)
+	rig.start(t, rig.feeder(id))
+	rig.waitDone(t, id)
+	if n := rig.pages(t, id); n != 2 {
+		t.Errorf("session holds %d pages, want 2", n)
+	}
+	if frag, _ := rig.s.scanFragment(); !strings.Contains(frag, `data-gone="false"`) {
+		t.Errorf("the session is marked gone:\n%s", frag)
+	}
+}
+
+// hangUpOnEverything is a scanner that answers nothing at all.
+func hangUpOnEverything(http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if conn, _, err := http.NewResponseController(w).Hijack(); err == nil {
+			conn.Close()
+		}
+	})
+}
+
+// The answer to a start names its color as the scan messages do, so the page
+// never shows a scanner that is away, or a scan that runs, in red.
+func TestStartAnswersCarryTheirColor(t *testing.T) {
+	away := newScanRig(t, 3, hangUpOnEverything)
+	rec := postTo(away.s, away.h, "/scan/start", away.feeder(""))
+	if rec.Code != http.StatusBadGateway || rec.Body.String() != escl.ErrAway.Error() || rec.Header().Get("X-Skra-Class") != "away" {
+		t.Errorf("away at start: status %d, %q, class %q; want 502, the sentinel's text, away",
+			rec.Code, rec.Body.String(), rec.Header().Get("X-Skra-Class"))
+	}
+
+	busy := newScanRig(t, 3, slowPages(time.Minute))
+	id := busy.start(t, busy.feeder(""))
+	rec = postTo(busy.s, busy.h, "/scan/start", busy.feeder(id))
+	if rec.Code != http.StatusConflict || rec.Header().Get("X-Skra-Class") != "need" {
+		t.Errorf("start while one runs: status %d, class %q; want 409, need", rec.Code, rec.Header().Get("X-Skra-Class"))
+	}
+
+	form := busy.feeder("")
+	form.Set("resolution", "1200")
+	if rec := postTo(busy.s, busy.h, "/scan/start", form); rec.Header().Get("X-Skra-Class") != "bad" {
+		t.Errorf("a refused form has class %q, want bad", rec.Header().Get("X-Skra-Class"))
 	}
 }
