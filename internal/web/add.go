@@ -424,11 +424,14 @@ func (s *Server) drivers(ctx context.Context, id, maker string) (list []cups.PPD
 	if err != nil {
 		return nil, 0, err
 	}
-	label := func(p cups.PPD) string { return strings.ToLower(pick(p.MakeModel != "", p.MakeModel, p.Name)) }
-	slices.SortStableFunc(list, func(a, b cups.PPD) int { return strings.Compare(label(a), label(b)) })
+	key := func(p cups.PPD) string { return strings.ToLower(driverLabel(p)) }
+	slices.SortStableFunc(list, func(a, b cups.PPD) int { return strings.Compare(key(a), key(b)) })
 	total = len(list)
 	return list[:min(total, maxDrivers)], total, nil
 }
+
+// driverLabel is how the list shows a driver: its make and model, or its name.
+func driverLabel(p cups.PPD) string { return pick(p.MakeModel != "", p.MakeModel, p.Name) }
 
 type driversView struct {
 	Message, Hint string
@@ -461,7 +464,7 @@ func (s *Server) driverList(w http.ResponseWriter, r *http.Request) {
 		v.Hint = fmt.Sprintf("first %d of %d; type the maker to narrow the list", len(list), total)
 	}
 	for _, p := range list {
-		v.Choices = append(v.Choices, choice{Value: p.Name, Label: pick(p.MakeModel != "", p.MakeModel, p.Name)})
+		v.Choices = append(v.Choices, choice{Value: p.Name, Label: driverLabel(p)})
 	}
 	s.fragment(w, "drivers", v)
 }
