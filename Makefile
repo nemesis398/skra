@@ -1,10 +1,16 @@
-.PHONY: build test integration run dev install-user harness-up harness-down printer-stop printer-start
+.PHONY: build test fmt-check integration run dev install-user harness-up harness-down printer-stop printer-start
 
 build:
 	go build -o skra ./cmd/skra
 
 test:
 	go test ./...
+
+# fmt-check fails and lists the tracked Go files that gofmt would change.
+# It names them because "gofmt -l ." also walks .dev, where the harness's
+# certs directory is unreadable to the host user.
+fmt-check:
+	@out=$$(gofmt -l $$(git ls-files '*.go')) && test -z "$$out" || { echo "gofmt would change:" >&2; echo "$$out" >&2; exit 1; }
 
 integration: harness-up
 	go test -count=1 -tags integration ./...
