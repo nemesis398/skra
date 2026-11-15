@@ -371,6 +371,23 @@ func TestIsLocalCUPS(t *testing.T) {
 		"ipp://localhost:8631/ipp/print": false, "ipp://localhost:60000/ipp/print": false,
 		"ipp://127.0.0.1:8631/": false, "ipp://printer.local:631/ipp/print": false, "ipp://192.168.1.5/": false,
 		"ipp://[2001:db8::5]:631/": false, "": false,
+
+		// http and https reach the same CUPS; the port is a number, and empty is 631.
+		"http://localhost:631/printers/x": true, "https://localhost:631/": true, "http://127.0.0.1/": true,
+		"http://localhost:8631/": false, "http://printer.local:631/": false,
+		"ipp://localhost:0631/": true, "ipp://localhost:00631/": true, "ipp://localhost:631": true,
+		"ipps://localhost:443/": false, "https://localhost:443/": false, "ipp://localhost:0/": false,
+		// the unspecified addresses connect to this machine
+		"ipp://0.0.0.0/": true, "ipp://0.0.0.0:631/": true, "ipp://[::]:631/": true, "ipp://[::]/": true,
+		// names for this machine
+		"ipp://localhost./": true, "ipp://LOCALHOST:631/": true, "ipp://foo.localhost/": true, "ipp://a.b.localhost:631/": true,
+		"ipp://foo.localhost.:631/": true, "ipp://notlocalhost/": false, "ipp://localhost.example.com/": false,
+		// scheme and host in other spellings, userinfo, IPv6 forms
+		"IPP://localhost": true, "ipp://user:pw@localhost/": true, "ipp://a@b@localhost/": true,
+		"ipp://[::ffff:127.0.0.1]/": true, "ipp://[::1%25lo]/": true, "ipp://[::1%25lo]:631/": true,
+		"ipp://[fe80::1%25eth0]:631/": false,
+		// what does not parse is not claimed (the caller refuses it); other schemes are not CUPS
+		"ipp://local%68ost/": false, "file:///etc/passwd": false, "socket://localhost:631": false, "dnssd://localhost._ipp._tcp.local./": false,
 	} {
 		if got := IsLocalCUPS(uri); got != want {
 			t.Errorf("IsLocalCUPS(%q) = %v, want %v", uri, got, want)

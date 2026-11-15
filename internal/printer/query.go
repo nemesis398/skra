@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -49,24 +50,35 @@ type Live struct {
 // itself, such as the CUPS queue it shares over DNS-SD.
 var ErrOwnHost = errors.New("this machine's own service")
 
-// IsLocalCUPS reports whether an ipp or ipps URI points at port 631 of this
-// machine, which is where its CUPS listens. skra speaks to CUPS only over its
-// unix socket, so Query never connects there: such a queue would be a loop
-// queue, or a dnssd name that resolves to the CUPS this laptop shares itself.
+// IsLocalCUPS reports whether an ipp, ipps, http or https URI points at port
+// 631 of this machine, which is where its CUPS listens (CUPS's ipp backend
+// treats http like ipp). skra speaks to CUPS only over its unix socket, so
+// Query never connects there: such a queue would be a loop queue, or a dnssd
+// name that resolves to the CUPS this laptop shares itself. The port is
+// compared as a number, and an empty one counts as 631. A URI that does not
+// parse is not claimed here; a caller that takes addresses from a user refuses
+// those itself.
 func IsLocalCUPS(uri string) bool {
 	u, err := url.Parse(uri)
-	if err != nil || (u.Scheme != "ipp" && u.Scheme != "ipps") {
+	if err != nil {
 		return false
 	}
-	if port := u.Port(); port != "" && port != "631" {
+	switch u.Scheme {
+	case "ipp", "ipps", "http", "https":
+	default:
 		return false
 	}
-	host := strings.TrimSuffix(u.Hostname(), ".")
-	if strings.EqualFold(host, "localhost") {
+	if p := u.Port(); p != "" {
+		if n, err := strconv.Atoi(p); err != nil || n != 631 {
+			return false
+		}
+	}
+	host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
 		return true
 	}
 	ip, err := netip.ParseAddr(host)
-	return err == nil && (ip.IsLoopback() || ip.IsUnspecified())
+	return err == nil && (ip.IsLoopback() || ip.IsUnspecified() || ip.Unmap().IsLoopback() || ip.Unmap().IsUnspecified())
 }
 
 // Resolver turns a dnssd:// device URI into an ipp:// or ipps:// one.
