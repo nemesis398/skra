@@ -92,6 +92,73 @@ func cleanTitle(title string, now time.Time) string {
 	return t
 }
 
+// formatExt is the file extension of a format to save in, and whether it
+// gives a file a page.
+func formatExt(format string) (ext string, perPage bool, err error) {
+	switch format {
+	case "pdf":
+		return "pdf", false, nil
+	case "jpeg":
+		return "jpg", true, nil
+	case "png":
+		return "png", true, nil
+	}
+	return "", false, fmt.Errorf("scan: %q is not a format to save in", format)
+}
+
+// fileNames are the paths of the n files of a save at its try-th attempt:
+// the first has no number, the others " (2)", " (3)" and so on. Pictures of
+// several pages are numbered " 1", " 2", all cut at the same place.
+func fileNames(folder, title, ext string, n int, perPage bool, now time.Time, try int) []string {
+	tail := ""
+	if try > 1 {
+		tail = " (" + strconv.Itoa(try) + ")"
+	}
+	var out []string
+	for i := range n {
+		t, widest := tail, tail
+		if perPage && n > 1 {
+			t = tail + " " + strconv.Itoa(i+1)
+			widest = tail + " " + strconv.Itoa(n)
+		}
+		out = append(out, filepath.Join(folder, stemName(title, now, ext, t, widest)+"."+ext))
+	}
+	return out
+}
+
+// Names returns the paths Save would write now for a scan of pages pages:
+// the first set of names of which none is taken, as Save picks it. Another
+// program can take a name between the two calls; Save then moves on to the
+// next free set.
+func Names(folder, title, format string, pages int, now time.Time) ([]string, error) {
+	ext, perPage, err := formatExt(format)
+	if err != nil {
+		return nil, err
+	}
+	if pages < 1 {
+		return nil, errNoPages
+	}
+	n := 1
+	if perPage {
+		n = pages
+	}
+	folder = filepath.Clean(folder)
+	for try := 1; try <= maxClaimTries; try++ {
+		want := fileNames(folder, title, ext, n, perPage, now, try)
+		free := true
+		for _, p := range want {
+			if _, err := os.Lstat(p); err == nil {
+				free = false
+				break
+			}
+		}
+		if free {
+			return want, nil
+		}
+	}
+	return nil, errors.New("scan: could not find a free name for the scan")
+}
+
 // Save writes the pages of sess into folder and returns the paths it wrote.
 // format is "pdf", for one file, or "jpeg" or "png", for one file a page,
 // named "… 1.jpg", "… 2.jpg" when there are several pages.
@@ -106,17 +173,9 @@ func cleanTitle(title string, now time.Time) string {
 //
 // Save only reads the session, and does not discard it.
 func Save(sess *Session, folder, title, format string, now time.Time) (paths []string, err error) {
-	var ext string
-	var perPage bool
-	switch format {
-	case "pdf":
-		ext = "pdf"
-	case "jpeg":
-		ext, perPage = "jpg", true
-	case "png":
-		ext, perPage = "png", true
-	default:
-		return nil, fmt.Errorf("scan: %q is not a format to save in", format)
+	ext, perPage, err := formatExt(format)
+	if err != nil {
+		return nil, err
 	}
 	if folder == "" {
 		return nil, errors.New("scan: there is no folder to save in")
@@ -173,20 +232,7 @@ func Save(sess *Session, folder, title, format string, now time.Time) (paths []s
 		if try > maxClaimTries {
 			return nil, errors.New("scan: could not find a free name for the scan")
 		}
-		tail := ""
-		if try > 1 {
-			tail = " (" + strconv.Itoa(try) + ")"
-		}
-		var want []string
-		for i := range n {
-			t, widest := tail, tail
-			if perPage && n > 1 {
-				t = tail + " " + strconv.Itoa(i+1)
-				widest = tail + " " + strconv.Itoa(n)
-			}
-			want = append(want, filepath.Join(folder, stemName(title, now, ext, t, widest)+"."+ext))
-		}
-		got, err := linkAll(temps, want)
+		got, err := linkAll(temps, fileNames(folder, title, ext, n, perPage, now, try))
 		if errors.Is(err, fs.ErrExist) {
 			continue
 		}

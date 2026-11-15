@@ -57,7 +57,9 @@ var (
 
 	errBadPage = errors.New("scan: there is no such page")
 	errBadTurn = errors.New("scan: a page turns by 90 or -90 degrees")
-	errGone    = errors.New("scan: this scan has been discarded")
+	// ErrGone is the refusal of a change to a session that was discarded,
+	// as a save discards it.
+	ErrGone = errors.New("scan: this scan has been discarded")
 )
 
 var (
@@ -346,7 +348,7 @@ func (s *Session) AddPage(r io.Reader) (Page, error) {
 	s.mu.Lock()
 	if s.gone {
 		s.mu.Unlock()
-		return Page{}, errGone
+		return Page{}, ErrGone
 	}
 	if len(s.Pages)+s.pending >= maxPages {
 		s.mu.Unlock()
@@ -369,7 +371,7 @@ func (s *Session) AddPage(r io.Reader) (Page, error) {
 	defer s.mu.Unlock()
 	s.pending--
 	if err == nil && s.gone {
-		err = errGone
+		err = ErrGone
 	}
 	if err == nil {
 		s.Pages = append(s.Pages, page)
@@ -420,7 +422,7 @@ func (s *Session) writePage(r io.Reader, path, name string) (Page, error) {
 // page returns the index of page n, counted from 1. The caller holds s.mu.
 func (s *Session) page(n int) (int, error) {
 	if s.gone {
-		return 0, errGone
+		return 0, ErrGone
 	}
 	if n < 1 || n > len(s.Pages) {
 		return 0, errBadPage

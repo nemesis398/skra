@@ -4,6 +4,7 @@ package scan
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -548,5 +549,56 @@ func TestSaveShowsNoEmptyFile(t *testing.T) {
 			t.Errorf("%s: folder holds %d names after Save, want %d: %q", format, len(n), len(paths), n)
 		}
 		t.Logf("%s: saw %d final names while Save ran", format, seen)
+	}
+}
+
+// Names is what Save will write, so the page can show it first: with a
+// title long enough to be cut, with several numbered pictures, and with the
+// plain name taken.
+func TestNamesAreWhatSaveWrites(t *testing.T) {
+	st, _ := newStore(t)
+	s := newSession(t, st)
+	addPages(t, s, 3)
+	folder := t.TempDir()
+	if err := os.WriteFile(filepath.Join(folder, "2026-11-14 Taken.pdf"), []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	long := strings.Repeat("Beitragsbescheid ", 18) // about 300 characters
+	for _, c := range []struct{ title, format string }{
+		{long, "jpeg"}, {long, "png"}, {long, "pdf"}, {"Taken", "pdf"}, {"Fresh", "jpeg"},
+	} {
+		shown, err := Names(folder, c.title, c.format, 3, saveNow)
+		if err != nil {
+			t.Fatalf("%s: %v", c.format, err)
+		}
+		written, err := Save(s, folder, c.title, c.format, saveNow)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(shown, written) {
+			t.Errorf("%.20q as %s: shown %q, written %q", c.title, c.format, shown, written)
+		}
+	}
+	if got, _ := Names(folder, "Taken", "pdf", 3, saveNow); len(got) != 1 || filepath.Base(got[0]) != "2026-11-14 Taken (3).pdf" {
+		t.Errorf("a taken name shows as %q", got)
+	}
+	if _, err := Names(folder, "X", "tiff", 3, saveNow); err == nil {
+		t.Error("Names took a format Save does not")
+	}
+	if _, err := Names(folder, "X", "pdf", 0, saveNow); err == nil {
+		t.Error("Names named a save of no pages")
+	}
+}
+
+// A session discarded under a running scan gives ErrGone, which a caller
+// can tell apart from a failure.
+func TestGoneIsExported(t *testing.T) {
+	st, _ := newStore(t)
+	s := newSession(t, st)
+	if err := st.Discard(s.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AddPage(strings.NewReader("x")); !errors.Is(err, ErrGone) {
+		t.Errorf("AddPage after Discard: %v, want ErrGone", err)
 	}
 }
