@@ -6,6 +6,7 @@
 {{range .Printers}}<div class="pr{{if .Away}} away{{end}}">
   <div class="top"><div class="pn">{{.Display}}{{if .Default}}<span class="tag">&#xF04CE; default</span>{{end}}</div>
     <div class="st{{if .Class}} {{.Class}}{{end}}">{{if .Away}}&#x25CB;{{else}}&#x25CF;{{end}} {{.State}}</div></div>
+  {{if .Why}}<div class="why{{if .WhyClass}} {{.WhyClass}}{{end}}" title="{{.Why}}">{{.Why}}</div>{{end}}
   <div class="facts">{{.Facts}}</div>
   {{if .Inks}}<div class="ink">{{range .Inks}}<div class="c{{if .Low}} low{{end}}"><span class="k">{{.Label}}</span><span class="meter"><span style="width:{{.Pct}}%"></span></span><span class="v">{{.Value}}</span></div>{{end}}</div>{{end}}
   {{if .AsOf}}<div class="asof">{{.AsOf}}</div>{{end}}

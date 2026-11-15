@@ -199,8 +199,11 @@ type optPrinter struct {
 
 type printerView struct {
 	Name, Display, State, Class, Facts, AsOf, Link string
-	Default, Away, Paused                          bool
-	Inks                                           []inkView
+	// Why is the printer's message, one line under the state, and WhyClass
+	// its color; both are empty when the state needs no reason.
+	Why, WhyClass         string
+	Default, Away, Paused bool
+	Inks                  []inkView
 }
 
 type inkView struct {
@@ -413,6 +416,7 @@ func printerCell(p cups.Printer, def string, now time.Time, live map[string]prin
 	if pv.Display == "" {
 		pv.Display = p.Name
 	}
+	pv.Why, pv.WhyClass = whyLine(p, state.Reasons, l, asked && l.Reachable, word, class)
 	var facts []string
 	for _, f := range []string{p.Location, connection(p.DeviceURI), model(p.MakeModel)} {
 		if f != "" {
@@ -437,6 +441,40 @@ func printerCell(p cups.Printer, def string, now time.Time, live map[string]prin
 		pv.Inks = append(pv.Inks, inkCell(m, i))
 	}
 	return pv
+}
+
+// whyLine is the message a queue shows under its state when CUPS stopped it
+// or a reason ends in -error or -warning: the printer's own message when it
+// just answered and has one, else CUPS's, on one line. Its class is the
+// state's, so an away printer's message is Overlay0 and never red; a ready
+// printer with a warning or an error shows it in Peach or Red. Both are ""
+// when there is no such state or no message, or when the message only says
+// the state again, as CUPS's "Paused" does.
+func whyLine(p cups.Printer, reasons []string, l printer.Live, answered bool, word, class string) (msg, msgClass string) {
+	msg = p.Message
+	if answered {
+		reasons = append(slices.Clone(reasons), l.Reasons...)
+		if strings.TrimSpace(l.Message) != "" {
+			msg = l.Message
+		}
+	}
+	worst := ""
+	for _, r := range reasons {
+		switch {
+		case strings.HasSuffix(r, "-error"):
+			worst = "bad"
+		case strings.HasSuffix(r, "-warning") && worst == "":
+			worst = "need"
+		}
+	}
+	if p.State != 5 && worst == "" {
+		return "", ""
+	}
+	msg = strings.Join(strings.Fields(msg), " ")
+	if msg == "" || strings.EqualFold(strings.TrimSuffix(msg, "."), word) {
+		return "", ""
+	}
+	return msg, pick(class != "", class, worst)
 }
 
 var driverless = regexp.MustCompile(`(?i)driverless|everywhere`)

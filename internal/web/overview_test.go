@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/nemesis398/skra/internal/config"
 	"github.com/nemesis398/skra/internal/cups"
+	"github.com/nemesis398/skra/internal/printer"
 )
 
 // fakeCUPS is a CUPS whose answers a test sets and changes.
@@ -581,5 +583,76 @@ func TestEventsSurviveCarriageReturnInJobName(t *testing.T) {
 		if e.event == "queue" && (!strings.Contains(e.html, "foo") || !strings.Contains(e.html, "bar") || !strings.HasSuffix(strings.TrimSpace(e.html), "</div>")) {
 			t.Errorf("queue fragment cut short: %q", e.html)
 		}
+	}
+}
+
+// msgLine finds the message line of a printer card: its class and text.
+var msgLine = regexp.MustCompile(`<div class="why( [a-z]+)?" title="[^"]*">([^<]*)</div>`)
+
+// A queue that CUPS stopped, or that has a reason ending in -error or
+// -warning, says why under its state: the printer's own message first, else
+// CUPS's, in the color of the state.
+func TestOverviewShowsThePrinterMessage(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		mod       func(*cups.Printer)
+		live      *printer.Live
+		class     string // "" for no line
+		text      string
+		stateWord string
+	}{
+		{"stopped after a failed job", func(p *cups.Printer) {
+			p.State, p.Message = 5, "Unable to send data to printer."
+		}, nil, " need", "Unable to send data to printer.", "paused"},
+		{"an error", func(p *cups.Printer) {
+			p.Reasons, p.Message = []string{"cover-open-error"}, "Close the front cover."
+		}, nil, " bad", "Close the front cover.", "cover open"},
+		{"a warning on a ready printer", func(p *cups.Printer) {
+			p.Reasons, p.Message = []string{"toner-low-warning"}, "Toner is low."
+		}, nil, " need", "Toner is low.", "ready"},
+		{"the printer's own message first", func(p *cups.Printer) {
+			p.State, p.Message = 5, "CUPS says this."
+		}, &printer.Live{Reachable: true, Message: "The printer says this.", At: time.Now()}, " need", "The printer says this.", "paused"},
+		{"a live warning", func(p *cups.Printer) {}, &printer.Live{Reachable: true, Reasons: []string{"media-low-warning"}, Message: "Paper is low.", At: time.Now()},
+			" need", "Paper is low.", "ready"},
+		{"escaped and on one line", func(p *cups.Printer) {
+			p.State, p.Message = 5, "<b>bold</b>\nsecond   line"
+		}, nil, " need", "&lt;b&gt;bold&lt;/b&gt; second line", "paused"},
+		{"away stays Overlay0", func(p *cups.Printer) {
+			p.State, p.Reasons, p.Message = 5, []string{"other-error"}, "Unable to locate printer."
+		}, &printer.Live{Reachable: false, At: time.Now()}, " away", "Unable to locate printer.", "away"},
+		{"an empty message adds no line", func(p *cups.Printer) { p.State = 5 }, nil, "", "", "paused"},
+		{"a message that repeats the state adds no line", func(p *cups.Printer) { p.State, p.Message = 5, "Paused" }, nil, "", "", "paused"},
+		{"a ready printer adds no line", func(p *cups.Printer) { p.Message = "Ready to print." }, nil, "", "", "ready"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := brother()
+			tc.mod(&p)
+			f := &fakeCUPS{printers: []cups.Printer{p}}
+			var body string
+			if tc.live == nil {
+				body = pageFor(t, f) // no printer is asked: what CUPS knows
+			} else {
+				q := &fakeQuery{}
+				q.set(p.DeviceURI, *tc.live)
+				body = pageWithLive(t, liveServer(f, q))
+			}
+			m := msgLine.FindAllStringSubmatch(body, -1)
+			if tc.class == "" {
+				if len(m) != 0 || strings.Contains(body, `class="why`) {
+					t.Errorf("want no message line, got %q", m)
+				}
+				return
+			}
+			if len(m) != 1 || m[0][1] != tc.class || m[0][2] != tc.text {
+				t.Errorf("message line = %q, want class %q text %q", m, tc.class, tc.text)
+			}
+			if !strings.Contains(body, tc.stateWord) {
+				t.Errorf("state word %q is missing", tc.stateWord)
+			}
+			if tc.class == " away" && (strings.Contains(body, `why bad`) || strings.Contains(body, `st bad`)) {
+				t.Error("an away printer's message must not be red")
+			}
+		})
 	}
 }
