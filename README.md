@@ -70,7 +70,9 @@ The service adds no new rights: any program running as you can send the same
 requests with `lpadmin` today. It adds a new door, and the door is guarded:
 
 - It listens on `127.0.0.1` or `localhost` and refuses any other host in
-  `listen`.
+  `listen`. Under socket activation it refuses to start on a socket that is
+  not TCP on `127.0.0.1`, so a unit edited to `ListenStream=7631` fails
+  instead of serving the network.
 - Every request needs a `Host` of `127.0.0.1` or `localhost` with the port
   skra listens on (`7631` unless you change it), which stops DNS rebinding.
 - Every request that changes something also needs the token in the

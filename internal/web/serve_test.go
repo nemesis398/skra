@@ -5,6 +5,8 @@ package web
 import (
 	"net"
 	"net/http"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -153,5 +155,66 @@ func TestServeBoundsTheWaitForHeaders(t *testing.T) {
 	srv := serverFor(&fakeCUPS{}).httpServer("7631")
 	if srv.ReadHeaderTimeout != 10*time.Second {
 		t.Errorf("ReadHeaderTimeout = %v, want 10s", srv.ReadHeaderTimeout)
+	}
+}
+
+// Under socket activation the unit decides the socket. Serve refuses one that
+// is not TCP on 127.0.0.1, which another host could reach or which has no
+// port for the Host check, and names the socket and the fix.
+func TestServeRefusesASocketOffLoopback(t *testing.T) {
+	sockets := map[string]func() (net.Listener, error){
+		"another loopback address": func() (net.Listener, error) { return net.Listen("tcp", "127.0.0.2:0") },
+		"a unix socket":            func() (net.Listener, error) { return net.Listen("unix", filepath.Join(t.TempDir(), "s")) },
+	}
+	if ln, err := net.Listen("tcp6", "[::1]:0"); err == nil {
+		ln.Close()
+		sockets["IPv6 loopback"] = func() (net.Listener, error) { return net.Listen("tcp6", "[::1]:0") }
+	}
+	for name, listen := range sockets {
+		t.Run(name, func(t *testing.T) {
+			ln, err := listen()
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { ln.Close() })
+			done := make(chan error, 1)
+			go func() { done <- serverFor(&fakeCUPS{}).Serve(ln, 0) }()
+			select {
+			case err := <-done:
+				if err == nil {
+					t.Fatal("Serve returned nil")
+				}
+				msg := err.Error()
+				if !strings.Contains(msg, ln.Addr().String()) || !strings.Contains(msg, "127.0.0.1:7631") {
+					t.Errorf("error %q does not name the socket %s and the fix", msg, ln.Addr())
+				}
+			case <-time.After(time.Second):
+				t.Fatalf("Serve served on %s %s", ln.Addr().Network(), ln.Addr())
+			}
+		})
+	}
+}
+
+// The wildcard sockets a unit gets from ListenStream=7631 or 0.0.0.0:7631 are
+// refused too; they are checked by address, so no test listens on them.
+func TestLoopbackPort(t *testing.T) {
+	for _, tc := range []struct {
+		addr net.Addr
+		want string // the port, or "" for a refusal
+	}{
+		{&net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 7631}, "7631"},
+		{&net.TCPAddr{IP: net.IPv4zero, Port: 7631}, ""},
+		{&net.TCPAddr{IP: net.IPv6unspecified, Port: 7631}, ""},
+		{&net.TCPAddr{IP: net.IPv4(192, 168, 1, 20), Port: 7631}, ""},
+		{&net.TCPAddr{IP: net.IPv6loopback, Port: 7631}, ""},
+		{&net.UnixAddr{Name: "/run/user/1000/skra.sock", Net: "unix"}, ""},
+	} {
+		port, err := loopbackPort(tc.addr)
+		if port != tc.want || (err == nil) != (tc.want != "") {
+			t.Errorf("loopbackPort(%s %s) = %q, %v; want %q", tc.addr.Network(), tc.addr, port, err, tc.want)
+		}
+		if err != nil && (!strings.Contains(err.Error(), tc.addr.String()) || !strings.Contains(err.Error(), "ListenStream=127.0.0.1:7631")) {
+			t.Errorf("error %q does not name %s and the fix", err, tc.addr)
+		}
 	}
 }

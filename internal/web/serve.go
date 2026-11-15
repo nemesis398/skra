@@ -5,8 +5,10 @@ package web
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -75,13 +77,30 @@ func (s *Server) httpServer(port string) *http.Server {
 	return &http.Server{Handler: s.handlerOn(port), ReadHeaderTimeout: readHeaderTimeout}
 }
 
+// loopbackPort returns the port of addr when it is TCP on 127.0.0.1, the one
+// address skrá serves on. Config refuses any other listen host, but under
+// socket activation the unit decides: a socket on every interface would let
+// another host read the token from the page and write, and a unix socket has
+// no port for the Host check.
+func loopbackPort(addr net.Addr) (string, error) {
+	if a, ok := addr.(*net.TCPAddr); ok && a.IP.Equal(net.IPv4(127, 0, 0, 1)) {
+		return strconv.Itoa(a.Port), nil
+	}
+	return "", fmt.Errorf("refusing to serve on %s socket %s: skrá serves on 127.0.0.1 only; bind the socket unit to it with ListenStream=127.0.0.1:7631", addr.Network(), addr)
+}
+
 // Serve serves on ln until ln fails, or, when idle is above 0, until idle has
 // passed with no request in flight, which ends it with a nil error. Idle 0
-// never exits: the process was started by hand, not by its socket. The
+// never exits: the process was started by hand, not by its socket. A socket
+// that is not TCP on 127.0.0.1 is closed and refused with an error. The
 // request guard wants the port of ln in the Host header, so a socket unit on
 // another port than listen in the config works.
 func (s *Server) Serve(ln net.Listener, idle time.Duration) error {
-	_, port, _ := net.SplitHostPort(ln.Addr().String()) // no port matches no Host: closed
+	port, err := loopbackPort(ln.Addr())
+	if err != nil {
+		ln.Close()
+		return err
+	}
 	srv := s.httpServer(port)
 	if idle <= 0 {
 		return srv.Serve(ln)
