@@ -138,10 +138,11 @@ func printerFrom(g ipp.AttrGroup) Printer {
 
 // markers zips the five marker-* lists by index. They can differ in length (a
 // Brother MFC sends levels and types but no names), so it runs to the longest
-// and fills gaps with "" and -1.
+// and fills gaps with "" and -1. A value the decoder could not read keeps its
+// place as "" or -1, so the values after it stay with their supply.
 func markers(g ipp.AttrGroup) []Marker {
-	names, colors, types := g.Strings("marker-names"), g.Strings("marker-colors"), g.Strings("marker-types")
-	levels, lows := g.Ints("marker-levels"), g.Ints("marker-low-levels")
+	names, colors, types := g.StringsAt("marker-names"), g.StringsAt("marker-colors"), g.StringsAt("marker-types")
+	levels, lows := g.IntsAt("marker-levels", -1), g.IntsAt("marker-low-levels", -1)
 	n := max(len(names), len(colors), len(types), len(levels), len(lows))
 	if n == 0 {
 		return nil

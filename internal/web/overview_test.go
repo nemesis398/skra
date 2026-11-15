@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -192,6 +193,19 @@ func TestOverviewCUPSDown(t *testing.T) {
 	}
 	if !strings.Contains(foot, `class="msg bad"`) {
 		t.Error("the failure is not marked bad")
+	}
+}
+
+// When cups knows why CUPS does not answer, the footer gives the next step
+// instead of the raw cause.
+func TestOverviewSaysWhatToDoWhenCUPSIsDown(t *testing.T) {
+	for _, sentinel := range []error{cups.ErrNotRunning, cups.ErrBusy} {
+		f := &fakeCUPS{err: fmt.Errorf("CUPS does not answer: dial unix /run/cups/cups.sock: connect: no such file or directory: %w", sentinel)}
+		body := get(serverFor(f).Handler(), "/").Body.String()
+		foot := body[strings.Index(body, `<footer`):]
+		if !strings.Contains(foot, sentinel.Error()) || strings.Contains(foot, "dial unix") {
+			t.Errorf("footer does not give %q alone:\n%s", sentinel, foot)
+		}
 	}
 }
 

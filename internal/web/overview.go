@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -61,7 +62,12 @@ func (s *Server) poll(ctx context.Context, withDone bool) Snapshot {
 	snap.Live = s.liveNow()
 	fail := func(err error) Snapshot {
 		msg := err.Error()
-		if !strings.HasPrefix(msg, "CUPS") {
+		switch {
+		case errors.Is(err, cups.ErrNotRunning):
+			msg = cups.ErrNotRunning.Error()
+		case errors.Is(err, cups.ErrBusy):
+			msg = cups.ErrBusy.Error()
+		case !strings.HasPrefix(msg, "CUPS"):
 			msg = "CUPS does not answer: " + msg
 		}
 		snap.Err = msg

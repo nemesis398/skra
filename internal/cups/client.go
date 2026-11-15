@@ -12,6 +12,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/nemesis398/skra/internal/ipp"
@@ -34,6 +35,44 @@ const dialTimeout = 5 * time.Second
 // for that long. An open connection keeps Fedora's on-demand cupsd from
 // exiting when idle; a poll every 2 s while a page is open still reuses it.
 const idleConnTimeout = 30 * time.Second
+
+// ErrNotRunning and ErrBusy say why CUPS did not answer, for a caller that
+// wants to show the next step: errors.Is finds them in what Do returns. The
+// text of each is that step. A connect that fails (no socket, or nothing
+// listening on it) is ErrNotRunning; a wait that runs out is ErrBusy.
+var (
+	ErrNotRunning = errors.New("CUPS is not running. Start it with: systemctl start cups.socket")
+	ErrBusy       = errors.New("CUPS is busy. Try again in a moment.")
+)
+
+// noAnswer is a request CUPS did not answer. It reads "CUPS does not answer:"
+// and the cause, and errors.Is finds both the cause and the kind, when known.
+type noAnswer struct{ kind, cause error }
+
+func (e *noAnswer) Error() string { return "CUPS does not answer: " + e.cause.Error() }
+
+func (e *noAnswer) Unwrap() []error {
+	if e.kind == nil {
+		return []error{e.cause}
+	}
+	return []error{e.kind, e.cause}
+}
+
+// notAnswered wraps an error from sending a request or reading its answer. It
+// drops the *url.Error around it, whose method and http://localhost URL say
+// nothing about the unix socket, and tells a timeout from a failed connect.
+func notAnswered(err error) error {
+	if ue, ok := errors.AsType[*url.Error](err); ok {
+		err = ue.Err
+	}
+	e := &noAnswer{cause: err}
+	if ne, ok := errors.AsType[net.Error](err); ok && ne.Timeout() {
+		e.kind = ErrBusy
+	} else if oe, ok := errors.AsType[*net.OpError](err); ok && oe.Op == "dial" {
+		e.kind = ErrNotRunning
+	}
+	return e
+}
 
 // Client is a CUPS client for one socket and one user.
 type Client struct {
@@ -64,13 +103,14 @@ func New(socket, user string) *Client {
 // read is bounded only by ctx. When doc is not nil it is streamed after the request.
 //
 // A reply with an IPP error status comes back as both the decoded response
-// and its *ipp.StatusError. Req must not be reused: a second Do would add the
-// user name again.
+// and its *ipp.StatusError. Do adds the user name to a copy, so req stays as
+// it was and can be sent again. When CUPS does not answer, the error carries
+// ErrNotRunning or ErrBusy where the cause is clear.
 func (c *Client) Do(ctx context.Context, path string, req *ipp.Request, doc io.Reader) (*ipp.Response, error) {
 	if c.user == "" {
 		return nil, errors.New("no user configured")
 	}
-	var body io.Reader = bytes.NewReader(req.Op(ipp.Name("requesting-user-name", c.user)).Encode())
+	var body io.Reader = bytes.NewReader(req.With(ipp.Name("requesting-user-name", c.user)).Encode())
 	if doc != nil {
 		body = io.MultiReader(body, doc)
 	}
@@ -82,15 +122,18 @@ func (c *Client) Do(ctx context.Context, path string, req *ipp.Request, doc io.R
 	hr.Header.Set("Authorization", "PeerCred "+c.user)
 	resp, err := c.http.Do(hr)
 	if err != nil {
-		return nil, fmt.Errorf("CUPS does not answer: %w", err)
+		return nil, notAnswered(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return nil, httpFailure(resp.StatusCode)
 	}
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponse))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponse+1))
 	if err != nil {
-		return nil, fmt.Errorf("CUPS does not answer: %w", err)
+		return nil, notAnswered(err)
+	}
+	if len(raw) > maxResponse {
+		return nil, errors.New("CUPS sent an answer over 32 MiB; skrá does not read it")
 	}
 	res, err := ipp.Decode(raw)
 	if err != nil {
@@ -116,7 +159,8 @@ func httpFailure(code int) error {
 // socket and with the same PeerCred login as Do, or with Basic and the user
 // and password when password is not empty. The caller closes the body of the
 // response and checks its status. A body is sent as text/plain, which is what
-// CUPS takes for a configuration file. Do stays IPP only.
+// CUPS takes for a configuration file. Do stays IPP only. A failure to reach
+// CUPS carries ErrNotRunning or ErrBusy as in Do.
 func (c *Client) raw(ctx context.Context, method, path string, body io.Reader, password string) (*http.Response, error) {
 	if c.user == "" {
 		return nil, errors.New("no user configured")
@@ -135,7 +179,7 @@ func (c *Client) raw(ctx context.Context, method, path string, body io.Reader, p
 	}
 	resp, err := c.http.Do(hr)
 	if err != nil {
-		return nil, fmt.Errorf("CUPS does not answer: %w", err)
+		return nil, notAnswered(err)
 	}
 	return resp, nil
 }

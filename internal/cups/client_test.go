@@ -4,12 +4,14 @@ package cups
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -75,9 +77,61 @@ func TestDoSendsPeerCredAndUser(t *testing.T) {
 	}
 }
 
+// userNames counts the requesting-user-name values in an encoded request.
+func userNames(t *testing.T, b []byte) int {
+	t.Helper()
+	dec, err := ipp.Decode(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, a := range dec.Of(ipp.GroupOperation)[0].Attrs {
+		if a.Name == "requesting-user-name" {
+			n += len(a.Values)
+		}
+	}
+	return n
+}
+
+// Do sends the user name once and leaves the caller's request as it was, so
+// sending it again does not add a second one.
+func TestDoLeavesTheRequestAlone(t *testing.T) {
+	var bodies [][]byte
+	sock := fake(t, func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, b)
+		reply(w, ipptest.NewWire(0))
+	})
+	c := New(sock, "mika")
+	req := ipp.NewRequest(ipp.OpCUPSGetPrinters)
+	for range 2 {
+		if _, err := c.Do(context.Background(), "/", req, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, b := range bodies {
+		if n := userNames(t, b); n != 1 {
+			t.Errorf("request %d carries %d requesting-user-name values, want 1", i+1, n)
+		}
+	}
+	if n := userNames(t, req.Encode()); n != 0 {
+		t.Errorf("the caller's request gained %d requesting-user-name values", n)
+	}
+	// A request that cannot even be built leaves it alone too.
+	if _, err := c.Do(context.Background(), "\x7f bad path", req, nil); err == nil {
+		t.Error("a bad path was sent")
+	}
+	if n := userNames(t, req.Encode()); n != 0 {
+		t.Errorf("a failed Do left %d requesting-user-name values in the request", n)
+	}
+}
+
 func TestDoStreamsTheDocumentAfterTheRequest(t *testing.T) {
 	var gotBody []byte
+	var gotTE []string
+	var gotLen int64
 	sock := fake(t, func(w http.ResponseWriter, r *http.Request) {
+		gotTE, gotLen = r.TransferEncoding, r.ContentLength
 		gotBody, _ = io.ReadAll(r.Body)
 		reply(w, ipptest.NewWire(0))
 	})
@@ -87,6 +141,10 @@ func TestDoStreamsTheDocumentAfterTheRequest(t *testing.T) {
 	}
 	if !strings.HasSuffix(string(gotBody), string(rune(ipp.GroupEnd))+"%PDF-doc") {
 		t.Errorf("body does not end with the end tag and the document: %q", gotBody)
+	}
+	// Streamed, not read into memory first to learn its length.
+	if !slices.Equal(gotTE, []string{"chunked"}) || gotLen != -1 {
+		t.Errorf("Transfer-Encoding = %q, Content-Length = %d, want chunked and -1", gotTE, gotLen)
 	}
 }
 
@@ -117,10 +175,52 @@ func TestDoMapsHTTPErrors(t *testing.T) {
 			t.Errorf("HTTP %d: err = %v, want %q", tc.status, err, tc.want)
 		}
 	}
-	missing := filepath.Join(os.TempDir(), "skra-no-such.sock")
-	_, err := New(missing, "mika").Do(context.Background(), "/", ipp.NewRequest(ipp.OpCUPSGetPrinters), nil)
-	if err == nil || !strings.HasPrefix(err.Error(), "CUPS does not answer") {
-		t.Errorf("missing socket: err = %v", err)
+}
+
+// A socket that is missing or refuses the connect means CUPS is not running.
+// The error names the cause without the url.Error wrapping around it.
+func TestDoSaysCUPSIsNotRunning(t *testing.T) {
+	refused := filepath.Join(t.TempDir(), "r.sock")
+	l, err := net.ListenUnix("unix", &net.UnixAddr{Name: refused, Net: "unix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.SetUnlinkOnClose(false)
+	l.Close() // the file stays, nothing listens: connect is refused
+	for name, sock := range map[string]string{
+		"missing socket": filepath.Join(t.TempDir(), "no-such.sock"),
+		"refused":        refused,
+	} {
+		c := New(sock, "mika")
+		_, err := c.Do(context.Background(), "/", ipp.NewRequest(ipp.OpCUPSGetPrinters), nil)
+		checkNotRunning(t, name+", Do", err)
+		_, err = c.raw(context.Background(), http.MethodGet, "/admin/conf/cupsd.conf", nil, "")
+		checkNotRunning(t, name+", raw", err)
+	}
+}
+
+func checkNotRunning(t *testing.T, name string, err error) {
+	t.Helper()
+	if !errors.Is(err, ErrNotRunning) || errors.Is(err, ErrBusy) {
+		t.Errorf("%s: err = %v, want ErrNotRunning", name, err)
+		return
+	}
+	if msg := err.Error(); !strings.HasPrefix(msg, "CUPS does not answer: dial unix") || strings.Contains(msg, "http://") {
+		t.Errorf("%s: err = %q, want the dial error without the URL", name, msg)
+	}
+}
+
+// An answer over 32 MiB is reported as too large, not as unreadable.
+func TestDoRefusesAnAnswerOver32MiB(t *testing.T) {
+	sock := fake(t, func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/ipp")
+		w.Write(ipptest.NewWire(0).Bytes())
+		w.Write(make([]byte, maxResponse))
+	})
+	_, err := New(sock, "mika").Do(context.Background(), "/", ipp.NewRequest(ipp.OpCUPSGetPrinters), nil)
+	if err == nil || !strings.Contains(err.Error(), "over 32 MiB") {
+		t.Errorf("err = %v, want an answer over 32 MiB", err)
 	}
 }
 
@@ -128,10 +228,13 @@ func TestDoReturnsIPPStatusErrors(t *testing.T) {
 	sock := fake(t, func(w http.ResponseWriter, r *http.Request) {
 		reply(w, ipptest.NewWire(ipp.StatusNotFound).Str(ipp.TagText, "status-message", "The printer or class does not exist."))
 	})
-	_, err := New(sock, "mika").Do(context.Background(), "/", ipp.NewRequest(ipp.OpGetPrinterAttributes), nil)
+	res, err := New(sock, "mika").Do(context.Background(), "/", ipp.NewRequest(ipp.OpGetPrinterAttributes), nil)
 	se, ok := err.(*ipp.StatusError)
 	if !ok || se.Status != ipp.StatusNotFound || se.Message != "The printer or class does not exist." {
 		t.Errorf("err = %#v", err)
+	}
+	if res == nil || res.Status != ipp.StatusNotFound {
+		t.Errorf("res = %+v, want the decoded response alongside the error", res)
 	}
 }
 
@@ -255,6 +358,24 @@ func TestMarkersFromUnevenLists(t *testing.T) {
 	}
 	if markers(ipp.AttrGroup{}) != nil {
 		t.Error("no markers should give nil")
+	}
+}
+
+// A marker-levels value of the wrong length stays in its place, so the levels
+// after it stay with their names.
+func TestMarkersKeepPositionsPastABadLevel(t *testing.T) {
+	g := ipp.AttrGroup{Attrs: []ipp.Attr{
+		ipp.Name("marker-names", "Cyan", "Magenta", "Yellow"),
+		{Tag: ipp.TagInteger, Name: "marker-levels", Values: []any{int32(50), nil, int32(70)}},
+		{Tag: ipp.TagName, Name: "marker-types", Values: []any{nil, "ink", "ink"}},
+	}}
+	want := []Marker{
+		{Name: "Cyan", Level: 50, Low: -1},
+		{Name: "Magenta", Type: "ink", Level: -1, Low: -1},
+		{Name: "Yellow", Type: "ink", Level: 70, Low: -1},
+	}
+	if ms := markers(g); !slices.Equal(ms, want) {
+		t.Errorf("markers = %+v, want %+v", ms, want)
 	}
 }
 
@@ -405,11 +526,30 @@ func TestDoGivesUpOnACupsThatNeverAnswers(t *testing.T) {
 	defer cancel()
 	start := time.Now()
 	_, err := New(sock, "mika").Do(ctx, "/", ipp.NewRequest(ipp.OpCUPSGetPrinters), nil)
-	if err == nil || !strings.HasPrefix(err.Error(), "CUPS does not answer") {
-		t.Fatalf("err = %v", err)
+	if !errors.Is(err, ErrBusy) || errors.Is(err, ErrNotRunning) {
+		t.Fatalf("err = %v, want ErrBusy", err)
+	}
+	if msg := err.Error(); !strings.HasPrefix(msg, "CUPS does not answer") || strings.Contains(msg, "http://") {
+		t.Errorf("err = %q, want the cause without the URL", msg)
 	}
 	if d := time.Since(start); d > time.Second {
 		t.Errorf("Do waited %v for a CUPS that never answers", d)
+	}
+}
+
+// A deadline on ctx that runs out while CUPS works is ErrBusy too.
+func TestDoCountsTheDeadlineOfCtxAsBusy(t *testing.T) {
+	release := make(chan struct{})
+	sock := fake(t, func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		<-release
+	})
+	t.Cleanup(func() { close(release) })
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	_, err := New(sock, "mika").Do(ctx, "/", ipp.NewRequest(ipp.OpCUPSGetPrinters), nil)
+	if !errors.Is(err, ErrBusy) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("err = %v, want ErrBusy around the deadline", err)
 	}
 }
 
