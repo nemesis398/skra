@@ -160,15 +160,9 @@ func embeddedIPv4(ip netip.Addr) (netip.Addr, bool) {
 		return netip.Addr{}, false
 	}
 	b := ip.As16()
-	zero := func(x []byte) bool {
-		for _, c := range x {
-			if c != 0 {
-				return false
-			}
-		}
-		return true
-	}
-	if zero(b[:12]) || (zero(b[:8]) && b[8] == 0xff && b[9] == 0xff && b[10] == 0 && b[11] == 0) {
+	switch [12]byte(b[:12]) {
+	case [12]byte{}, // ::a.b.c.d
+		[12]byte{8: 0xff, 9: 0xff}: // ::ffff:0:a.b.c.d
 		return netip.AddrFrom4([4]byte(b[12:])), true
 	}
 	return netip.Addr{}, false
