@@ -551,24 +551,31 @@ func (s *Server) addPrinter(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// From here on skrá has asked CUPS something, so a refusal is an attempt
+	// and goes into the history. The address is logged without its credentials.
+	detail := withoutUserinfo(addr) + " with " + pick(ppd == "", "driverless", ppd)
+	refuse := func(status int, err error) {
+		s.record(r, "printer.add", name, detail, err)
+		reply(w, status, err.Error())
+	}
 	queues, err := s.deps.CUPS.Printers(ctx)
 	if err != nil {
-		reply(w, http.StatusBadGateway, err.Error())
+		refuse(http.StatusBadGateway, err)
 		return
 	}
 	if hasQueue(queues, name) {
-		reply(w, http.StatusConflict, "There is a queue named "+name+" already.")
+		refuse(http.StatusConflict, errors.New("There is a queue named "+name+" already."))
 		return
 	}
 	// Only a driver that CUPS lists for this device goes on to CUPS.
 	if ppd != "" {
 		list, _, err := s.drivers(ctx, id, maker)
 		if err != nil {
-			reply(w, http.StatusBadGateway, err.Error())
+			refuse(http.StatusBadGateway, err)
 			return
 		}
 		if !slices.ContainsFunc(list, func(p cups.PPD) bool { return p.Name == ppd }) {
-			reply(w, http.StatusBadRequest, wrongDriver)
+			refuse(http.StatusBadRequest, errors.New(wrongDriver))
 			return
 		}
 	}
@@ -585,7 +592,7 @@ func (s *Server) addPrinter(w http.ResponseWriter, r *http.Request) {
 		said = scrub(err.Error(), addr)
 		err = errors.New(said)
 	}
-	s.record(r, "printer.add", name, withoutUserinfo(addr)+" with "+pick(ppd == "", "driverless", ppd), err)
+	s.record(r, "printer.add", name, detail, err)
 	s.hub.Refresh()
 	switch {
 	case isLate:

@@ -127,8 +127,11 @@ func TestAddValidatesName(t *testing.T) {
 	if got := f.added(); len(got) != 0 {
 		t.Errorf("CUPS was asked to add %+v", got)
 	}
-	if n := len(events(t, s, 5)); n != 0 {
-		t.Errorf("%d events logged for refusals that never reached CUPS", n)
+	// Only the two clashes follow a question to CUPS (its list of queues), so
+	// only they are attempts for the history; the rest are refused from the form.
+	ev := events(t, s, 10)
+	if len(ev) != 2 || ev[0].Target != "virtual-mfc" || ev[1].Target != "HALL" || ev[0].OK || ev[1].OK {
+		t.Errorf("events = %+v, want the two refused clashes and nothing else", ev)
 	}
 }
 
@@ -940,5 +943,79 @@ func TestAddLogsAnAddressWithAShortPasswordIntact(t *testing.T) {
 		if ev := lastEvent(t, s); ev.Detail != tc.shown+" with driverless: Bad device-uri \""+tc.shown+"\"." {
 			t.Errorf("%s: failed detail = %q", tc.addr, ev.Detail)
 		}
+	}
+}
+
+// A refusal after skrá has asked CUPS something is an attempt, and the history
+// has it; a refusal skrá makes from the form alone is not.
+func TestAddRecordsTheRefusalsThatFollowACUPSQuestion(t *testing.T) {
+	const socketAddr = "socket://192.0.2.7:9100"
+	listed := func(f *fakeCUPS) {
+		f.ppdsFn = func(string, string) ([]cups.PPD, error) {
+			return []cups.PPD{{Name: "ok.ppd", MakeModel: "Brother HL"}}, nil
+		}
+	}
+	for _, tc := range []struct {
+		what   string
+		setup  func(f *fakeCUPS)
+		form   url.Values
+		code   int
+		detail string
+	}{
+		{"the queues cannot be listed", func(f *fakeCUPS) { f.err = errors.New("CUPS does not answer: boom") },
+			addForm(), 502, "CUPS does not answer: boom"},
+		{"the name is taken", func(f *fakeCUPS) {},
+			addForm("name", "Hall"), 409, "There is a queue named Hall already."},
+		{"the drivers cannot be listed", func(f *fakeCUPS) {
+			f.ppdsFn = func(string, string) ([]cups.PPD, error) { return nil, errors.New("CUPS does not answer: no drivers") }
+		}, addForm("address", socketAddr, "driver", "choose", "make", "Brother", "ppd", "ok.ppd"), 502, "CUPS does not answer: no drivers"},
+		{"the driver is not one CUPS lists", listed,
+			addForm("address", socketAddr, "driver", "choose", "make", "Brother", "ppd", "other.ppd"), 400, wrongDriver},
+	} {
+		f := queuesFake()
+		tc.setup(f)
+		s, h := actionServer(t, f)
+		rec := postTo(s, h, "/printers/add", tc.form)
+		if rec.Code != tc.code {
+			t.Errorf("%s: %d %q, want %d", tc.what, rec.Code, rec.Body.String(), tc.code)
+			continue
+		}
+		ev := events(t, s, 100)
+		if len(ev) != 1 || ev[0].Action != "printer.add" || ev[0].OK || ev[0].Target != tc.form.Get("name") ||
+			!strings.Contains(ev[0].Detail, tc.form.Get("address")) || !strings.HasSuffix(ev[0].Detail, ": "+tc.detail) {
+			t.Errorf("%s: events = %+v", tc.what, ev)
+		}
+		if len(f.added()) != 0 {
+			t.Errorf("%s: CUPS was asked to add %+v", tc.what, f.added())
+		}
+	}
+
+	// What skrá refuses from the form alone never reaches the history.
+	f := queuesFake()
+	s, h := actionServer(t, f)
+	for _, form := range []url.Values{
+		addForm("name", "bad name"), addForm("address", "file:///x"), addForm("shared", "maybe"),
+		addForm("driver", "choose"), addForm("driver", "sideways"),
+	} {
+		if rec := postTo(s, h, "/printers/add", form); rec.Code != 400 {
+			t.Errorf("%v: %d %q", form, rec.Code, rec.Body.String())
+		}
+	}
+	if ev := events(t, s, 100); len(ev) != 0 {
+		t.Errorf("refusals from the form alone were recorded: %+v", ev)
+	}
+}
+
+// A refusal is recorded without the credentials of the address.
+func TestAddRecordsARefusalWithoutTheCredentials(t *testing.T) {
+	f := queuesFake()
+	s, h := actionServer(t, f)
+	rec := postTo(s, h, "/printers/add", addForm("name", "Hall", "address", "ipp://u:s3cret@neu.local/ipp/print"))
+	if rec.Code != 409 {
+		t.Fatalf("%d %q", rec.Code, rec.Body.String())
+	}
+	ev := events(t, s, 100)
+	if len(ev) != 1 || strings.Contains(ev[0].Detail, "s3cret") || !strings.Contains(ev[0].Detail, "ipp://neu.local/ipp/print") {
+		t.Errorf("events = %+v", ev)
 	}
 }
