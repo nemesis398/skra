@@ -20,6 +20,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
 
 	"github.com/nemesis398/skra/internal/cups"
 	"github.com/nemesis398/skra/internal/ipp"
@@ -97,21 +98,36 @@ type Resolver interface {
 // POST to any host, 127.0.0.1:631 included. A redirect is an answer that is
 // not a success, so the printer reads as unreachable.
 var (
-	plainClient = &http.Client{CheckRedirect: noRedirect, Transport: &http.Transport{DisableKeepAlives: true, DialContext: ownDialer.DialContext}}
-	tlsClient   = &http.Client{CheckRedirect: noRedirect, Transport: &http.Transport{
-		DisableKeepAlives: true,
-		DialContext:       ownDialer.DialContext,
-		TLSClientConfig:   &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // see above
-	}}
+	plainClient = &http.Client{CheckRedirect: noRedirect, Transport: newTransport(refuseOwnCUPS, false)}
+	tlsClient   = &http.Client{CheckRedirect: noRedirect, Transport: newTransport(refuseOwnCUPS, true)}
 )
+
+// newTransport builds the transport of a status client. control runs for every
+// connection, after the name is resolved and before connect(); production
+// passes refuseOwnCUPS, a test passes a wrapper that never lets a connect
+// through.
+func newTransport(control func(network, address string, c syscall.RawConn) error, skipVerify bool) *http.Transport {
+	d := &net.Dialer{Control: control}
+	t := &http.Transport{DisableKeepAlives: true, DialContext: d.DialContext}
+	if skipVerify {
+		t.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // see above
+	}
+	return t
+}
+
+// interfaceAddrs lists the addresses of this machine's interfaces; a variable
+// so that a test can make it fail.
+var interfaceAddrs = net.InterfaceAddrs
 
 // errOwnCUPS is what the dialer refuses a connection to this machine's CUPS with.
 var errOwnCUPS = errors.New("this machine's own CUPS")
 
 // IsOwnAddress reports whether ip is an address of this machine: loopback, the
-// unspecified address (which connects to this machine), or one of the
-// addresses of its interfaces, read now. An IPv4 address mapped into IPv6 is
-// judged as the IPv4 address.
+// unspecified address (which connects to this machine), one of the addresses
+// of its interfaces, read now, or an IPv4 address of those inside an IPv6 one
+// (mapped ::ffff:a.b.c.d, compatible ::a.b.c.d, translated ::ffff:0:a.b.c.d).
+// When the list of interface addresses cannot be read it says yes, because
+// then nothing can be told apart from this machine.
 func IsOwnAddress(ip netip.Addr) bool {
 	if !ip.IsValid() {
 		return false
@@ -120,9 +136,12 @@ func IsOwnAddress(ip netip.Addr) bool {
 	if ip.IsLoopback() || ip.IsUnspecified() {
 		return true
 	}
-	addrs, err := net.InterfaceAddrs()
+	if v4, ok := embeddedIPv4(ip); ok && IsOwnAddress(v4) {
+		return true
+	}
+	addrs, err := interfaceAddrs()
 	if err != nil {
-		return false
+		return true
 	}
 	for _, a := range addrs {
 		if ipn, ok := a.(*net.IPNet); ok {
@@ -134,26 +153,56 @@ func IsOwnAddress(ip netip.Addr) bool {
 	return false
 }
 
+// embeddedIPv4 returns the IPv4 address that an IPv6 address of the
+// IPv4-compatible (::/96) or IPv4-translated (::ffff:0:0:0/96) kind carries.
+func embeddedIPv4(ip netip.Addr) (netip.Addr, bool) {
+	if !ip.Is6() {
+		return netip.Addr{}, false
+	}
+	b := ip.As16()
+	zero := func(x []byte) bool {
+		for _, c := range x {
+			if c != 0 {
+				return false
+			}
+		}
+		return true
+	}
+	if zero(b[:12]) || (zero(b[:8]) && b[8] == 0xff && b[9] == 0xff && b[10] == 0 && b[11] == 0) {
+		return netip.AddrFrom4([4]byte(b[12:])), true
+	}
+	return netip.Addr{}, false
+}
+
 // refuseOwnCUPS is the Control function of the dialer. It runs after the host
 // name is resolved and before the connection is made, so it sees the address
 // that would be connected to, whatever the name was: a hosts-file alias, this
 // machine's own name, a DNS name that points at 127.0.0.1. Port 631 of this
 // machine is CUPS, and skrá speaks to CUPS only over its unix socket.
+//
+// It fails closed. On port 631 a connection goes through only when the host
+// is an IP address that is none of this machine's; an empty host (Go passes
+// ":631", which the kernel connects to ::1), a name, and anything unreadable
+// is refused, and so is an address whose port cannot be read.
 func refuseOwnCUPS(_, address string, _ syscall.RawConn) error {
+	refuse := func() error { return fmt.Errorf("%w: %q", errOwnCUPS, address) }
 	host, port, err := net.SplitHostPort(address)
 	if err != nil {
+		return refuse()
+	}
+	n, err := strconv.ParseUint(port, 10, 16)
+	if err != nil {
+		return refuse()
+	}
+	if n != 631 {
 		return nil
 	}
-	if n, err := strconv.Atoi(port); err != nil || n != 631 {
-		return nil
-	}
-	if ip, err := netip.ParseAddr(host); err == nil && IsOwnAddress(ip) {
-		return fmt.Errorf("%w: %s", errOwnCUPS, address)
+	ip, err := netip.ParseAddr(host)
+	if err != nil || IsOwnAddress(ip) {
+		return refuse()
 	}
 	return nil
 }
-
-var ownDialer = &net.Dialer{Control: refuseOwnCUPS}
 
 func noRedirect(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 
@@ -274,6 +323,12 @@ func httpURL(uri string) (target, printerURI string, err error) {
 	host := u.Hostname()
 	if host == "" {
 		return "", "", errors.New("no host in " + uri)
+	}
+	// The transport maps a host through IDNA, which turns a soft hyphen or a
+	// zero-width space into nothing and so an address into ":631". A device URI
+	// with a name outside ASCII is not queried.
+	if strings.ContainsFunc(host, func(r rune) bool { return r > unicode.MaxASCII }) {
+		return "", "", errors.New("the host in " + uri + " is not ASCII")
 	}
 	port := u.Port()
 	if port == "" {
