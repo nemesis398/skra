@@ -7,9 +7,11 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
 // tokenBytes is how many random bytes a token holds.
@@ -29,8 +31,9 @@ func NewToken() string {
 // service exited when idle can still act once the socket starts it again.
 //
 // The file is made with O_EXCL and mode 0600. A file that is there but is not
-// a regular file, is readable by the group or by others, or does not hold a
-// token of 32 bytes or more is refused, so the service does not start.
+// a regular file (a symlink included), is readable by the group or by others,
+// is longer than tokenFileMax, or does not hold a token of 32 bytes or more is
+// refused, so the service does not start.
 // Deleting the file makes a new token at the next start.
 func LoadToken(dir string) (string, error) {
 	path := filepath.Join(dir, "token")
@@ -53,12 +56,27 @@ func LoadToken(dir string) (string, error) {
 	return tok, nil
 }
 
-// readToken reads and checks a token file that exists.
+// tokenFileMax caps how much of the token file is read: a token is 43
+// bytes, so a file longer than this holds something else.
+const tokenFileMax = 1024
+
+// readToken reads and checks a token file that exists. It opens the path
+// once and checks the file it opened, so the path cannot be swapped between
+// the check and the read. O_NOFOLLOW refuses a symlink, and O_NONBLOCK keeps
+// a FIFO from waiting for a writer before it is refused.
 func readToken(path string) (string, error) {
 	bad := func(what string) (string, error) {
 		return "", fmt.Errorf("token: %s %s; delete it and skrá makes a new token at the next start", path, what)
 	}
-	fi, err := os.Lstat(path)
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if errors.Is(err, syscall.ELOOP) {
+		return bad("is not a regular file")
+	}
+	if err != nil {
+		return "", fmt.Errorf("token: %w", err)
+	}
+	defer f.Close()
+	fi, err := f.Stat()
 	if err != nil {
 		return "", fmt.Errorf("token: %w", err)
 	}
@@ -68,9 +86,12 @@ func readToken(path string) (string, error) {
 	if perm := fi.Mode().Perm(); perm&0o077 != 0 {
 		return bad(fmt.Sprintf("is readable by others (mode %04o, want 0600)", perm))
 	}
-	raw, err := os.ReadFile(path)
+	raw, err := io.ReadAll(io.LimitReader(f, tokenFileMax+1))
 	if err != nil {
 		return "", fmt.Errorf("token: %w", err)
+	}
+	if len(raw) > tokenFileMax {
+		return bad(fmt.Sprintf("is too long for a token (over %d bytes)", tokenFileMax))
 	}
 	tok := string(raw)
 	if tok == "" {

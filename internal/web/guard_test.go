@@ -9,7 +9,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/nemesis398/skra/internal/config"
 )
@@ -165,6 +167,7 @@ func TestLoadTokenRefusesABadFile(t *testing.T) {
 		{"empty", "", 0o600, "is empty"},
 		{"short", "c2hvcnQ", 0o600, "too short"},
 		{"not base64url", strings.Repeat("!", 43), 0o600, "not a token"},
+		{"too long", strings.Repeat("A", 2048), 0o600, "too long"},
 		{"readable by others", NewToken(), 0o644, "readable by others"},
 		{"readable by the group", NewToken(), 0o640, "readable by others"},
 	} {
@@ -183,6 +186,44 @@ func TestLoadTokenRefusesABadFile(t *testing.T) {
 			}
 			if msg := err.Error(); !strings.Contains(msg, tc.want) || !strings.Contains(msg, path) || !strings.Contains(msg, "delete it") {
 				t.Errorf("error %q does not say %q, the path and how to fix it", msg, tc.want)
+			}
+		})
+	}
+}
+
+// A token path that is not a regular file is refused without following a
+// symlink and without waiting on a FIFO for a writer.
+func TestLoadTokenRefusesWhatIsNotAFile(t *testing.T) {
+	for name, create := range map[string]func(path string) error{
+		"a symlink to a good token": func(path string) error {
+			good := filepath.Join(t.TempDir(), "good")
+			if err := os.WriteFile(good, []byte(NewToken()), 0o600); err != nil {
+				return err
+			}
+			return os.Symlink(good, path)
+		},
+		"a dangling symlink": func(path string) error { return os.Symlink(filepath.Join(t.TempDir(), "gone"), path) },
+		"a directory":        func(path string) error { return os.Mkdir(path, 0o700) },
+		"a FIFO":             func(path string) error { return syscall.Mkfifo(path, 0o600) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "token")
+			if err := create(path); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() { _, err := LoadToken(dir); done <- err }()
+			select {
+			case err := <-done:
+				if err == nil {
+					t.Fatal("loaded a token from it")
+				}
+				if msg := err.Error(); !strings.Contains(msg, "is not a regular file") || !strings.Contains(msg, path) || !strings.Contains(msg, "delete it") {
+					t.Errorf("error %q does not say it is not a regular file, the path and how to fix it", msg)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("LoadToken hung")
 			}
 		})
 	}
