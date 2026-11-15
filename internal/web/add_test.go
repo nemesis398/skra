@@ -1073,12 +1073,39 @@ func TestDriversNarrowTheDeviceListByTheMaker(t *testing.T) {
 // An address with a user name and no scheme is withheld; it never reaches the
 // log today, but a cut at the wrong place would show most of the user name.
 func TestWithoutUserinfoWithholdsAnAddressItCannotCutSafely(t *testing.T) {
-	for _, in := range []string{"//user:pw@host", "//user@host/x", "ipp://u:pw@h/?next=http://x/", "//u:pw@h/?next=http://x/"} {
-		if got := withoutUserinfo(in); strings.Contains(got, "pw") || strings.Contains(got, "ser") {
-			t.Errorf("withoutUserinfo(%q) = %q, shows part of the credentials", in, got)
+	for in, want := range map[string]string{
+		"//user:pw@host":               "(address withheld)",
+		"//user@host/x":                "(address withheld)",
+		"//u:pw@h/?next=http://x/":     "(address withheld)",
+		"ipp://u:pw@h/?next=http://x/": "ipp://h/?next=http://x/",
+		"ipp://@h/":                    "ipp://h/",
+	} {
+		if got := withoutUserinfo(in); got != want {
+			t.Errorf("withoutUserinfo(%q) = %q, want %q", in, got, want)
 		}
 	}
-	if got := withoutUserinfo("//user:pw@host"); got != "(address withheld)" {
-		t.Errorf("withoutUserinfo(//user:pw@host) = %q", got)
+}
+
+// The maker is prefilled with the first word of the device's model, which is
+// often not the first word of its driver ("ECOSYS P2040dw" against "Kyocera
+// ECOSYS P2040dw"). A maker that matches none of the device's drivers must not
+// hide them: the list shows them, and adding accepts one.
+func TestDriversKeepTheDevicesOwnWhenTheMakerMatchesNone(t *testing.T) {
+	f := queuesFake()
+	f.ppdsFn = func(id, make string) ([]cups.PPD, error) {
+		if id != "" {
+			return []cups.PPD{{Name: "k.ppd", MakeModel: "Kyocera ECOSYS P2040dw"}, {Name: "k2.ppd", MakeModel: "Kyocera ECOSYS P2040dw KPDL"}}, nil
+		}
+		return nil, nil // ppd-make=ECOSYS names nothing
+	}
+	s, h := actionServer(t, f)
+	const id = "MFG:Kyocera;MDL:ECOSYS P2040dw;"
+	body := get(h, "/printers/drivers?"+url.Values{"id": {id}, "make": {"ECOSYS"}}.Encode()).Body.String()
+	if !strings.Contains(body, `value="k.ppd"`) || !strings.Contains(body, `value="k2.ppd"`) || !strings.Contains(body, "2 found") {
+		t.Errorf("a maker that matches nothing hid the drivers of the device:\n%s", body)
+	}
+	form := addForm("address", "socket://192.0.2.7:9100", "driver", "choose", "id", id, "make", "ECOSYS", "ppd", "k.ppd")
+	if rec := postTo(s, h, "/printers/add", form); rec.Code != 200 {
+		t.Errorf("a driver the list showed was refused: %d %q", rec.Code, rec.Body.String())
 	}
 }
