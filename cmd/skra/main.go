@@ -13,7 +13,9 @@ import (
 	"github.com/nemesis398/skra/internal/activation"
 	"github.com/nemesis398/skra/internal/config"
 	"github.com/nemesis398/skra/internal/cups"
+	"github.com/nemesis398/skra/internal/escl"
 	"github.com/nemesis398/skra/internal/printer"
+	"github.com/nemesis398/skra/internal/scan"
 	"github.com/nemesis398/skra/internal/store"
 	"github.com/nemesis398/skra/internal/web"
 )
@@ -35,6 +37,10 @@ func run() error {
 		return err
 	}
 	defer db.Close()
+	scans, err := scan.Open(cfg.StateDir)
+	if err != nil {
+		return err
+	}
 	token, err := web.LoadToken(cfg.StateDir)
 	if err != nil {
 		return err
@@ -51,6 +57,17 @@ func run() error {
 		Query: func(ctx context.Context, deviceURI string) printer.Live {
 			return printer.Query(ctx, deviceURI, printer.Avahi{})
 		},
+		Scanners: func(ctx context.Context) []escl.Scanner {
+			return escl.Find(ctx, cfg.Scanners, printer.Avahi{})
+		},
+		Scanner: func(url string) (web.ScannerClient, error) {
+			c, err := escl.New(url)
+			if err != nil {
+				return nil, err
+			}
+			return c, nil
+		},
+		Scans: scans,
 	}
 	// Only a service that systemd can start again on the next request may
 	// exit when idle; one started by hand stays.

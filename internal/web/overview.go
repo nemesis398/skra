@@ -134,18 +134,29 @@ type fragment struct{ event, html string }
 var (
 	overviewSlots = []string{"printers", "opts", "queue", "queues", "recent", "need", "foot"}
 	historySlots  = []string{"history", "need", "foot"}
+	scanSlots     = []string{"scan", "need", "foot"}
 )
 
 // fragmentsFor renders the pieces the event stream of the page swaps; page is
-// "history" for the history tab and anything else for the rest.
+// "history" for the history tab, "scan" for the scan tab and anything else
+// for the rest. Only the scan tab gets the scan fragment.
 func (s *Server) fragmentsFor(page string, snap Snapshot) []fragment {
 	v := s.view(snap)
 	var out []fragment
 	slots := overviewSlots
-	if page == "history" {
+	switch page {
+	case "history":
 		slots = historySlots
+	case "scan":
+		slots = scanSlots
 	}
 	for _, name := range slots {
+		if name == "scan" {
+			if html, err := s.scanFragment(); err == nil {
+				out = append(out, fragment{name, html})
+			}
+			continue
+		}
 		var buf bytes.Buffer
 		if err := s.tpl.ExecuteTemplate(&buf, name, v); err != nil {
 			continue // a template bug must not end the stream

@@ -72,11 +72,13 @@ function swap(id, html) {
 
 function connect() {
   if (source) return;
-  // The history tab asks for its own fragments only.
-  source = new EventSource(document.body.dataset.page === "history" ? "/events?page=history" : "/events");
+  // The history and scan tabs ask for their own fragments only.
+  const page = document.body.dataset.page;
+  source = new EventSource(page === "history" || page === "scan" ? `/events?page=${page}` : "/events");
   for (const id of slots) {
     source.addEventListener(id, (e) => swap(id, e.data));
   }
+  if (page === "scan") source.addEventListener("scan", (e) => scanEvent(e.data));
   // The browser reconnects on its own, and the server then sends everything
   // again; until it does, say so instead of showing stale numbers quietly.
   source.onerror = () => {
@@ -649,6 +651,149 @@ document.addEventListener("drop", (e) => {
   const f = e.dataTransfer.files[0];
   if (f) printFile(f);
 });
+
+// --- the scan tab ---
+// No scanner is asked before the tab is open: the scanner list and the form
+// are fragments loaded when it opens, and the form again when another scanner
+// is picked. A scan runs on the server. The event stream's scan fragment holds
+// every scan the service knows; the page shows the one it started, or, when
+// it started none, one that runs. An answer that comes after a newer question
+// is dropped.
+let scanSession = "";
+let scanRunning = false;
+let lastScans = "";
+let scanFormAsked = 0;
+
+const scanButton = (which) => document.querySelector(`button[data-scan="${which}"]`);
+
+async function loadScanners() {
+  const slot = $("scan-scanners");
+  if (!slot) return;
+  try {
+    const res = await fetch(slot.dataset.src, { cache: "no-store" });
+    const text = await res.text();
+    if (!res.ok) {
+      say(text.trim() || `skrá answered ${res.status}.`, true);
+      return;
+    }
+    slot.innerHTML = text;
+  } catch (err) {
+    say("Could not reach skrá. Is it still running?", true);
+    return;
+  }
+  await loadScanForm();
+}
+
+async function loadScanForm() {
+  const slot = $("scan-form");
+  const scanner = $("scan-scanner");
+  const mine = ++scanFormAsked;
+  slot.replaceChildren();
+  showScanButtons();
+  if (!scanner) return;
+  const wait = document.createElement("div");
+  wait.className = "wait";
+  wait.textContent = "asking the scanner what it can do";
+  slot.replaceChildren(wait);
+  try {
+    const res = await fetch(`/scan/form?scanner=${encodeURIComponent(scanner.value)}`, { cache: "no-store" });
+    const text = await res.text();
+    if (mine !== scanFormAsked) return;
+    if (!res.ok) {
+      slot.replaceChildren();
+      say(text.trim() || `skrá answered ${res.status}.`, true);
+      return;
+    }
+    slot.innerHTML = text;
+  } catch (err) {
+    if (mine !== scanFormAsked) return;
+    slot.replaceChildren();
+    say("Could not reach skrá. Is it still running?", true);
+  }
+  showScanButtons();
+}
+
+// The scan button waits for a form and for the running scan; it says "scan
+// more" once the scan has pages.
+function showScanButtons() {
+  const start = scanButton("start");
+  if (!start) return;
+  start.disabled = scanRunning || !document.querySelector("#scan-form [data-group]");
+  scanButton("stop").hidden = !scanRunning;
+  start.querySelector("span").textContent = $("scan-job").querySelector(".pg") ? "scan more" : "scan";
+}
+
+// scanFields reads the form: the button rows by group, with "feeder · both
+// sides" sent as the feeder and duplex.
+function scanFields() {
+  const form = new URLSearchParams({ session: scanSession, scanner: $("scan-scanner")?.value ?? "" });
+  for (const g of document.querySelectorAll("#scan-form [data-group]")) {
+    const v = g.querySelector("button.on")?.dataset.pick ?? "";
+    if (g.dataset.group === "source") {
+      form.set("source", v === "Duplex" ? "Feeder" : v);
+      form.set("duplex", String(v === "Duplex"));
+    } else {
+      form.set(g.dataset.group, v);
+    }
+  }
+  return form;
+}
+
+async function startScan(b) {
+  b.disabled = true;
+  try {
+    const res = await post("/scan/start", scanFields());
+    const text = (await res.text()).trim();
+    if (res.status !== 202) {
+      say(text || `skrá answered ${res.status}.`, true);
+      return;
+    }
+    scanSession = text;
+    scanRunning = true;
+    showScans(); // the first news may have come before the answer
+  } catch (err) {
+    say("Could not reach skrá. Is it still running?", true);
+  } finally {
+    showScanButtons();
+  }
+}
+
+function scanEvent(html) {
+  lastScans = html;
+  showScans();
+}
+
+function showScans() {
+  const t = document.createElement("template");
+  t.innerHTML = lastScans;
+  const jobs = [...t.content.querySelectorAll(".scanjob")];
+  if (!scanSession) scanSession = jobs.findLast((j) => j.dataset.running === "true")?.dataset.session ?? "";
+  const mine = jobs.find((j) => j.dataset.session === scanSession);
+  if (!mine) return;
+  $("scan-job").replaceChildren(mine);
+  scanRunning = mine.dataset.running === "true";
+  showScanButtons();
+}
+
+document.addEventListener("click", (e) => {
+  const pick = e.target.closest("#scan-form [data-pick]");
+  if (pick) {
+    for (const x of pick.parentElement.children) {
+      x.classList.toggle("on", x === pick);
+      x.setAttribute("aria-pressed", String(x === pick));
+    }
+    return;
+  }
+  const b = e.target.closest("button[data-scan]");
+  if (!b) return;
+  if (b.dataset.scan === "start") startScan(b);
+  else if (b.dataset.scan === "stop" && scanSession) send(`/scan/${encodeURIComponent(scanSession)}/stop`, undefined, b);
+  else if (b.dataset.scan === "find") loadScanners();
+});
+document.addEventListener("change", (e) => {
+  if (e.target.id === "scan-scanner") loadScanForm();
+});
+if ($("scan-scanners")) loadScanners();
 
 // --- clock ---
 // A browser timer at minute resolution; the service itself never ticks.

@@ -8,7 +8,9 @@ import (
 	"time"
 
 	"github.com/nemesis398/skra/internal/cups"
+	"github.com/nemesis398/skra/internal/escl"
 	"github.com/nemesis398/skra/internal/printer"
+	"github.com/nemesis398/skra/internal/scan"
 	"github.com/nemesis398/skra/internal/store"
 )
 
@@ -46,13 +48,34 @@ type CUPS interface {
 
 var _ CUPS = (*cups.Client)(nil)
 
+// ScannerClient lists the *escl.Client methods the Scan tab calls, so tests
+// can stand in the fake scanner or a client of their own.
+type ScannerClient interface {
+	Capabilities(ctx context.Context) (escl.Caps, error)
+	Status(ctx context.Context) (escl.Status, error)
+	Start(ctx context.Context, s escl.Settings) (job string, err error)
+	NextPage(ctx context.Context, job string) (io.ReadCloser, error)
+	Cancel(ctx context.Context, job string) error
+}
+
+var _ ScannerClient = (*escl.Client)(nil)
+
 // Deps are the collaborators the handlers use. Query asks one printer for its
 // live status; it may be nil, and then no printer is ever queried. ReadLog
 // returns the last n lines of the CUPS journal; it may be nil, and then
 // cups.ReadLog runs journalctl. Tests set it so none of them does.
+//
+// Scanners lists the scanners the Scan tab offers; it may be nil, and then
+// there are none. Scanner makes a client for the scanner at an eSCL root; it
+// may be nil, and then escl.New does. Scans keeps the scans while they are
+// open; it may be nil, and then nothing can be scanned.
 type Deps struct {
 	CUPS    CUPS
 	Store   *store.Store
 	Query   func(ctx context.Context, deviceURI string) printer.Live
 	ReadLog func(ctx context.Context, n int) ([]string, error)
+
+	Scanners func(ctx context.Context) []escl.Scanner
+	Scanner  func(url string) (ScannerClient, error)
+	Scans    *scan.Store
 }

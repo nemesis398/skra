@@ -138,6 +138,18 @@ select.f option { background:var(--mantle); color:var(--text); }
 /* the countdown of a search keeps its width from 10 to 0 */
 .cd { display:inline-block; min-width:2ch; text-align:right; }
 
+/* the scan tab: the last message of the scan and its strip of pages, each
+   an A4-shaped tile with its number */
+.scanjob { margin:0.462rem 1.231rem 0; }
+.scanmsg { color:var(--sub0); padding:0.308rem 0 0.615rem; }
+.scanmsg.need { color:var(--peach); }
+.scanmsg.bad { color:var(--red); }
+.scanmsg.away, .wait.away { color:var(--o0); }
+.strip { display:flex; flex-wrap:wrap; gap:0.615rem; }
+.strip .pg { width:6.154rem; aspect-ratio:210 / 297; background:var(--mantle); outline:1px solid var(--s0);
+  display:flex; align-items:flex-end; justify-content:center; padding-bottom:0.308rem; }
+.strip .pg .n { color:var(--sub0); font-size:0.923rem; font-variant-numeric:tabular-nums; }
+
 @media (max-width: 760px) {
   .frow { grid-template-columns:1fr; gap:0.231rem; }
   .printers { grid-template-columns:1fr; }

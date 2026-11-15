@@ -72,6 +72,22 @@ func (c *idleClock) fire() {
 	close(c.expired)
 }
 
+// holdIdle keeps the idle clock from running until release is called, as a
+// request in flight does: a scan job holds it for as long as it runs, so the
+// service does not exit under a feeder that is still busy. A server without
+// an idle clock holds nothing. Calling release more than once is harmless.
+func (s *Server) holdIdle() (release func()) {
+	s.idleMu.Lock()
+	c := s.idle
+	s.idleMu.Unlock()
+	if c == nil {
+		return func() {}
+	}
+	c.start()
+	var once sync.Once
+	return func() { once.Do(c.end) }
+}
+
 // httpServer is the server for the routes behind the guard of port.
 func (s *Server) httpServer(port string) *http.Server {
 	return &http.Server{Handler: s.handlerOn(port), ReadHeaderTimeout: readHeaderTimeout}
@@ -107,6 +123,9 @@ func (s *Server) Serve(ln net.Listener, idle time.Duration) error {
 	}
 	c := newIdleClock(idle)
 	defer c.timer.Stop()
+	s.idleMu.Lock()
+	s.idle = c
+	s.idleMu.Unlock()
 	inner := srv.Handler
 	srv.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		c.start()

@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/nemesis398/skra/internal/config"
+	"github.com/nemesis398/skra/internal/escl"
 	"github.com/nemesis398/skra/internal/printer"
 	webassets "github.com/nemesis398/skra/web"
 )
@@ -36,6 +37,18 @@ type Server struct {
 	// hub's live loop writes it and every CUPS poll reads it.
 	liveMu sync.Mutex
 	live   map[string]printer.Live
+
+	// scanMu guards the scans: the last job of each session, the scanners
+	// last listed and what each of them said it can do, by eSCL root.
+	scanMu   sync.Mutex
+	scanJobs map[string]*scanJob
+	scanners []escl.Scanner
+	scanCaps map[string]escl.Caps
+
+	// idle is Serve's idle clock, nil when the server does not exit when
+	// idle. A scan job holds it while it runs.
+	idleMu sync.Mutex
+	idle   *idleClock
 }
 
 // New builds a Server that wants token on every write; LoadToken reads it
@@ -52,6 +65,9 @@ func New(cfg config.Config, deps Deps, token string) *Server {
 		token:  token,
 		tpl:    template.Must(template.ParseFS(webassets.Assets, "templates/*.html")),
 		static: http.StripPrefix("/static/", http.FileServer(http.FS(static))),
+
+		scanJobs: map[string]*scanJob{},
+		scanCaps: map[string]escl.Caps{},
 	}
 	s.hub = NewHub(s.tickPoll, pollEvery)
 	if deps.Query != nil {
@@ -81,5 +97,6 @@ func (s *Server) handlerOn(port string) http.Handler {
 	mux.HandleFunc("GET /events", s.events)
 	s.actionRoutes(mux)
 	s.printerRoutes(mux)
+	s.scanRoutes(mux)
 	return Guard(mux, port, s.token)
 }

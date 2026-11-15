@@ -77,8 +77,9 @@ func crossSite(r *http.Request) bool {
 // under. handlerOn serves them from this list, and they are the paths another
 // site may navigate to. Each draws from a fresh poll, so it works before the
 // event stream connects; the history tab's rows come from the hub's
-// completed-jobs read, with no polling of its own.
-var pages = map[string]string{"/": "overview", "/printers": "printers", "/history": "history"}
+// completed-jobs read, with no polling of its own. The scan tab asks no
+// scanner: its list of scanners and its form are fragments it loads itself.
+var pages = map[string]string{"/": "overview", "/scan": "scan", "/printers": "printers", "/history": "history"}
 
 // pageNavigation reports whether r opens one of the pages as a document of
 // its own: a link followed, not a frame, a fetch or a form post.

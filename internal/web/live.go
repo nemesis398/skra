@@ -169,7 +169,9 @@ func (h *Hub) pollOnce(ctx context.Context) {
 }
 
 // events streams the overview fragments as Server-Sent Events: the whole set
-// on connect, then every fragment that changed after a poll.
+// on connect, then every fragment that changed after a poll. A scan job asks
+// the hub for a poll whenever it has news, so its progress reaches the scan
+// tab, as event scan, on the same stream.
 func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	rc := http.NewResponseController(w)
 	h := w.Header()

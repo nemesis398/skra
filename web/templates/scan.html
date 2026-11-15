@@ -1,0 +1,30 @@
+{{/* The scan tab. The page asks no scanner: skra.js loads the list of
+     scanners from data-src, and then the form for the one picked. The
+     pages of the scan come with the event stream's scan fragment. */}}
+{{define "scanpage"}}<div class="sec"><b>scan</b><span class="rule"></span></div>
+<div class="panel" id="scan">
+  <div class="frow"><label class="k" for="scan-scanner">scanner</label><span id="scan-scanners" data-src="/scan/scanners"><span class="wait">looking for scanners</span></span><span class="btns"><button type="button" class="btn sm" data-scan="find"><i>&#xF0450;</i>look again</button></span></div>
+  <div id="scan-form"></div>
+  <div class="row"><button type="button" class="btn" data-scan="stop" hidden><i>&#xF04DB;</i>stop</button><button type="button" class="btn" data-scan="start" disabled><i>&#xF06AB;</i><span>scan</span></button></div>
+</div>
+<div class="sec"><b>pages</b><span class="rule"></span></div>
+<div id="scan-job"><div class="empty">The pages show here as they come from the scanner.</div></div>{{end}}
+
+{{/* The scanner drop-down, or why there is none. */}}
+{{define "scanners"}}{{if .}}<select class="f" id="scan-scanner" name="scanner">{{range .}}<option value="{{.URL}}">{{.Name}}</option>{{end}}</select>{{else}}<span class="wait">No scanner found. Check that it is on and on this network, or add it to scanners in the config.</span>{{end}}{{end}}
+
+{{/* What the picked scanner can do, as rows of buttons named by group.
+     A scanner that does not answer says so in Overlay0. */}}
+{{define "scanform"}}{{if .Away}}<div class="frow"><span class="k"></span><span class="wait away">{{.Away}}</span><span class="hint"></span></div>
+{{else}}<div class="frow"><span class="k">source</span><span>{{template "seg" .Source}}</span><span class="hint">{{.Model}}</span></div>
+<div class="frow"><span class="k">color</span><span>{{template "seg" .Color}}</span><span class="hint"></span></div>
+<div class="frow"><span class="k">resolution</span><span>{{template "seg" .Resolution}}</span><span class="hint">dots per inch</span></div>
+<div class="frow"><span class="k">size</span><span>{{template "seg" .Size}}</span><span class="hint"></span></div>
+{{end}}{{end}}
+
+{{/* The event stream's scan fragment: every scan the service knows, with
+     its last message and its pages. skra.js shows the one the page started. */}}
+{{define "scan"}}<div id="scans">{{range .}}<div class="scanjob" data-session="{{.ID}}" data-running="{{.Running}}">
+<div class="scanmsg{{if .Class}} {{.Class}}{{end}}">{{.Msg}}</div>
+<div class="strip">{{range .Pages}}<div class="pg"><span class="n">{{.}}</span></div>{{end}}</div>
+</div>{{end}}</div>{{end}}

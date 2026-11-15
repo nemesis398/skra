@@ -326,8 +326,14 @@ type sseClient struct {
 
 func openEvents(t *testing.T, ts *httptest.Server) *sseClient {
 	t.Helper()
+	return openEventsAt(t, ts, "/events")
+}
+
+// openEventsAt opens the event stream at path, such as /events?page=scan.
+func openEventsAt(t *testing.T, ts *httptest.Server, path string) *sseClient {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	req, _ := http.NewRequestWithContext(ctx, "GET", ts.URL+"/events", nil)
+	req, _ := http.NewRequestWithContext(ctx, "GET", ts.URL+path, nil)
 	req.Host = "localhost:7631"
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

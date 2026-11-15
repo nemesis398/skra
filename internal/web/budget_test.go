@@ -54,6 +54,20 @@ func TestBudgets(t *testing.T) {
 		if got >= 50*time.Millisecond {
 			t.Errorf("GET /history p95 = %v, budget 50 ms", got)
 		}
+		d = d[:0]
+		for range 200 {
+			start := time.Now()
+			rec := get(h, "/scan")
+			d = append(d, time.Since(start))
+			if rec.Code != 200 {
+				t.Fatalf("GET /scan: status %d", rec.Code)
+			}
+		}
+		got = p95(d)
+		t.Logf("GET /scan p95 = %v", got)
+		if got >= 50*time.Millisecond {
+			t.Errorf("GET /scan p95 = %v, budget 50 ms", got)
+		}
 	})
 
 	t.Run("action", func(t *testing.T) {
