@@ -203,12 +203,12 @@ func TestTailBufferKeepsTheNewest(t *testing.T) {
 func TestTailBufferLinesDropTheCutLine(t *testing.T) {
 	b := &tailBuffer{max: 14}
 	b.Write([]byte("old line\nnew a\nnew b\n")) // keeps "e\nnew a\nnew b\n"
-	if got := b.lines(); !reflect.DeepEqual(got, []string{"new a", "new b"}) {
+	if got := splitLines(b.complete()); !reflect.DeepEqual(got, []string{"new a", "new b"}) {
 		t.Errorf("lines = %q", got)
 	}
 	whole := &tailBuffer{max: 100}
 	whole.Write([]byte("a\r\nb\n\nc"))
-	if got := whole.lines(); !reflect.DeepEqual(got, []string{"a", "b", "", "c"}) {
+	if got := splitLines(whole.complete()); !reflect.DeepEqual(got, []string{"a", "b", "", "c"}) {
 		t.Errorf("lines = %q", got)
 	}
 }

@@ -180,8 +180,6 @@ func (t *tailBuffer) complete() string {
 	return string(rest)
 }
 
-func (t *tailBuffer) lines() []string { return splitLines(t.complete()) }
-
 // --- the LogLevel in cupsd.conf ---
 
 // logDirective reads one line of cupsd.conf. It answers the text before the
