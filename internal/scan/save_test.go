@@ -480,3 +480,73 @@ func TestSaveStreams(t *testing.T) {
 	}
 	t.Logf("page %d bytes, pdf %d bytes, heap grew by %d KB", len(page), fi.Size(), growth>>10)
 }
+
+// noisyJPEG is a w by h JPEG of random pixels, which makes a large file.
+func noisyJPEG(t *testing.T, w, h int) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	rng := rand.New(rand.NewPCG(3, 4))
+	for i := range img.Pix {
+		img.Pix[i] = uint8(rng.UintN(256))
+	}
+	var b bytes.Buffer
+	if err := jpeg.Encode(&b, img, nil); err != nil {
+		t.Fatal(err)
+	}
+	return b.Bytes()
+}
+
+// TestSaveShowsNoEmptyFile watches the folder while Save runs: a name other
+// than a hidden temp file must never be there before its content is whole.
+func TestSaveShowsNoEmptyFile(t *testing.T) {
+	st, _ := newStore(t)
+	s := newSession(t, st)
+	page := noisyJPEG(t, 800, 600)
+	for range 40 {
+		if _, err := s.AddPage(bytes.NewReader(page)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, format := range []string{"pdf", "jpeg"} {
+		folder := t.TempDir()
+		var (
+			bad  string
+			seen int
+			stop = make(chan struct{})
+			done = make(chan struct{})
+		)
+		go func() {
+			defer close(done)
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				ents, _ := os.ReadDir(folder)
+				for _, e := range ents {
+					if strings.HasPrefix(e.Name(), ".") {
+						continue
+					}
+					seen++
+					if fi, err := e.Info(); err == nil && fi.Size() == 0 && bad == "" {
+						bad = e.Name()
+					}
+				}
+			}
+		}()
+		paths, err := Save(s, folder, "Watch", format, saveNow)
+		close(stop)
+		<-done
+		if err != nil {
+			t.Fatal(format, err)
+		}
+		if bad != "" {
+			t.Errorf("%s: %q was empty while Save ran", format, bad)
+		}
+		if n := names(t, folder); len(n) != len(paths) {
+			t.Errorf("%s: folder holds %d names after Save, want %d: %q", format, len(n), len(paths), n)
+		}
+		t.Logf("%s: saw %d final names while Save ran", format, seen)
+	}
+}

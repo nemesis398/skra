@@ -96,12 +96,13 @@ func cleanTitle(title string, now time.Time) string {
 // format is "pdf", for one file, or "jpeg" or "png", for one file a page,
 // named "… 1.jpg", "… 2.jpg" when there are several pages.
 //
-// A file that exists is never overwritten: when a name is taken, " (2)", " (3)"
-// and so on is added, to the whole set of names. Each name is claimed with
-// O_EXCL first, so two saves cannot take the same one; the content goes to a
-// temp file in the folder, which is renamed over the claimed name. A missing
-// folder is created with mode 0700. If anything fails, Save removes
-// everything it made, folders included, and the folder is as it was.
+// Each file is written whole to a hidden temp file in the folder, then linked
+// to its name. A link fails if the name exists, so a file is never
+// overwritten and two saves cannot take the same name, and nobody sees a name
+// that is empty or half written. When a name is taken, " (2)", " (3)" and so
+// on is added, to the whole set of names. A missing folder is created with
+// mode 0700. If anything fails, Save removes everything it made, folders
+// included, and the folder is as it was.
 //
 // Save only reads the session, and does not discard it.
 func Save(sess *Session, folder, title, format string, now time.Time) (paths []string, err error) {
@@ -127,13 +128,16 @@ func Save(sess *Session, folder, title, format string, now time.Time) (paths []s
 
 	folder = filepath.Clean(folder)
 	created, err := makeFolder(folder)
-	var claimed []string
+	var temps, linked []string
 	defer func() {
+		for _, p := range temps {
+			_ = os.Remove(p)
+		}
 		if err == nil {
 			return
 		}
 		paths = nil
-		for _, p := range claimed {
+		for _, p := range linked {
 			_ = os.Remove(p)
 		}
 		for i := len(created) - 1; i >= 0; i-- {
@@ -148,6 +152,23 @@ func Save(sess *Session, folder, title, format string, now time.Time) (paths []s
 	if perPage {
 		n = len(pages)
 	}
+	for i := range n {
+		tmp, err := writeTemp(folder, func(w io.Writer) error {
+			if !perPage {
+				return WritePDF(w, pages, func(p Page) (io.ReadCloser, error) {
+					return os.Open(filepath.Join(sess.dir, p.File))
+				})
+			}
+			return writeImage(w, filepath.Join(sess.dir, pages[i].File), pages[i], format)
+		})
+		if tmp != "" {
+			temps = append(temps, tmp)
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	for try := 1; ; try++ {
 		if try > maxClaimTries {
 			return nil, errors.New("scan: could not find a free name for the scan")
@@ -165,31 +186,17 @@ func Save(sess *Session, folder, title, format string, now time.Time) (paths []s
 			}
 			want = append(want, filepath.Join(folder, stemName(title, now, ext, t, widest)+"."+ext))
 		}
-		got, err := claimAll(want)
+		got, err := linkAll(temps, want)
 		if errors.Is(err, fs.ErrExist) {
 			continue
 		}
+		linked = got
 		if err != nil {
 			return nil, err
 		}
-		claimed = got
 		break
 	}
-
-	for i, dest := range claimed {
-		err = writeAtomic(dest, func(w io.Writer) error {
-			if !perPage {
-				return WritePDF(w, pages, func(p Page) (io.ReadCloser, error) {
-					return os.Open(filepath.Join(sess.dir, p.File))
-				})
-			}
-			return writeImage(w, filepath.Join(sess.dir, pages[i].File), pages[i], format)
-		})
-		if err != nil {
-			return nil, err
-		}
-	}
-	return claimed, nil
+	return linked, nil
 }
 
 // makeFolder creates folder and the levels above it that are missing, with
@@ -216,33 +223,32 @@ func makeFolder(folder string) (created []string, err error) {
 	return created, nil
 }
 
-// claimAll creates each path, empty, with mode 0600 and O_EXCL. If any exists
-// it removes the ones it made and returns an error that satisfies
-// errors.Is(err, fs.ErrExist).
-func claimAll(paths []string) ([]string, error) {
+// linkAll links each temp file to the path at the same index. A link fails if
+// the name exists, so an existing file is never touched. If any link fails
+// it removes the names it made and returns the error; for a name that was
+// taken the error satisfies errors.Is(err, fs.ErrExist).
+func linkAll(temps, paths []string) ([]string, error) {
 	var got []string
-	for _, p := range paths {
-		f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_EXCL, fileMode)
-		if err != nil {
+	for i, p := range paths {
+		if err := os.Link(temps[i], p); err != nil {
 			for _, g := range got {
 				_ = os.Remove(g)
 			}
 			return nil, fmt.Errorf("scan: %w", err)
 		}
-		f.Close()
 		got = append(got, p)
 	}
 	return got, nil
 }
 
-// writeAtomic has fill write the content to a temp file next to dest, then
-// renames it over dest, so dest never holds half a file. The temp file is
-// removed on an error.
-func writeAtomic(dest string, fill func(io.Writer) error) error {
+// writeTemp has fill write the content to a new hidden temp file in dir and
+// returns its path, with the data on disk. On an error it removes the file
+// and returns no path.
+func writeTemp(dir string, fill func(io.Writer) error) (string, error) {
 	// CreateTemp makes the file 0600 and never reuses a name.
-	f, err := os.CreateTemp(filepath.Dir(dest), ".skra-*.tmp")
+	f, err := os.CreateTemp(dir, ".skra-*.tmp")
 	if err != nil {
-		return fmt.Errorf("scan: %w", err)
+		return "", fmt.Errorf("scan: %w", err)
 	}
 	tmp := f.Name()
 	bw := bufio.NewWriterSize(f, 256<<10)
@@ -250,7 +256,7 @@ func writeAtomic(dest string, fill func(io.Writer) error) error {
 	if err != nil {
 		f.Close()
 		_ = os.Remove(tmp)
-		return err
+		return "", err
 	}
 	err = bw.Flush()
 	if err == nil {
@@ -259,14 +265,11 @@ func writeAtomic(dest string, fill func(io.Writer) error) error {
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
-	if err == nil {
-		err = os.Rename(tmp, dest)
-	}
 	if err != nil {
 		_ = os.Remove(tmp)
-		return fmt.Errorf("scan: %w", err)
+		return "", fmt.Errorf("scan: %w", err)
 	}
-	return nil
+	return tmp, nil
 }
 
 // writeImage writes one page as a JPEG or PNG. An unturned JPEG page is copied
