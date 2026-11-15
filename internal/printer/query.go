@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/nemesis398/skra/internal/cups"
@@ -96,12 +97,63 @@ type Resolver interface {
 // POST to any host, 127.0.0.1:631 included. A redirect is an answer that is
 // not a success, so the printer reads as unreachable.
 var (
-	plainClient = &http.Client{CheckRedirect: noRedirect, Transport: &http.Transport{DisableKeepAlives: true}}
+	plainClient = &http.Client{CheckRedirect: noRedirect, Transport: &http.Transport{DisableKeepAlives: true, DialContext: ownDialer.DialContext}}
 	tlsClient   = &http.Client{CheckRedirect: noRedirect, Transport: &http.Transport{
 		DisableKeepAlives: true,
+		DialContext:       ownDialer.DialContext,
 		TLSClientConfig:   &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // see above
 	}}
 )
+
+// errOwnCUPS is what the dialer refuses a connection to this machine's CUPS with.
+var errOwnCUPS = errors.New("this machine's own CUPS")
+
+// IsOwnAddress reports whether ip is an address of this machine: loopback, the
+// unspecified address (which connects to this machine), or one of the
+// addresses of its interfaces, read now. An IPv4 address mapped into IPv6 is
+// judged as the IPv4 address.
+func IsOwnAddress(ip netip.Addr) bool {
+	if !ip.IsValid() {
+		return false
+	}
+	ip = ip.Unmap().WithZone("")
+	if ip.IsLoopback() || ip.IsUnspecified() {
+		return true
+	}
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return false
+	}
+	for _, a := range addrs {
+		if ipn, ok := a.(*net.IPNet); ok {
+			if mine, ok := netip.AddrFromSlice(ipn.IP); ok && mine.Unmap().WithZone("") == ip {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// refuseOwnCUPS is the Control function of the dialer. It runs after the host
+// name is resolved and before the connection is made, so it sees the address
+// that would be connected to, whatever the name was: a hosts-file alias, this
+// machine's own name, a DNS name that points at 127.0.0.1. Port 631 of this
+// machine is CUPS, and skrá speaks to CUPS only over its unix socket.
+func refuseOwnCUPS(_, address string, _ syscall.RawConn) error {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil
+	}
+	if n, err := strconv.Atoi(port); err != nil || n != 631 {
+		return nil
+	}
+	if ip, err := netip.ParseAddr(host); err == nil && IsOwnAddress(ip) {
+		return fmt.Errorf("%w: %s", errOwnCUPS, address)
+	}
+	return nil
+}
+
+var ownDialer = &net.Dialer{Control: refuseOwnCUPS}
 
 func noRedirect(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 
@@ -151,6 +203,8 @@ func Query(ctx context.Context, deviceURI string, r Resolver) Live {
 		if isDNSSD {
 			resolved.Delete(deviceURI)
 		}
+		// The name led to this machine's CUPS and the dialer did not connect.
+		live.Own = errors.Is(err, errOwnCUPS)
 		return live
 	}
 	live.Reachable = true

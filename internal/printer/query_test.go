@@ -410,22 +410,25 @@ func TestQueryNeverSpeaksToThisMachinesCUPS(t *testing.T) {
 	defer func() { plainClient.Transport, tlsClient.Transport = oldP, oldT }()
 
 	// Directly, and through a resolver that hands out the local CUPS.
-	for _, uri := range []string{"ipp://127.0.0.1:631/printers/x", "ipps://localhost/printers/x", "ipp://[::1]:631/"} {
+	for _, uri := range []string{"ipp://127.0.0.1:631/printers/x", "ipps://localhost/printers/x", "ipp://[::1]:631/",
+		"ipp://localhost:0631/", "ipp://0.0.0.0/", "ipp://foo.localhost/x", "http://localhost:631/x", "ipp://[::ffff:127.0.0.1]/", "ipp://localhost./"} {
 		live := Query(context.Background(), uri, nil)
 		if live.Reachable || !live.Own {
 			t.Errorf("%s: %+v, want Own and not reachable", uri, live)
 		}
 	}
-	r := &fakeResolver{uri: "ipp://127.0.0.1:631/printers/x"}
-	uri := unique("dnssd://Own%20CUPS-%s._ipp._tcp.local/")
-	for range 2 {
-		live := Query(context.Background(), uri, r)
-		if live.Reachable || !live.Own {
-			t.Errorf("resolved loopback: %+v, want Own and not reachable", live)
+	for _, resolved := range []string{"ipp://127.0.0.1:631/printers/x", "ipp://[::ffff:127.0.0.1]:631/printers/x", "ipp://0.0.0.0/x", "ipp://localhost:0631/x"} {
+		r := &fakeResolver{uri: resolved}
+		uri := unique("dnssd://Own%20CUPS-%s._ipp._tcp.local/")
+		for range 2 {
+			live := Query(context.Background(), uri, r)
+			if live.Reachable || !live.Own {
+				t.Errorf("resolved %s: %+v, want Own and not reachable", resolved, live)
+			}
 		}
-	}
-	if n := r.calls.Load(); n != 2 {
-		t.Errorf("resolved %d times, want 2: a refused address is never cached", n)
+		if n := r.calls.Load(); n != 2 {
+			t.Errorf("resolved %d times, want 2: a refused address is never cached", n)
+		}
 	}
 	if n := ct.n.Load(); n != 0 {
 		t.Errorf("%d requests went out to this machine's CUPS", n)
