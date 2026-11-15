@@ -267,13 +267,10 @@ func (s *Server) view(snap Snapshot) view {
 		}
 		v.Queue = append(v.Queue, jv)
 	}
-	for i, j := range snap.Done {
-		jv := jobRow(j, names, now, false)
-		if i < recentJobs {
-			v.Recent = append(v.Recent, jv)
-		}
-		v.History = append(v.History, jv)
+	for _, j := range snap.Done {
+		v.History = append(v.History, jobRow(j, names, now, false))
 	}
+	v.Recent = v.History[:min(len(v.History), recentJobs)]
 	v.HistoryCount = "the last " + plural(len(snap.Done), "job", "jobs") + " CUPS keeps"
 
 	var need []string
