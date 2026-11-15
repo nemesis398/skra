@@ -412,3 +412,15 @@ func TestDoGivesUpOnACupsThatNeverAnswers(t *testing.T) {
 		t.Errorf("Do waited %v for a CUPS that never answers", d)
 	}
 }
+
+// An idle connection to cupsd is closed after 30 s, so the client does not
+// keep Fedora's on-demand cupsd from exiting.
+func TestClientClosesIdleConnections(t *testing.T) {
+	tr, ok := New("/nonexistent/cups.sock", "mika").http.Transport.(*http.Transport)
+	if !ok {
+		t.Fatal("the client has no *http.Transport")
+	}
+	if tr.IdleConnTimeout != 30*time.Second {
+		t.Errorf("IdleConnTimeout = %v, want 30s", tr.IdleConnTimeout)
+	}
+}

@@ -30,6 +30,11 @@ var headerTimeout = 45 * time.Second
 // dialTimeout bounds the connect to the socket.
 const dialTimeout = 5 * time.Second
 
+// idleConnTimeout closes a kept-alive connection to cupsd that nothing used
+// for that long. An open connection keeps Fedora's on-demand cupsd from
+// exiting when idle; a poll every 2 s while a page is open still reuses it.
+const idleConnTimeout = 30 * time.Second
+
 // Client is a CUPS client for one socket and one user.
 type Client struct {
 	user string
@@ -43,6 +48,7 @@ func New(socket, user string) *Client {
 	d := net.Dialer{Timeout: dialTimeout}
 	return &Client{user: user, http: &http.Client{Transport: &http.Transport{
 		ResponseHeaderTimeout: headerTimeout,
+		IdleConnTimeout:       idleConnTimeout,
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return d.DialContext(ctx, "unix", socket)
 		},
