@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 )
 
@@ -32,8 +33,9 @@ func NewToken() string {
 //
 // The file is made with O_EXCL and mode 0600. A file that is there but is not
 // a regular file (a symlink included), is readable by the group or by others,
-// is longer than tokenFileMax, or does not hold a token of 32 bytes or more is
-// refused, so the service does not start.
+// is longer than tokenFileMax, or does not hold a token of 32 bytes or more,
+// with at most one line end after it, is refused, so the service does not
+// start.
 // Deleting the file makes a new token at the next start.
 func LoadToken(dir string) (string, error) {
 	path := filepath.Join(dir, "token")
@@ -93,12 +95,18 @@ func readToken(path string) (string, error) {
 	if len(raw) > tokenFileMax {
 		return bad(fmt.Sprintf("is too long for a token (over %d bytes)", tokenFileMax))
 	}
+	// One line end is what echo or an editor leaves; it is not part of the
+	// token. The decoder skips CR and LF wherever they are, so any other is
+	// refused here, or it would end up in the token and the header.
 	tok := string(raw)
+	if t, ok := strings.CutSuffix(tok, "\n"); ok {
+		tok = strings.TrimSuffix(t, "\r")
+	}
 	if tok == "" {
 		return bad("is empty")
 	}
 	b, err := base64.RawURLEncoding.DecodeString(tok)
-	if err != nil {
+	if err != nil || strings.ContainsAny(tok, "\r\n") {
 		return bad("is not a token")
 	}
 	if len(b) < tokenBytes {

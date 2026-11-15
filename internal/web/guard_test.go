@@ -158,6 +158,21 @@ func TestTokenSurvivesARestart(t *testing.T) {
 	}
 }
 
+// A token file written with echo or an editor ends in one newline, which is
+// not part of the token.
+func TestLoadTokenAcceptsOneTrailingNewline(t *testing.T) {
+	for _, end := range []string{"\n", "\r\n"} {
+		dir := t.TempDir()
+		want := NewToken()
+		if err := os.WriteFile(filepath.Join(dir, "token"), []byte(want+end), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := LoadToken(dir); got != want || err != nil {
+			t.Errorf("token ending in %q: LoadToken = %q, %v; want %q", end, got, err, want)
+		}
+	}
+}
+
 func TestLoadTokenRefusesABadFile(t *testing.T) {
 	for _, tc := range []struct {
 		name, content string
@@ -168,6 +183,12 @@ func TestLoadTokenRefusesABadFile(t *testing.T) {
 		{"short", "c2hvcnQ", 0o600, "too short"},
 		{"not base64url", strings.Repeat("!", 43), 0o600, "not a token"},
 		{"too long", strings.Repeat("A", 2048), 0o600, "too long"},
+		{"two newlines", NewToken() + "\n\n", 0o600, "not a token"},
+		{"a newline before", "\n" + NewToken(), 0o600, "not a token"},
+		{"a newline inside", NewToken()[:20] + "\n" + NewToken()[20:], 0o600, "not a token"},
+		{"a trailing space", NewToken() + " ", 0o600, "not a token"},
+		{"a bare carriage return", NewToken() + "\r", 0o600, "not a token"},
+		{"only a newline", "\n", 0o600, "is empty"},
 		{"readable by others", NewToken(), 0o644, "readable by others"},
 		{"readable by the group", NewToken(), 0o640, "readable by others"},
 	} {
