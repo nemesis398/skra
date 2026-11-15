@@ -20,17 +20,18 @@ type Changes struct {
 // commandFormat is the document type of a printer maintenance command.
 const commandFormat = "application/vnd.cups-command"
 
-// adminOp sends an operation on one queue to the admin resource. The caller
-// builds a fresh request, because Do adds the user name to it.
-func (c *Client) adminOp(op uint16, name string) (*ipp.Request, error) {
+// queueRequest builds the request for an operation on one queue. Every call
+// needs a request of its own, because Do adds the user name to it.
+func queueRequest(op uint16, name string) (*ipp.Request, error) {
 	if name == "" {
 		return nil, errors.New("no queue named")
 	}
 	return ipp.NewRequest(op).Op(ipp.URI("printer-uri", PrinterURI(name))), nil
 }
 
+// queueOp sends an operation on one queue to the admin resource.
 func (c *Client) queueOp(ctx context.Context, op uint16, name string) error {
-	req, err := c.adminOp(op, name)
+	req, err := queueRequest(op, name)
 	if err != nil {
 		return err
 	}
@@ -73,7 +74,7 @@ func (c *Client) Modify(ctx context.Context, name string, ch Changes) error {
 	if len(attrs) == 0 {
 		return nil
 	}
-	req, err := c.adminOp(ipp.OpCUPSAddModifyPrinter, name)
+	req, err := queueRequest(ipp.OpCUPSAddModifyPrinter, name)
 	if err != nil {
 		return err
 	}
@@ -120,7 +121,7 @@ func (c *Client) MoveAll(ctx context.Context, from, to string) error {
 	case to == from:
 		return errors.New("the jobs are on that queue already")
 	}
-	req, err := c.adminOp(ipp.OpCUPSMoveJob, from)
+	req, err := queueRequest(ipp.OpCUPSMoveJob, from)
 	if err != nil {
 		return err
 	}
