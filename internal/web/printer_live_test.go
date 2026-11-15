@@ -47,7 +47,7 @@ func (q *fakeQuery) askedURIs() []string {
 }
 
 func liveServer(f *fakeCUPS, q *fakeQuery) *Server {
-	return New(config.Config{Listen: "127.0.0.1:7631", User: "mika"}, Deps{CUPS: f, Query: q.query})
+	return New(config.Config{Listen: "127.0.0.1:7631", User: "mika"}, Deps{CUPS: f, Query: q.query}, NewToken())
 }
 
 // pageWithLive asks the printers once, as the hub's live loop does, then renders.

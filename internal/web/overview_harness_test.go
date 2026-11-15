@@ -16,7 +16,7 @@ import (
 // virtual queue, its four inks and no failure in the footer.
 func TestOverviewAgainstHarness(t *testing.T) {
 	c := testenv.Client(t)
-	s := New(config.Config{Listen: "127.0.0.1:7631", User: "root"}, Deps{CUPS: c})
+	s := New(config.Config{Listen: "127.0.0.1:7631", User: "root"}, Deps{CUPS: c}, NewToken())
 	rec := get(s.Handler(), "/")
 	if rec.Code != 200 {
 		t.Fatalf("status %d", rec.Code)

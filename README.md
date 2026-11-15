@@ -72,9 +72,12 @@ requests with `lpadmin` today. It adds a new door, and the door is guarded:
 - It listens on `127.0.0.1` and refuses any other address in `listen`.
 - Every request needs a `Host` of `127.0.0.1:7631` or `localhost:7631`, which
   stops DNS rebinding.
-- Every request that changes something also needs the per-process token in the
+- Every request that changes something also needs the token in the
   `X-Skra-Token` header, and an `Origin` that is absent or the page's own.
-  Anything else gets `403`.
+  Anything else gets `403`. The token is 32 random bytes in `token` in the
+  state directory, mode `0600`, so a page left open across an idle exit
+  keeps working. skra refuses to start when that file is empty, short or
+  readable by others; delete it, and the next start makes a new one.
 - No page may frame another one.
 
 ## ⚙️ Configuration
@@ -87,7 +90,7 @@ unknown key is an error.
 | `listen` | `127.0.0.1:7631` | A loopback address only. Under socket activation the socket unit decides. |
 | `cups_socket` | `/run/cups/cups.sock` | The CUPS socket. |
 | `user` | `$USER` | The name sent to CUPS and recorded with every action. |
-| `state_dir` | `~/.local/state/skra` | Where the action log lives. |
+| `state_dir` | `~/.local/state/skra` | Where the action log and the token live. |
 | `idle_exit` | `5m` | How long the service waits with no request before it exits. Ignored when it was not started by its socket. |
 | `declared_queues` | none | Queue names that your system configuration owns. They show as read-only and cannot be removed or re-addressed here. |
 | `cupsd_conf_managed` | `false` | Set it when `cupsd.conf` is managed elsewhere, and the debug switch turns off. |
@@ -130,10 +133,6 @@ ends the process.
 - **Ink levels are the printer's own, when it answers.** When it does not,
   skra shows CUPS's copy, which CUPS reads only while it prints, and says when
   that was.
-- **A page left open past the idle exit has a stale token.** A hidden tab
-  closes its event stream, the service exits, and the next one starts with a
-  new token. The first action from the old page is refused and asks you to
-  reload it.
 - **History is what CUPS keeps.** skra lists the completed jobs CUPS still
   remembers, up to 200. It keeps no archive of its own.
 - **The CUPS log needs journal access.** Reading it runs `journalctl`, which

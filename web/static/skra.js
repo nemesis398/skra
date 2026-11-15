@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 "use strict";
 
-// The server puts a per-process token into the page; every POST sends it back.
+// The server puts its token into the page; every POST sends it back. The
+// token is kept in the state directory, so it outlives an idle exit.
 const token = document.querySelector('meta[name="skra-token"]').content;
 
 const $ = (id) => document.getElementById(id);

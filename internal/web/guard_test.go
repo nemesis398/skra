@@ -5,6 +5,8 @@ package web
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -75,16 +77,116 @@ func TestGuard(t *testing.T) {
 
 func TestNewToken(t *testing.T) {
 	a, b := NewToken(), NewToken()
-	if !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(a) {
-		t.Errorf("token %q is not 32 bytes of hex", a)
+	if !regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`).MatchString(a) {
+		t.Errorf("token %q is not 32 bytes of base64url", a)
 	}
 	if a == b {
 		t.Error("two tokens are equal")
 	}
 }
 
+// Without a token to compare with, the guard lets no write through: an empty
+// header must not match an empty token.
+func TestGuardWithoutATokenRefusesEveryWrite(t *testing.T) {
+	ok := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+	h := Guard(ok, "7631", "")
+	for _, hdr := range []map[string]string{nil, {"X-Skra-Token": ""}} {
+		if got := do(h, "POST", "/x", "localhost:7631", hdr); got != 403 {
+			t.Errorf("POST with %v: status %d, want 403", hdr, got)
+		}
+	}
+	if got := do(h, "GET", "/x", "localhost:7631", nil); got != 200 {
+		t.Errorf("GET: status %d, want 200", got)
+	}
+}
+
+func TestLoadTokenMakesOneAndKeepsIt(t *testing.T) {
+	dir := t.TempDir()
+	a, err := LoadToken(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`).MatchString(a) {
+		t.Errorf("token %q is not 32 bytes of base64url", a)
+	}
+	fi, err := os.Stat(filepath.Join(dir, "token"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Errorf("token file mode %v, want 0600", fi.Mode().Perm())
+	}
+	b, err := LoadToken(dir)
+	if err != nil || b != a {
+		t.Errorf("second load = %q, %v; want the first token %q", b, err, a)
+	}
+}
+
+// A page that outlived the process, which exited when idle, still holds a
+// token the next process accepts.
+func TestTokenSurvivesARestart(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Config{Listen: "127.0.0.1:7631", User: "mika", StateDir: dir}
+	tok, err := LoadToken(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := New(cfg, Deps{CUPS: &fakeCUPS{}}, tok)
+	page := get(first.Handler(), "/").Body.String()
+	m := regexp.MustCompile(`<meta name="skra-token" content="([^"]+)">`).FindStringSubmatch(page)
+	if m == nil {
+		t.Fatal("the page carries no token")
+	}
+
+	tok2, err := LoadToken(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := New(cfg, Deps{CUPS: &fakeCUPS{}}, tok2)
+	req := httptest.NewRequest("POST", "/jobs/12/hold", nil)
+	req.Host = "localhost:7631"
+	req.Header.Set("X-Skra-Token", m[1])
+	rec := httptest.NewRecorder()
+	second.Handler().ServeHTTP(rec, req)
+	if rec.Code == 403 {
+		t.Errorf("the second server refused the first one's token: %q", rec.Body.String())
+	}
+}
+
+func TestLoadTokenRefusesABadFile(t *testing.T) {
+	for _, tc := range []struct {
+		name, content string
+		mode          os.FileMode
+		want          string
+	}{
+		{"empty", "", 0o600, "is empty"},
+		{"short", "c2hvcnQ", 0o600, "too short"},
+		{"not base64url", strings.Repeat("!", 43), 0o600, "not a token"},
+		{"readable by others", NewToken(), 0o644, "readable by others"},
+		{"readable by the group", NewToken(), 0o640, "readable by others"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "token")
+			if err := os.WriteFile(path, []byte(tc.content), tc.mode); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(path, tc.mode); err != nil {
+				t.Fatal(err)
+			}
+			tok, err := LoadToken(dir)
+			if err == nil {
+				t.Fatalf("loaded %q from a bad file", tok)
+			}
+			if msg := err.Error(); !strings.Contains(msg, tc.want) || !strings.Contains(msg, path) || !strings.Contains(msg, "delete it") {
+				t.Errorf("error %q does not say %q, the path and how to fix it", msg, tc.want)
+			}
+		})
+	}
+}
+
 func newTestServer() *Server {
-	return New(config.Config{Listen: "127.0.0.1:7631"}, Deps{})
+	return New(config.Config{Listen: "127.0.0.1:7631"}, Deps{}, NewToken())
 }
 
 func get(h http.Handler, path string) *httptest.ResponseRecorder {

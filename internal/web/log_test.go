@@ -77,7 +77,7 @@ func logServer(t *testing.T, f *fakeCUPS, j *journal, managed bool) (*Server, ht
 	}
 	t.Cleanup(func() { db.Close() })
 	s := New(config.Config{Listen: "127.0.0.1:7631", User: "mika", CupsdConfManaged: managed},
-		Deps{CUPS: f, Store: db, ReadLog: j.read})
+		Deps{CUPS: f, Store: db, ReadLog: j.read}, NewToken())
 	return s, s.Handler()
 }
 

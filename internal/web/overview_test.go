@@ -93,7 +93,7 @@ func (f *fakeCUPS) Jobs(_ context.Context, which string, _ int) ([]cups.Job, err
 }
 
 func serverFor(f *fakeCUPS) *Server {
-	return New(config.Config{Listen: "127.0.0.1:7631", User: "mika"}, Deps{CUPS: f})
+	return New(config.Config{Listen: "127.0.0.1:7631", User: "mika"}, Deps{CUPS: f}, NewToken())
 }
 
 func pageFor(t *testing.T, f *fakeCUPS) string {

@@ -75,7 +75,7 @@ func actionServer(t *testing.T, f *fakeCUPS, declared ...string) (*Server, http.
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
-	s := New(config.Config{Listen: "127.0.0.1:7631", User: "mika", DeclaredQueues: declared}, Deps{CUPS: f, Store: db})
+	s := New(config.Config{Listen: "127.0.0.1:7631", User: "mika", DeclaredQueues: declared}, Deps{CUPS: f, Store: db}, NewToken())
 	h := s.Handler()
 	if rec := get(h, "/"); rec.Code != 200 {
 		t.Fatalf("GET /: %d", rec.Code)

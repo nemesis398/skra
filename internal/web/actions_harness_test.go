@@ -28,7 +28,7 @@ func harnessServer(t *testing.T) (*Server, *cups.Client) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
-	return New(config.Config{Listen: "127.0.0.1:7631", User: "root"}, Deps{CUPS: c, Store: db}), c
+	return New(config.Config{Listen: "127.0.0.1:7631", User: "root"}, Deps{CUPS: c, Store: db}, NewToken()), c
 }
 
 // jobsNamed lists the jobs of both lists whose name has the prefix.

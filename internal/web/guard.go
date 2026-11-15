@@ -4,20 +4,9 @@
 package web
 
 import (
-	"crypto/rand"
 	"crypto/subtle"
-	"encoding/hex"
 	"net/http"
 )
-
-// NewToken returns a fresh per-process token: 32 random bytes as hex.
-func NewToken() string {
-	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
-		panic("skra: no randomness: " + err.Error())
-	}
-	return hex.EncodeToString(b)
-}
 
 // Guard protects next from other web pages and from DNS rebinding.
 //
@@ -25,7 +14,8 @@ func NewToken() string {
 // stops a hostile name that resolves to 127.0.0.1 from reading the page.
 // Every request that is not GET, HEAD or OPTIONS must also carry the
 // X-Skra-Token header equal to token, and an Origin that is absent or equal to
-// "http://" + Host. Anything else gets 403. Every response, 403s included,
+// "http://" + Host. Anything else gets 403. An empty token lets no write
+// through: an empty header would match it. Every response, 403s included,
 // forbids framing (X-Frame-Options and frame-ancestors).
 func Guard(next http.Handler, port, token string) http.Handler {
 	hosts := map[string]bool{
@@ -49,7 +39,7 @@ func Guard(next http.Handler, port, token string) http.Handler {
 				return
 			}
 			got := r.Header.Get("X-Skra-Token")
-			if subtle.ConstantTimeCompare([]byte(got), []byte(token)) != 1 {
+			if token == "" || subtle.ConstantTimeCompare([]byte(got), []byte(token)) != 1 {
 				http.Error(w, "Forbidden: missing or wrong token. Reload the page.", http.StatusForbidden)
 				return
 			}

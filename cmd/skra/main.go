@@ -35,6 +35,10 @@ func run() error {
 		return err
 	}
 	defer db.Close()
+	token, err := web.LoadToken(cfg.StateDir)
+	if err != nil {
+		return err
+	}
 	ln, activated, err := activation.Listener(cfg.Listen)
 	if err != nil {
 		return err
@@ -56,5 +60,5 @@ func run() error {
 			return fmt.Errorf("idle_exit: %w", err)
 		}
 	}
-	return web.New(cfg, deps).Serve(ln, idle)
+	return web.New(cfg, deps, token).Serve(ln, idle)
 }

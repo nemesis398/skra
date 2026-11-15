@@ -14,7 +14,7 @@ import (
 	webassets "github.com/nemesis398/skra/web"
 )
 
-// Server holds the page templates and the per-process token.
+// Server holds the page templates and the token that every write must carry.
 type Server struct {
 	cfg    config.Config
 	deps   Deps
@@ -38,9 +38,10 @@ type Server struct {
 	live   map[string]printer.Live
 }
 
-// New builds a Server with a fresh token. The templates are embedded, so a
-// parse error is a bug in the binary and panics at start.
-func New(cfg config.Config, deps Deps) *Server {
+// New builds a Server that wants token on every write; LoadToken reads it
+// from the state directory, so it outlives the process. The templates are
+// embedded, so a parse error is a bug in the binary and panics at start.
+func New(cfg config.Config, deps Deps, token string) *Server {
 	static, err := fs.Sub(webassets.Assets, "static")
 	if err != nil {
 		panic(err)
@@ -48,7 +49,7 @@ func New(cfg config.Config, deps Deps) *Server {
 	s := &Server{
 		cfg:    cfg,
 		deps:   deps,
-		token:  NewToken(),
+		token:  token,
 		tpl:    template.Must(template.ParseFS(webassets.Assets, "templates/*.html")),
 		static: http.StripPrefix("/static/", http.FileServer(http.FS(static))),
 	}
