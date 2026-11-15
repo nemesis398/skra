@@ -267,3 +267,44 @@ func TestGuardForbidsFraming(t *testing.T) {
 		})
 	}
 }
+
+// Another site may link to a tab, but read nothing: a cross-site or
+// same-site request is refused unless it is a top-level navigation to one of
+// the three pages. A request without Sec-Fetch headers passes; the token
+// still guards every write.
+func TestGuardRefusesCrossSiteReads(t *testing.T) {
+	nav := func(site string) map[string]string {
+		return map[string]string{"Sec-Fetch-Site": site, "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document"}
+	}
+	fetch := func(site string) map[string]string {
+		return map[string]string{"Sec-Fetch-Site": site, "Sec-Fetch-Mode": "cors", "Sec-Fetch-Dest": "empty"}
+	}
+	h := guarded()
+	for _, tc := range []struct {
+		name, method, path string
+		hdr                map[string]string
+		want               int
+	}{
+		{"cross-site event stream", "GET", "/events", fetch("cross-site"), 403},
+		{"cross-site log", "GET", "/printers/log", fetch("cross-site"), 403},
+		{"cross-site add panel", "GET", "/printers/new?uri=ipp://x.local/", fetch("cross-site"), 403},
+		{"cross-site script", "GET", "/static/skra.js", map[string]string{"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "no-cors", "Sec-Fetch-Dest": "script"}, 403},
+		{"same-site event stream", "GET", "/events", fetch("same-site"), 403},
+		{"cross-site navigation to the overview", "GET", "/", nav("cross-site"), 200},
+		{"cross-site navigation to printers", "GET", "/printers", nav("cross-site"), 200},
+		{"same-site navigation to history", "GET", "/history", nav("same-site"), 200},
+		{"cross-site navigation to the log", "GET", "/printers/log", nav("cross-site"), 403},
+		{"cross-site navigation to events", "GET", "/events", nav("cross-site"), 403},
+		{"cross-site frame of the overview", "GET", "/", map[string]string{"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "iframe"}, 403},
+		{"cross-site form post to a page", "POST", "/", nav("cross-site"), 403},
+		{"same-origin event stream", "GET", "/events", fetch("same-origin"), 200},
+		{"typed into the address bar", "GET", "/printers/log", nav("none"), 200},
+		{"no Sec-Fetch headers", "GET", "/events", nil, 200},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := do(h, tc.method, tc.path, "localhost:7631", tc.hdr); got != tc.want {
+				t.Errorf("status %d, want %d", got, tc.want)
+			}
+		})
+	}
+}

@@ -79,6 +79,8 @@ requests with `lpadmin` today. It adds a new door, and the door is guarded:
   state directory, mode `0600`, so a page left open across an idle exit
   keeps working. skra refuses to start when that file is empty, short or
   readable by others; delete it, and the next start makes a new one.
+- Another site may link to the three tabs and do nothing else: any other
+  request the browser marks as coming from another site gets `403`.
 - No other page may frame skrá.
 
 ## ⚙️ Configuration
