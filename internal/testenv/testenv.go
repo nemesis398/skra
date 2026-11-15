@@ -46,12 +46,7 @@ func Socket(tb testing.TB) string {
 // the scheduler (ExclusiveClient) waits for it and never runs beside it.
 func Client(tb testing.TB) *cups.Client {
 	tb.Helper()
-	sock := Socket(tb)
-	if _, err := os.Stat(sock); err != nil {
-		tb.Skipf("harness is not running (%s: %v); run \"make harness-up\"", sock, err)
-	}
-	lock(tb, "cupsd.lock", syscall.LOCK_SH)
-	return cups.New(sock, user)
+	return client(tb, syscall.LOCK_SH)
 }
 
 // ExclusiveClient is Client for a test that makes the scheduler restart, as a
@@ -63,11 +58,18 @@ func Client(tb testing.TB) *cups.Client {
 // time, in separate processes.
 func ExclusiveClient(tb testing.TB) *cups.Client {
 	tb.Helper()
+	return client(tb, syscall.LOCK_EX)
+}
+
+// client skips the test when the harness socket does not exist, takes the
+// restart lock as how says, and returns a client for the harness CUPS.
+func client(tb testing.TB, how int) *cups.Client {
+	tb.Helper()
 	sock := Socket(tb)
 	if _, err := os.Stat(sock); err != nil {
 		tb.Skipf("harness is not running (%s: %v); run \"make harness-up\"", sock, err)
 	}
-	lock(tb, "cupsd.lock", syscall.LOCK_EX)
+	lock(tb, "cupsd.lock", how)
 	return cups.New(sock, user)
 }
 
