@@ -21,10 +21,7 @@ func startServe(t *testing.T, idle time.Duration) *served {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := serverFor(&fakeCUPS{})
-	// The guard wants the configured port in the Host header.
-	_, port, _ := net.SplitHostPort(ln.Addr().String())
-	s.cfg.Listen = "127.0.0.1:" + port
+	s := serverFor(&fakeCUPS{}) // its config says 7631; the guard takes the listener's port
 	sv := &served{addr: ln.Addr().String(), done: make(chan error, 1), ln: ln}
 	go func() { sv.done <- s.Serve(ln, idle) }()
 	t.Cleanup(func() { ln.Close() })
@@ -96,5 +93,32 @@ func TestServeWithoutIdleTimeNeverExits(t *testing.T) {
 	sv.ln.Close()
 	if ok, err := sv.exited(2 * time.Second); !ok || err == nil {
 		t.Errorf("closing the listener gave (returned %t, err %v), want an error", ok, err)
+	}
+}
+
+// The guard takes its port from the socket it serves, not from listen in the
+// config: a socket unit on another port works, and the configured port is
+// refused there.
+func TestServeGuardsTheListenersPort(t *testing.T) {
+	sv := startServe(t, 0)
+	_, port, _ := net.SplitHostPort(sv.addr)
+	for _, tc := range []struct {
+		host string
+		want int
+	}{
+		{"127.0.0.1:" + port, 200},
+		{"localhost:" + port, 200},
+		{"127.0.0.1:7631", 403},
+	} {
+		req, _ := http.NewRequest("GET", "http://"+sv.addr+"/static/skra.css", nil)
+		req.Host = tc.host
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != tc.want {
+			t.Errorf("Host %s: status %d, want %d", tc.host, resp.StatusCode, tc.want)
+		}
 	}
 }

@@ -19,7 +19,7 @@ idle minutes.
   and printing a PDF, JPEG, PNG or text file by dropping it on the page. The
   page updates itself over Server-Sent Events while it is visible.
 - **Queue:** hold, release, move to another printer and cancel your jobs.
-  Cancelling a job that is already printing asks first, and so does anything
+  Canceling a job that is already printing asks first, and so does anything
   that destroys more than one job.
 - **Printers:** find printers on the network and over USB, add one as a
   driverless queue or with a driver CUPS has, and remove one. A queue's
@@ -69,16 +69,17 @@ stores none, and the YubiKey step in a CUPS web login never comes into play.
 The service adds no new rights: any program running as you can send the same
 requests with `lpadmin` today. It adds a new door, and the door is guarded:
 
-- It listens on `127.0.0.1` and refuses any other address in `listen`.
-- Every request needs a `Host` of `127.0.0.1:7631` or `localhost:7631`, which
-  stops DNS rebinding.
+- It listens on `127.0.0.1` or `localhost` and refuses any other host in
+  `listen`.
+- Every request needs a `Host` of `127.0.0.1` or `localhost` with the port
+  skra listens on (`7631` unless you change it), which stops DNS rebinding.
 - Every request that changes something also needs the token in the
   `X-Skra-Token` header, and an `Origin` that is absent or the page's own.
   Anything else gets `403`. The token is 32 random bytes in `token` in the
   state directory, mode `0600`, so a page left open across an idle exit
   keeps working. skra refuses to start when that file is empty, short or
   readable by others; delete it, and the next start makes a new one.
-- No page may frame another one.
+- No other page may frame skrá.
 
 ## ⚙️ Configuration
 
@@ -87,7 +88,7 @@ unknown key is an error.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `listen` | `127.0.0.1:7631` | A loopback address only. Under socket activation the socket unit decides. |
+| `listen` | `127.0.0.1:7631` | `127.0.0.1` or `localhost`, on any port. Under socket activation the socket unit decides, and the `Host` check follows its port. |
 | `cups_socket` | `/run/cups/cups.sock` | The CUPS socket. |
 | `user` | `$USER` | The name sent to CUPS and recorded with every action. |
 | `state_dir` | `~/.local/state/skra` | Where the action log and the token live. |

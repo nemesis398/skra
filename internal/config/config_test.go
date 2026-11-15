@@ -78,8 +78,19 @@ func TestLoadRejectsNonLoopback(t *testing.T) {
 	}
 }
 
+// The request guard allows a Host of 127.0.0.1 or localhost only, so a
+// listen address that a browser would reach under another name is refused.
+func TestLoadRejectsLoopbackTheGuardRefuses(t *testing.T) {
+	for _, listen := range []string{"[::1]:7631", "127.0.0.2:7631", "127.1:7631", "[::ffff:127.0.0.1]:7631", "LOCALHOST:7631"} {
+		_, err := Load(writeConfig(t, `{"listen":"`+listen+`"}`))
+		if err == nil || !strings.Contains(err.Error(), "listen") || !strings.Contains(err.Error(), "127.0.0.1 or localhost") {
+			t.Errorf("listen %q: err = %v", listen, err)
+		}
+	}
+}
+
 func TestLoadAcceptsLoopbackForms(t *testing.T) {
-	for _, listen := range []string{"127.0.0.1:0", "localhost:7631", "[::1]:7631"} {
+	for _, listen := range []string{"127.0.0.1:0", "127.0.0.1:7631", "localhost:7631"} {
 		if _, err := Load(writeConfig(t, `{"listen":"`+listen+`"}`)); err != nil {
 			t.Errorf("listen %q rejected: %v", listen, err)
 		}

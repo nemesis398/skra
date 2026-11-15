@@ -48,8 +48,8 @@ func DefaultPath() string {
 }
 
 // Load reads path over the defaults. A missing file gives the defaults. An
-// unknown key, a listen address that is not loopback, or an idle_exit that is
-// not a duration is an error.
+// unknown key, a listen address on another host than 127.0.0.1 or localhost,
+// or an idle_exit that is not a duration is an error.
 func Load(path string) (Config, error) {
 	cfg := defaults()
 	data, err := os.ReadFile(path)
@@ -80,18 +80,17 @@ func validate(cfg Config) error {
 	return nil
 }
 
-// requireLoopback accepts host:port where host is localhost or a loopback IP.
-// An empty host, 0.0.0.0 and [::] would listen on every interface.
+// requireLoopback accepts host:port where host is 127.0.0.1 or localhost,
+// the two names the request guard allows in the Host header. An empty host,
+// 0.0.0.0 and [::] would listen on every interface; another loopback address
+// such as [::1] would be reached under a name the guard refuses.
 func requireLoopback(addr string) error {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
 		return fmt.Errorf("%q is not host:port: %w", addr, err)
 	}
-	if host == "localhost" {
+	if host == "127.0.0.1" || host == "localhost" {
 		return nil
 	}
-	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
-		return nil
-	}
-	return fmt.Errorf("%q is not a loopback address; skra only listens on 127.0.0.1, ::1 or localhost", addr)
+	return fmt.Errorf("%q is not allowed; skra only listens on 127.0.0.1 or localhost", addr)
 }

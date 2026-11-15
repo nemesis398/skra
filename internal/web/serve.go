@@ -45,9 +45,12 @@ func (c *idleClock) end() {
 
 // Serve serves on ln until ln fails, or, when idle is above 0, until idle has
 // passed with no request in flight, which ends it with a nil error. Idle 0
-// never exits: the process was started by hand, not by its socket.
+// never exits: the process was started by hand, not by its socket. The
+// request guard wants the port of ln in the Host header, so a socket unit on
+// another port than listen in the config works.
 func (s *Server) Serve(ln net.Listener, idle time.Duration) error {
-	srv := &http.Server{Handler: s.Handler()}
+	_, port, _ := net.SplitHostPort(ln.Addr().String()) // no port matches no Host: closed
+	srv := &http.Server{Handler: s.handlerOn(port)}
 	if idle <= 0 {
 		return srv.Serve(ln)
 	}

@@ -60,8 +60,15 @@ func New(cfg config.Config, deps Deps, token string) *Server {
 	return s
 }
 
-// Handler returns the routes behind the request guard.
+// Handler returns the routes behind the request guard, for the port of
+// listen in the config. Serve guards the port of its listener instead.
 func (s *Server) Handler() http.Handler {
+	_, port, _ := net.SplitHostPort(s.cfg.Listen) // an empty port matches no Host: closed
+	return s.handlerOn(port)
+}
+
+// handlerOn returns the routes behind the request guard for port.
+func (s *Server) handlerOn(port string) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /static/", s.static)
 	mux.HandleFunc("GET /{$}", s.page)
@@ -69,6 +76,5 @@ func (s *Server) Handler() http.Handler {
 	s.actionRoutes(mux)
 	s.printerRoutes(mux)
 	mux.HandleFunc("GET /history", s.historyPage)
-	_, port, _ := net.SplitHostPort(s.cfg.Listen) // an empty port matches no Host: closed
 	return Guard(mux, port, s.token)
 }
