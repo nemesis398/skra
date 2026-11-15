@@ -197,6 +197,10 @@ func TestThreePageFeederScanBecomesOnePDF(t *testing.T) {
 		Scanners: func(ctx context.Context) []escl.Scanner { return escl.Find(ctx, cfg.Scanners, nil) },
 	}, NewToken())
 	t.Cleanup(s.stopScans)
+	// One clock for the server and the name the test expects, so a run
+	// across midnight does not see two dates.
+	at := time.Now()
+	s.now = func() time.Time { return at }
 	h := s.Handler()
 	before := walkHome(t, home)
 
@@ -222,7 +226,7 @@ func TestThreePageFeederScanBecomesOnePDF(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	shown := get(h, "/scan/"+id+"/name?title=Krankenkasse+Beitragsbescheid&format=pdf").Body.String()
-	name := scan.FileName("Krankenkasse Beitragsbescheid", time.Now(), "pdf")
+	name := scan.FileName("Krankenkasse Beitragsbescheid", at, "pdf")
 	if shown != "~/Nextcloud/Documents/Scans/"+name {
 		t.Errorf("the page shows %q before the save", shown)
 	}
