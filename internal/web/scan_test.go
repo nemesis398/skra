@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"image"
 	"image/jpeg"
 	"net"
@@ -1030,5 +1031,93 @@ func TestPagesAreNotForOtherSites(t *testing.T) {
 	rig.h.ServeHTTP(rec, req)
 	if rec.Code != 200 {
 		t.Errorf("the page's own picture: status %d", rec.Code)
+	}
+}
+
+// The path the page shows before a save is the one the save writes: for a
+// title long enough to be cut into numbered pictures, and when the plain
+// name is taken.
+func TestShownPathIsTheWrittenPath(t *testing.T) {
+	rig, folder := newSaveRig(t, nil)
+	if err := os.MkdirAll(folder, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(folder, "2026-11-14 Taken.pdf"), []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	home := os.Getenv("HOME")
+	long := strings.Repeat("Beitragsbescheid ", 18) // about 300 characters
+	for _, c := range []struct {
+		title, format, more string
+	}{{long, "jpeg", " and 2 more"}, {"Taken", "pdf", ""}} {
+		sess := rig.session(t, 3)
+		q := url.Values{"title": {c.title}, "format": {c.format}}
+		shown := get(rig.h, "/scan/"+sess.ID+"/name?"+q.Encode()).Body.String()
+		if rec := postTo(rig.s, rig.h, "/scan/"+sess.ID+"/save", q); rec.Code != 200 {
+			t.Fatalf("save: status %d, %q", rec.Code, rec.Body.String())
+		}
+		first, _, _ := strings.Cut(lastEvent(t, rig.s).Target, ", ")
+		if want := "~" + strings.TrimPrefix(first, home) + c.more; shown != want {
+			t.Errorf("%.20q as %s: shown %q, written %q", c.title, c.format, shown, want)
+		}
+	}
+}
+
+// A save holds its scan from start to end: scan more, turn, drop and discard
+// wait for it, so no page comes in that the save then deletes, and the job of
+// a scan that started is never forgotten while it runs.
+func TestScanMoreWaitsForTheSave(t *testing.T) {
+	rig, _ := newSaveRig(t, nil)
+	sess := rig.session(t, 2)
+	begun, release := make(chan struct{}), make(chan struct{})
+	saveScanFiles = func(s *scan.Session, folder, title, format string, now time.Time) ([]string, error) {
+		close(begun)
+		<-release
+		return scan.Save(s, folder, title, format, now)
+	}
+	t.Cleanup(func() { saveScanFiles = scan.Save })
+
+	saved := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		saved <- postTo(rig.s, rig.h, "/scan/"+sess.ID+"/save", url.Values{"title": {"X"}, "format": {"pdf"}})
+	}()
+	select {
+	case <-begun:
+	case rec := <-saved:
+		t.Fatalf("the save did not go through saveScanFiles: status %d, %q", rec.Code, rec.Body.String())
+	}
+	for _, c := range []struct {
+		path string
+		form url.Values
+	}{
+		{"/scan/start", rig.feeder(sess.ID)},
+		{"/scan/" + sess.ID + "/discard", nil},
+		{"/scan/" + sess.ID + "/save", url.Values{"format": {"pdf"}}},
+		{"/scan/" + sess.ID + "/page/1/rotate", url.Values{"by": {"90"}}},
+		{"/scan/" + sess.ID + "/page/1/drop", nil},
+	} {
+		rec := postTo(rig.s, rig.h, c.path, c.form)
+		if rec.Code != 409 || rec.Header().Get("X-Skra-Class") != "need" || rec.Body.String() != scanBusyText {
+			t.Errorf("%s during the save: status %d, %q, class %q", c.path, rec.Code, rec.Body.String(), rec.Header().Get("X-Skra-Class"))
+		}
+	}
+	close(release)
+	if rec := <-saved; rec.Code != 200 {
+		t.Fatalf("save: status %d, %q", rec.Code, rec.Body.String())
+	}
+	if _, made, _ := rig.counts(); made != 0 {
+		t.Errorf("a scan reached the scanner during the save (%d clients)", made)
+	}
+	// The saved scan is gone, so scan more starts a new one.
+	if id := rig.start(t, rig.feeder(sess.ID)); id == sess.ID {
+		t.Error("scan more went into the saved scan")
+	}
+}
+
+// A job whose session went away under it says so in a sentence of its own.
+func TestAGoneScanSaysSo(t *testing.T) {
+	msg, class := scanOutcome(context.Background(), fmt.Errorf("adding a page: %w", scan.ErrGone), 1)
+	if msg != "This scan was saved or discarded." || class != "need" {
+		t.Errorf("a gone scan ends with %q in %q", msg, class)
 	}
 }

@@ -673,6 +673,7 @@ let lastScans = "";
 let scanFormAsked = 0;
 let scanPathAsked = 0;
 let scanPathFor = "";
+let scanHeld = false; // a save or discard of the shown scan is on its way
 const scanEmpty = $("scan-job")?.innerHTML ?? "";
 
 const scanButton = (which) => document.querySelector(`button[data-scan="${which}"]`);
@@ -730,10 +731,11 @@ async function loadScanForm() {
 function showScanButtons() {
   const start = scanButton("start");
   if (!start) return;
-  start.disabled = scanRunning || !document.querySelector("#scan-form [data-group]");
+  start.disabled = scanRunning || scanHeld || !document.querySelector("#scan-form [data-group]");
   scanButton("stop").hidden = !scanRunning;
   start.querySelector("span").textContent = $("scan-job").querySelector(".pg") ? "scan more" : "scan";
   for (const more of document.querySelectorAll('button[data-scan="more"]')) more.disabled = start.disabled;
+  for (const b of document.querySelectorAll('#scan-job button[data-scan="rotate"], #scan-job button[data-scan="drop"]')) b.disabled = scanHeld;
   tieScanForm();
   showSaveRow();
 }
@@ -848,13 +850,13 @@ function forgetScan() {
 }
 
 // showSaveRow shows the save row while the shown scan has pages; save and
-// discard wait while it scans.
+// discard wait while it scans or while one of them is on its way.
 function showSaveRow() {
   const row = $("scan-save");
   if (!row) return;
   const job = shownJob();
   row.hidden = !job;
-  for (const b of row.querySelectorAll("button[data-scan]")) b.disabled = scanRunning;
+  for (const b of row.querySelectorAll("button[data-scan]")) b.disabled = scanRunning || scanHeld;
   const key = job ? `${job.dataset.session} ${job.dataset.pages}` : "";
   if (key.split(" ")[0] !== scanPathFor.split(" ")[0]) scanNote("", "", "save-note");
   if (key && key !== scanPathFor) {
@@ -886,7 +888,8 @@ async function showScanPath() {
 async function saveScan(b) {
   const id = scanSession;
   if (!id) return;
-  b.disabled = true;
+  scanHeld = true;
+  showScanButtons();
   try {
     const res = await post(`/scan/${encodeURIComponent(id)}/save`, new URLSearchParams({ title: $("scan-title").value, format: saveFormat() }));
     const text = (await res.text()).trim();
@@ -900,6 +903,7 @@ async function saveScan(b) {
   } catch (err) {
     say("Could not reach skrá. Is it still running?", true);
   } finally {
+    scanHeld = false;
     showScanButtons();
   }
 }
@@ -920,7 +924,12 @@ async function discardScan(b) {
   const restore = offered ? `[data-scan="discard"][data-session="${id}"]` : '#scan-save [data-scan="discard"]';
   if (!(await confirmBox(b.dataset.confirmTitle, text, label, "Keep it", restore, undefined, "\u{F01B4}"))) return;
   const note = offered ? "scan-note" : "save-note";
+  const shown = id === scanSession;
   b.disabled = true;
+  if (shown) {
+    scanHeld = true;
+    showScanButtons();
+  }
   try {
     const res = await post(`/scan/${encodeURIComponent(id)}/discard`);
     const answer = (await res.text()).trim();
@@ -934,6 +943,7 @@ async function discardScan(b) {
   } catch (err) {
     say("Could not reach skrá. Is it still running?", true);
   } finally {
+    if (shown) scanHeld = false;
     if (b.isConnected) b.disabled = false;
     showScanButtons();
   }

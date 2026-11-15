@@ -35,8 +35,14 @@ const (
 // scanLimit is how long one scan job may run. A variable so a test can lower it.
 var scanLimit = 10 * time.Minute
 
+// saveScanFiles writes a scan into a folder. A variable so a test can hold a
+// save while it runs.
+var saveScanFiles = scan.Save
+
 const (
 	scanRunningText   = "A scan is running. Wait for it or stop it."
+	scanBusyText      = "That scan is being saved or discarded. Wait a moment."
+	scanGoneJobText   = "This scan was saved or discarded."
 	unknownScanner    = "That scanner is not in the list. Reload the page and pick it again."
 	noScansText       = "Scanning is not set up here: skrá has no place to keep scans."
 	scanStartingText  = "Starting the scan…"
@@ -103,8 +109,13 @@ func scanReply(w http.ResponseWriter, status int, msg, class string) {
 	reply(w, status, msg)
 }
 
-// scanErrText is what the page says for err, and its class.
+// scanErrText is what the page says for err, and its class. A session
+// discarded under a job, which the claims of save and discard should leave
+// no room for, still reads as a sentence.
 func scanErrText(err error) (msg, class string) {
+	if errors.Is(err, scan.ErrGone) {
+		return scanGoneJobText, "need"
+	}
 	for _, e := range scanErrors {
 		if errors.Is(err, e.err) {
 			return e.err.Error(), e.class
@@ -116,7 +127,8 @@ func scanErrText(err error) (msg, class string) {
 // scanJob is the last scan of one session. Only one runs per session; the
 // fields below done change with s.scanMu held. created says the job's start
 // made the session; such a session is discarded again when the job took no
-// page, and gone says that happened.
+// page, and gone says that happened. busy says a save, discard, turn or drop
+// holds the session, and no scan may start into it meanwhile.
 type scanJob struct {
 	session *scan.Session
 	scanner escl.Scanner
@@ -127,6 +139,7 @@ type scanJob struct {
 
 	running    bool
 	gone       bool
+	busy       bool
 	msg, class string
 }
 
@@ -375,6 +388,14 @@ func (s *Server) scanState(id string) (msg, class string, running, ok bool) {
 	return j.msg, j.class, j.running, true
 }
 
+// scanBusy reports whether a save, discard, turn or drop holds the session.
+func (s *Server) scanBusy(id string) bool {
+	s.scanMu.Lock()
+	defer s.scanMu.Unlock()
+	j := s.scanJobs[id]
+	return j != nil && j.busy
+}
+
 // scanRunning reports whether a scan of the session runs.
 func (s *Server) scanRunning(id string) bool {
 	_, _, running, _ := s.scanState(id)
@@ -498,6 +519,9 @@ func (s *Server) startScan(w http.ResponseWriter, r *http.Request) {
 		case s.scanRunning(id):
 			scanReply(w, http.StatusConflict, scanRunningText, "need")
 			return
+		case s.scanBusy(id):
+			scanReply(w, http.StatusConflict, scanBusyText, "need")
+			return
 		}
 	}
 	if sess != nil {
@@ -542,11 +566,25 @@ func (s *Server) startScan(w http.ResponseWriter, r *http.Request) {
 	jctx, jcancel := context.WithTimeout(context.Background(), scanLimit)
 	j := &scanJob{session: sess, scanner: sc, started: time.Now(), created: created, cancel: jcancel,
 		done: make(chan struct{}), running: true, msg: scanStartingText}
+	// The claim of a save or discard and this one exclude each other, so no
+	// page comes into a session that a save is about to delete. A session
+	// that went in the meantime is checked under the same lock.
 	s.scanMu.Lock()
-	if old := s.scanJobs[sess.ID]; old != nil && old.running {
+	refuse, msg := 0, ""
+	switch old := s.scanJobs[sess.ID]; {
+	case old != nil && old.running:
+		refuse, msg = http.StatusConflict, scanRunningText
+	case old != nil && old.busy:
+		refuse, msg = http.StatusConflict, scanBusyText
+	case !created:
+		if _, err := s.deps.Scans.Get(sess.ID); err != nil {
+			refuse, msg = http.StatusNotFound, scanGoneText
+		}
+	}
+	if refuse != 0 {
 		s.scanMu.Unlock()
 		jcancel()
-		scanReply(w, http.StatusConflict, scanRunningText, "need")
+		scanReply(w, refuse, msg, "need")
 		return
 	}
 	s.scanJobs[sess.ID] = j
@@ -706,12 +744,13 @@ func (s *Server) scanPage() *scanPageView {
 		n := len(sess.PageList())
 		s.scanMu.Lock()
 		j := s.scanJobs[sess.ID]
+		known, held := j != nil, j != nil && (j.running || j.busy)
 		s.scanMu.Unlock()
 		switch {
-		case j != nil && j.running:
+		case held:
 			continue
 		case n == 0:
-			if j == nil && sess.Created.Before(s.born) {
+			if !known && sess.Created.Before(s.born) {
 				if err := s.deps.Scans.Discard(sess.ID); err != nil && !errors.Is(err, os.ErrNotExist) {
 					log.Printf("skra: discarding the empty scan %s: %v", sess.ID, err)
 				}
@@ -754,14 +793,22 @@ func homeShort(p string) string {
 // adopt puts a session the service did not scan into in this process, such
 // as one kept from before, among its scans, so the scan fragment draws it.
 func (s *Server) adopt(sess *scan.Session) {
-	done := make(chan struct{})
-	close(done)
 	s.scanMu.Lock()
 	defer s.scanMu.Unlock()
-	if s.scanJobs[sess.ID] == nil {
-		s.scanJobs[sess.ID] = &scanJob{session: sess, scanner: sess.Scanner, started: sess.Created,
-			cancel: func() {}, done: done}
+	s.jobOf(sess)
+}
+
+// jobOf is the session's job, made as an idle one that has ended when the
+// service has none. The caller holds s.scanMu.
+func (s *Server) jobOf(sess *scan.Session) *scanJob {
+	if j := s.scanJobs[sess.ID]; j != nil {
+		return j
 	}
+	done := make(chan struct{})
+	close(done)
+	j := &scanJob{session: sess, scanner: sess.Scanner, started: sess.Created, cancel: func() {}, done: done}
+	s.scanJobs[sess.ID] = j
+	return j
 }
 
 // forget drops the service's record of a session that was saved or discarded.
@@ -771,16 +818,42 @@ func (s *Server) forget(id string) {
 	s.scanMu.Unlock()
 }
 
-// editable finds the session a request names and refuses it while its scan
-// runs: a discard during a page on its way could leave a session of that one
-// page. When it answers false it has answered the request.
-func (s *Server) editable(w http.ResponseWriter, id string) (*scan.Session, bool) {
-	sess, ok := s.findScan(w, id)
-	if ok && s.scanRunning(id) {
-		scanReply(w, http.StatusConflict, scanRunningText, "need")
-		return nil, false
+// claim finds the session a request names and holds it for one save,
+// discard, turn or drop until release is called. It refuses a session whose
+// scan runs, as a discard during a page on its way could leave a session of
+// that one page, and one another request holds; a start refuses a held one
+// in turn. When it answers false it has answered the request.
+func (s *Server) claim(w http.ResponseWriter, id string) (sess *scan.Session, release func(), ok bool) {
+	if sess, ok = s.findScan(w, id); !ok {
+		return nil, nil, false
 	}
-	return sess, ok
+	s.scanMu.Lock()
+	j := s.jobOf(sess)
+	switch {
+	case j.running:
+		s.scanMu.Unlock()
+		scanReply(w, http.StatusConflict, scanRunningText, "need")
+		return nil, nil, false
+	case j.busy:
+		s.scanMu.Unlock()
+		scanReply(w, http.StatusConflict, scanBusyText, "need")
+		return nil, nil, false
+	}
+	j.busy = true
+	s.scanMu.Unlock()
+	release = func() {
+		s.scanMu.Lock()
+		j.busy = false
+		s.scanMu.Unlock()
+	}
+	// The one that held it before may have saved or discarded it.
+	if _, err := s.deps.Scans.Get(id); err != nil {
+		release()
+		s.forget(id)
+		scanReply(w, http.StatusNotFound, scanGoneText, "need")
+		return nil, nil, false
+	}
+	return sess, release, true
 }
 
 // findScan finds the session a request names. When it answers false it has
@@ -845,15 +918,21 @@ func (s *Server) pageImage(w http.ResponseWriter, r *http.Request) {
 // page number explains, as when another tab dropped the page first, is a
 // 404; anything else is logged and answered with failed.
 func (s *Server) editPage(w http.ResponseWriter, r *http.Request, edit func(*scan.Session, int) error, done, failed string) {
-	sess, ok := s.editable(w, r.PathValue("id"))
+	sess, release, ok := s.claim(w, r.PathValue("id"))
 	if !ok {
 		return
 	}
+	defer release()
 	n, ok := pageNumber(w, r, sess)
 	if !ok {
 		return
 	}
 	if err := edit(sess, n); err != nil {
+		if errors.Is(err, scan.ErrGone) {
+			s.forget(sess.ID)
+			scanReply(w, http.StatusNotFound, scanGoneText, "need")
+			return
+		}
 		if n > len(sess.PageList()) {
 			scanReply(w, http.StatusNotFound, noPageText, "need")
 			return
@@ -862,7 +941,6 @@ func (s *Server) editPage(w http.ResponseWriter, r *http.Request, edit func(*sca
 		scanReply(w, http.StatusInternalServerError, failed, "bad")
 		return
 	}
-	s.adopt(sess)
 	s.hub.Refresh()
 	scanReply(w, http.StatusOK, fmt.Sprintf(done, n), "")
 }
@@ -883,18 +961,6 @@ func (s *Server) dropPage(w http.ResponseWriter, r *http.Request) {
 	s.editPage(w, r, (*scan.Session).Drop, "Dropped page %d.", "Could not drop the page. Try again.")
 }
 
-// saveFiles are the names a save of n pages in format would write: one PDF,
-// or a picture a page, numbered when there are several. The names are those
-// of an empty folder; a save adds " (2)" when one is taken.
-func saveFiles(title, format string, n int, now time.Time) (first string, count int) {
-	ext := saveExts[format]
-	first = scan.FileName(title, now, ext)
-	if format == "pdf" || n < 2 {
-		return first, 1
-	}
-	return strings.TrimSuffix(first, "."+ext) + " 1." + ext, n
-}
-
 // andMore names the first of count files, and how many follow it.
 func andMore(first string, count int) string {
 	if count < 2 {
@@ -903,8 +969,9 @@ func andMore(first string, count int) string {
 	return fmt.Sprintf("%s and %d more", first, count-1)
 }
 
-// saveName answers the path a save would write, with ~ for the home, so the
-// page shows it as the title is typed and before anything is written.
+// saveName answers the path a save would write now, with ~ for the home, so
+// the page shows it as the title is typed and before anything is written. It
+// is the name scan.Save picks, " (2)" included when the plain one is taken.
 func (s *Server) saveName(w http.ResponseWriter, r *http.Request) {
 	sess, ok := s.findScan(w, r.PathValue("id"))
 	if !ok {
@@ -920,17 +987,22 @@ func (s *Server) saveName(w http.ResponseWriter, r *http.Request) {
 		scanReply(w, http.StatusServiceUnavailable, noFolderText, "bad")
 		return
 	}
-	first, count := saveFiles(q.Get("title"), format, len(sess.PageList()), s.now())
-	scanReply(w, http.StatusOK, andMore(homeShort(s.cfg.ScanFolder)+"/"+first, count), "")
+	paths, err := scan.Names(s.cfg.ScanFolder, q.Get("title"), format, len(sess.PageList()), s.now())
+	if err != nil {
+		scanReply(w, http.StatusBadRequest, noPagesText, "need")
+		return
+	}
+	scanReply(w, http.StatusOK, andMore(homeShort(paths[0]), len(paths)), "")
 }
 
 // saveScan writes the scan into the scan folder under its title, and then
 // forgets it. A failed save keeps the scan, so it can be saved again.
 func (s *Server) saveScan(w http.ResponseWriter, r *http.Request) {
-	sess, ok := s.editable(w, r.PathValue("id"))
+	sess, release, ok := s.claim(w, r.PathValue("id"))
 	if !ok {
 		return
 	}
+	defer release()
 	format := r.PostFormValue("format")
 	if _, ok := saveExts[format]; !ok {
 		scanReply(w, http.StatusBadRequest, pickFormatText, "bad")
@@ -947,7 +1019,7 @@ func (s *Server) saveScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	detail := fmt.Sprintf("%s, %s · scan %s", strings.ToUpper(format), plural(n, "page", "pages"), sess.ID)
-	paths, err := scan.Save(sess, folder, r.PostFormValue("title"), format, s.now())
+	paths, err := saveScanFiles(sess, folder, r.PostFormValue("title"), format, s.now())
 	if err != nil {
 		log.Printf("skra: saving scan %s in %s: %v", sess.ID, folder, err)
 		s.record(r, "scan.save", folder, detail, err)
@@ -967,10 +1039,11 @@ func (s *Server) saveScan(w http.ResponseWriter, r *http.Request) {
 
 // discardScan deletes the scan and its pages.
 func (s *Server) discardScan(w http.ResponseWriter, r *http.Request) {
-	sess, ok := s.editable(w, r.PathValue("id"))
+	sess, release, ok := s.claim(w, r.PathValue("id"))
 	if !ok {
 		return
 	}
+	defer release()
 	n := len(sess.PageList())
 	if err := s.deps.Scans.Discard(sess.ID); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
