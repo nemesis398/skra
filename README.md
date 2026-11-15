@@ -4,14 +4,16 @@
 
 A small web service that replaces the CUPS web interface on a Linux laptop. It
 shows your printers with live ink levels, prints a file you drop on the page,
-manages the queue, adds and configures printers, and reads the CUPS log. It
-runs as your own user, listens on `127.0.0.1:7631` only, and sleeps when
+manages the queue, adds and configures printers, reads the CUPS log, and scans
+into a folder. It runs as your own user, listens on `127.0.0.1:7631` only, and sleeps when
 nobody uses it: systemd starts it on the first request, and it exits after five
 idle minutes.
 
 ![The overview: printers with ink, printing a file, the queue and the last prints](docs/overview.png)
 
 ![The printers tab with a queue's settings open](docs/printers.png)
+
+![The scan tab: five pages from the fake scanner, one turned, and the path the save will write](docs/scan.png)
 
 ## 🖨️ What it does
 
@@ -29,10 +31,40 @@ idle minutes.
   the print heads, sit beside them.
 - **CUPS log:** the last lines of the `cups.service` journal, with a switch for
   debug logging.
+- **Scan:** scan from the feeder or the glass, see each page, turn or drop
+  it, scan more, and save the pages as one PDF or as a PNG or JPEG file per
+  page. See [Scan](#-scan).
 - **History:** the finished jobs CUPS keeps, each with a reprint button.
 
 Every action is recorded with the user who did it, in a SQLite file under the
 state directory.
+
+## 📠 Scan
+
+The Scan tab lists the scanners it knows: the ones in `scanners` in the
+config, and the ones the network announces as eSCL scanners (`_uscan._tcp`)
+through avahi. It asks a scanner nothing until you open the tab. Pick the
+source (feeder, feeder on both sides, or glass), the color mode, the
+resolution and the paper size from what that scanner says it can do, then
+press scan.
+
+Each page shows as it arrives. Turn a page left or right, or drop it, and
+press scan more to add pages from the same scanner at the same resolution.
+The save row shows the full path before anything is written, and it follows
+the title as you type, for example
+`~/Nextcloud/Documents/Scans/2026-11-14 Krankenkasse Beitragsbescheid.pdf`.
+An empty title becomes the time of day. A save never overwrites a file: when
+the name is taken, it adds ` (2)`. The saved files are mode `0600`.
+
+Until you save or discard them, the pages wait in `scans/` under the state
+directory. A scan you did not save, because you closed the page or skra
+exited, shows at the top of the Scan tab the next time, with the time it
+began and its pages, to continue or to discard.
+
+To try it without a scanner, `make dev` starts a fake eSCL scanner on
+`127.0.0.1:8632` and lists it as "skrá fake scanner". Its pages are white
+sheets with one dark band. `dev/harness/README.md` shows how to make its
+feeder run empty, jam or report busy.
 
 ## 📦 Install
 
@@ -82,7 +114,7 @@ requests with `lpadmin` today. It adds a new door, and the door is guarded:
   keeps working. skra refuses to start when that file is empty, short or
   open to the group or others; delete it, and the next start makes a new
   one.
-- Another site may link to the three tabs and do nothing else: any other
+- Another site may link to the tabs and do nothing else: any other
   request the browser marks as coming from another site gets `403`.
 - No other page may frame skrá, and a page loads no script but skra's own
   (`Content-Security-Policy`).
@@ -97,21 +129,23 @@ unknown key is an error.
 | `listen` | `127.0.0.1:7631` | `127.0.0.1` or `localhost`, on any port. Under socket activation the socket unit decides, and the `Host` check follows its port. |
 | `cups_socket` | `/run/cups/cups.sock` | The CUPS socket. |
 | `user` | `$USER` | The name sent to CUPS and recorded with every action. |
-| `state_dir` | `~/.local/state/skra` | Where the action log and the token live. |
+| `state_dir` | `~/.local/state/skra` | Where the action log, the token and the scans waiting to be saved live. |
 | `idle_exit` | `5m` | How long the service waits with no request before it exits. Ignored when it was not started by its socket. |
 | `declared_queues` | none | Queue names that your system configuration owns. They show as read-only and cannot be removed or re-addressed here. |
 | `cupsd_conf_managed` | `false` | Set it when `cupsd.conf` is managed elsewhere, and the debug switch turns off. |
+| `scan_folder` | `~/Nextcloud/Documents/Scans` | Where a scan is saved. An absolute path, or one that starts with `~/`. skra creates it on the first save. |
+| `scanners` | none | Scanners to list before the ones the network announces, each as `{"name": "Brother", "url": "http://192.0.2.7/eSCL"}`: a name to show and the `http` or `https` address of its eSCL root. |
 
 ## 🧪 The harness
 
 The tests never touch your real CUPS. `make harness-up` starts a rootless
-podman container with its own CUPS and a virtual IPP Everywhere printer, and
+Podman container with its own CUPS and a virtual IPP Everywhere printer, and
 its socket appears at `.dev/run/cups.sock`.
 
 ```sh
 make test          unit tests, no container needed
 make integration   starts the harness, then runs every test against it
-make dev           skra on 127.0.0.1:7631 against the harness
+make dev           skra on 127.0.0.1:7631 against the harness, with the fake scanner
 make harness-down  remove the container
 ```
 
@@ -126,7 +160,7 @@ Each one is a test in `internal/web/budget_test.go`, run by `make integration`.
 | --- | --- | --- |
 | Any page, server time | p95 under 50 ms | under 1 ms |
 | A CUPS action (hold, release) | p95 under 150 ms | about 1 ms |
-| Page, style and script together | under 200 KB | 38 KB |
+| Page, style and script together | under 200 KB | 54 KB |
 | Resident memory, idle | under 50 MB | about 22 MB |
 | Timers and polling with no page open | none | the idle timer only |
 
@@ -147,7 +181,8 @@ ends the process.
 - **Declarative systems.** On NixOS or another system that declares queues in
   its configuration, those queues come back after a rebuild. List them in
   `declared_queues` so skra shows them read-only.
-- **Print and CUPS only.** Scanning is not part of this version.
+- **Scans go to a folder.** Saving to Paperless, OCR and scan presets are not
+  part of this version.
 
 ## 📄 License
 
