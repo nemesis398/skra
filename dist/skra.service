@@ -6,6 +6,8 @@ After=skra.socket
 [Service]
 Type=simple
 ExecStart=%h/.local/bin/skra
-MemoryMax=100M
+# Idle it stays under 50 MB. Saving a page as PNG, or turned as JPEG, holds
+# the decoded page and a copy: about 110 MB at 600 dpi on A4, twice that on A3.
+MemoryMax=256M
 Restart=on-failure
 NoNewPrivileges=true

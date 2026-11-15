@@ -14,6 +14,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -332,11 +334,31 @@ func writeImage(w io.Writer, path string, p Page, format string) error {
 		}
 		return nil
 	}
+	err = encodePage(w, f, p, format)
+	// A decoded page at 600 dpi is about 50 MB, which the process would
+	// otherwise keep from the system long after the save. Collecting here,
+	// once the page is out of reach, also keeps the pages of one save from
+	// piling up.
+	debug.FreeOSMemory()
+	return err
+}
+
+// encodePage decodes the JPEG page in f, turns it and encodes it in format.
+// The page stays in the color model the decoder gives, as YCbCr with its
+// chroma subsampled or as gray, which png and jpeg encode as it is, so the
+// heap holds at most the page and its turned copy.
+func encodePage(w io.Writer, f io.Reader, p Page, format string) error {
 	img, err := jpeg.Decode(bufio.NewReader(f))
 	if err != nil {
 		return fmt.Errorf("scan: %s: %w", p.File, err)
 	}
-	img = turn(img, p.Rotate)
+	if p.Rotate != 0 {
+		img = turn(img, p.Rotate)
+		// The page as decoded is garbage now. Collect it before encoding:
+		// the png encoder makes garbage as it goes, which the collector
+		// lets grow to the size of what was live when it last ran.
+		runtime.GC()
+	}
 	if format == "png" {
 		err = png.Encode(w, img)
 	} else {
@@ -348,51 +370,145 @@ func writeImage(w io.Writer, path string, p Page, format string) error {
 	return nil
 }
 
-// turn returns img turned clockwise by deg, 0, 90, 180 or 270. The result is
-// an *image.Gray if img is gray and an *image.RGBA otherwise.
+// turnedAt is where the pixel at x, y of a w by h picture goes when the
+// picture is turned clockwise by deg, 90, 180 or 270.
+func turnedAt(x, y, w, h, deg int) (int, int) {
+	switch deg {
+	case 90:
+		return h - 1 - y, x
+	case 180:
+		return w - 1 - x, h - 1 - y
+	case 270:
+		return y, w - 1 - x
+	}
+	return x, y
+}
+
+// turnedSize is the size of a w by h picture turned by deg.
+func turnedSize(w, h, deg int) (int, int) {
+	if deg == 90 || deg == 270 {
+		return h, w
+	}
+	return w, h
+}
+
+// turnPlane turns the w by h plane of bpp-byte pixels in pix, whose rows are
+// stride apart, clockwise by deg, and returns the turned plane with its rows
+// packed.
+func turnPlane(pix []byte, stride, w, h, bpp, deg int) []byte {
+	ow, _ := turnedSize(w, h, deg)
+	out := make([]byte, w*h*bpp)
+	for y := range h {
+		row := pix[y*stride : y*stride+w*bpp]
+		for x := range w {
+			dx, dy := turnedAt(x, y, w, h, deg)
+			o := (dy*ow + dx) * bpp
+			if bpp == 1 {
+				out[o] = row[x]
+				continue
+			}
+			copy(out[o:o+bpp], row[x*bpp:(x+1)*bpp])
+		}
+	}
+	return out
+}
+
+// subsampling is how many pixels across and down share one chroma sample in
+// a YCbCr picture of ratio r.
+func subsampling(r image.YCbCrSubsampleRatio) (fx, fy int, ok bool) {
+	switch r {
+	case image.YCbCrSubsampleRatio444:
+		return 1, 1, true
+	case image.YCbCrSubsampleRatio422:
+		return 2, 1, true
+	case image.YCbCrSubsampleRatio420:
+		return 2, 2, true
+	case image.YCbCrSubsampleRatio440:
+		return 1, 2, true
+	case image.YCbCrSubsampleRatio411:
+		return 4, 1, true
+	case image.YCbCrSubsampleRatio410:
+		return 4, 2, true
+	}
+	return 0, 0, false
+}
+
+// ratioOf is the subsample ratio of fx pixels across and fy down.
+func ratioOf(fx, fy int) (image.YCbCrSubsampleRatio, bool) {
+	for _, r := range []image.YCbCrSubsampleRatio{
+		image.YCbCrSubsampleRatio444, image.YCbCrSubsampleRatio422, image.YCbCrSubsampleRatio420,
+		image.YCbCrSubsampleRatio440, image.YCbCrSubsampleRatio411, image.YCbCrSubsampleRatio410,
+	} {
+		if x, y, _ := subsampling(r); x == fx && y == fy {
+			return r, true
+		}
+	}
+	return 0, false
+}
+
+// turn returns img turned clockwise by deg, 0, 90, 180 or 270, in its own
+// color model: a gray page stays an *image.Gray and a YCbCr page an
+// *image.YCbCr, never four bytes a pixel. Anything else, which the JPEG
+// decoder gives only for RGB and CMYK files, is turned as RGBA.
 func turn(img image.Image, deg int) image.Image {
-	var pix []byte
-	var bpp int
-	var rect image.Rectangle
-	var stride int
+	if deg == 0 {
+		return img
+	}
 	switch src := img.(type) {
 	case *image.Gray:
-		pix, bpp, rect, stride = src.Pix, 1, src.Rect, src.Stride
-	default:
-		// draw has fast paths for the usual JPEG outputs.
-		rgba, ok := img.(*image.RGBA)
-		if !ok {
-			rgba = image.NewRGBA(image.Rect(0, 0, img.Bounds().Dx(), img.Bounds().Dy()))
-			draw.Draw(rgba, rgba.Bounds(), img, img.Bounds().Min, draw.Src)
+		w, h := src.Rect.Dx(), src.Rect.Dy()
+		ow, oh := turnedSize(w, h, deg)
+		return &image.Gray{Pix: turnPlane(src.Pix, src.Stride, w, h, 1, deg), Stride: ow, Rect: image.Rect(0, 0, ow, oh)}
+	case *image.YCbCr:
+		return turnYCbCr(src, deg)
+	}
+	rgba, ok := img.(*image.RGBA)
+	if !ok {
+		rgba = image.NewRGBA(image.Rect(0, 0, img.Bounds().Dx(), img.Bounds().Dy()))
+		draw.Draw(rgba, rgba.Bounds(), img, img.Bounds().Min, draw.Src)
+	}
+	w, h := rgba.Rect.Dx(), rgba.Rect.Dy()
+	ow, oh := turnedSize(w, h, deg)
+	return &image.RGBA{Pix: turnPlane(rgba.Pix, rgba.Stride, w, h, 4, deg), Stride: ow * 4, Rect: image.Rect(0, 0, ow, oh)}
+}
+
+// turnYCbCr turns a YCbCr page by deg, 90, 180 or 270. Its three planes are
+// turned each as they are when every edge that the turn flips holds whole
+// chroma blocks, as it does for A4 and Letter at the resolutions a scanner
+// offers. A turned 4:2:2 page is 4:4:0, and the other way round. Any other
+// page is turned once into 4:4:4, which is still three bytes a pixel.
+func turnYCbCr(src *image.YCbCr, deg int) *image.YCbCr {
+	w, h := src.Rect.Dx(), src.Rect.Dy()
+	ow, oh := turnedSize(w, h, deg)
+	fx, fy, ok := subsampling(src.SubsampleRatio)
+	ratio := src.SubsampleRatio
+	if ok && deg != 180 {
+		ratio, ok = ratioOf(fy, fx)
+	}
+	if ok && src.Rect.Min == (image.Point{}) &&
+		(deg == 90 || w%fx == 0) && (deg == 270 || h%fy == 0) {
+		cw, ch := (w+fx-1)/fx, (h+fy-1)/fy
+		ocw, _ := turnedSize(cw, ch, deg)
+		return &image.YCbCr{
+			Y:              turnPlane(src.Y, src.YStride, w, h, 1, deg),
+			Cb:             turnPlane(src.Cb, src.CStride, cw, ch, 1, deg),
+			Cr:             turnPlane(src.Cr, src.CStride, cw, ch, 1, deg),
+			YStride:        ow,
+			CStride:        ocw,
+			SubsampleRatio: ratio,
+			Rect:           image.Rect(0, 0, ow, oh),
 		}
-		pix, bpp, rect, stride = rgba.Pix, 4, rgba.Rect, rgba.Stride
 	}
-	w, h := rect.Dx(), rect.Dy()
-	ow, oh := w, h
-	if deg == 90 || deg == 270 {
-		ow, oh = h, w
-	}
-	out := pix
-	if deg != 0 {
-		out = make([]byte, ow*oh*bpp)
-		for y := range h {
-			for x := range w {
-				var dx, dy int
-				switch deg {
-				case 90:
-					dx, dy = h-1-y, x
-				case 180:
-					dx, dy = w-1-x, h-1-y
-				default: // 270
-					dx, dy = y, w-1-x
-				}
-				copy(out[(dy*ow+dx)*bpp:(dy*ow+dx+1)*bpp], pix[y*stride+x*bpp:y*stride+(x+1)*bpp])
-			}
+	out := image.NewYCbCr(image.Rect(0, 0, ow, oh), image.YCbCrSubsampleRatio444)
+	for y := range h {
+		for x := range w {
+			yi := src.YOffset(src.Rect.Min.X+x, src.Rect.Min.Y+y)
+			ci := src.COffset(src.Rect.Min.X+x, src.Rect.Min.Y+y)
+			dx, dy := turnedAt(x, y, w, h, deg)
+			out.Y[dy*out.YStride+dx] = src.Y[yi]
+			out.Cb[dy*out.CStride+dx] = src.Cb[ci]
+			out.Cr[dy*out.CStride+dx] = src.Cr[ci]
 		}
-		stride = ow * bpp
 	}
-	if bpp == 1 {
-		return &image.Gray{Pix: out, Stride: stride, Rect: image.Rect(0, 0, ow, oh)}
-	}
-	return &image.RGBA{Pix: out, Stride: stride, Rect: image.Rect(0, 0, ow, oh)}
+	return out
 }

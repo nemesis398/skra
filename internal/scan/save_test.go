@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"sync"
@@ -432,13 +433,32 @@ func TestSaveStreams(t *testing.T) {
 	}
 	folder := t.TempDir()
 
+	var paths []string
+	growth := heapGrowth(func() { paths, err = Save(s, folder, "Stream", "pdf", saveNow) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if growth >= 20<<20 {
+		t.Errorf("the heap grew by %d MB while saving, want under 20", growth>>20)
+	}
+	fi, err := os.Stat(paths[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Size() < int64(len(page))*40 {
+		t.Errorf("the PDF is %d bytes, smaller than its forty pages", fi.Size())
+	}
+	t.Logf("page %d bytes, pdf %d bytes, heap grew by %d KB", len(page), fi.Size(), growth>>10)
+}
+
+// heapGrowth runs f and returns by how much the heap grew above where it
+// was before f at its highest. A sampler watches the heap while f runs, so a
+// buffer shows at its peak, not after the garbage collector has run.
+func heapGrowth(f func()) int64 {
 	runtime.GC()
 	var ms runtime.MemStats
 	runtime.ReadMemStats(&ms)
 	base := ms.HeapAlloc
-
-	// Watch the heap while Save runs: a writer that buffers the document
-	// shows at its peak, not after the garbage collector has run.
 	var (
 		mu   sync.Mutex
 		peak = base
@@ -460,26 +480,207 @@ func TestSaveStreams(t *testing.T) {
 			}
 		}
 	}()
-	paths, err := Save(s, folder, "Stream", "pdf", saveNow)
+	f()
 	close(stop)
 	<-done
-	if err != nil {
-		t.Fatal(err)
-	}
 	mu.Lock()
-	growth := int64(peak) - int64(base)
-	mu.Unlock()
-	if growth >= 20<<20 {
-		t.Errorf("the heap grew by %d MB while saving, want under 20", growth>>20)
+	defer mu.Unlock()
+	return int64(peak) - int64(base)
+}
+
+// retained is the heap memory the process holds from the system, whether in
+// use or not: what shows as resident.
+func retained() int64 {
+	var ms runtime.MemStats
+	runtime.ReadMemStats(&ms)
+	return int64(ms.HeapSys - ms.HeapReleased)
+}
+
+// a4Color is a color page of A4 at 600 dpi as the scanner sends it: a JPEG
+// in 4:2:0, with noise in the top rows so the file is about a megabyte.
+func a4Color(t *testing.T) (page []byte, yccBytes int64) {
+	t.Helper()
+	const w, h = 4960, 7016
+	img := image.NewYCbCr(image.Rect(0, 0, w, h), image.YCbCrSubsampleRatio420)
+	rng := rand.New(rand.NewPCG(5, 6))
+	for i := range 200 * w {
+		img.Y[i] = uint8(rng.UintN(256))
 	}
-	fi, err := os.Stat(paths[0])
-	if err != nil {
+	for i := range img.Cb {
+		img.Cb[i], img.Cr[i] = 128, 128
+	}
+	for i := range 100 * img.CStride {
+		img.Cb[i], img.Cr[i] = uint8(rng.UintN(256)), uint8(rng.UintN(256))
+	}
+	var enc bytes.Buffer
+	if err := jpeg.Encode(&enc, img, &jpeg.Options{Quality: 90}); err != nil {
 		t.Fatal(err)
 	}
-	if fi.Size() < int64(len(page))*40 {
-		t.Errorf("the PDF is %d bytes, smaller than its forty pages", fi.Size())
+	return enc.Bytes(), int64(len(img.Y) + len(img.Cb) + len(img.Cr))
+}
+
+// TestSaveImagePeak saves a color A4 page at 600 dpi as a picture, turned
+// and as it came, and checks that the heap never holds more than the page in
+// its decoded form and one copy of it, with some room: never a page of four
+// bytes a pixel. After the save the memory goes back to the system, so an
+// idle service is small again.
+func TestSaveImagePeak(t *testing.T) {
+	if testing.Short() {
+		t.Skip("decodes and encodes 35 megapixels several times")
 	}
-	t.Logf("page %d bytes, pdf %d bytes, heap grew by %d KB", len(page), fi.Size(), growth>>10)
+	page, ycc := a4Color(t)
+	st, _ := newStore(t)
+	settings := testSettings
+	settings.Resolution, settings.Width, settings.Height = 600, 4960, 7016
+	limit := ycc * 5 / 2
+	for _, c := range []struct {
+		format string
+		rotate int
+	}{{"jpeg", 90}, {"png", 90}, {"png", 0}, {"jpeg", 180}, {"jpeg", 270}} {
+		s, err := st.New(testScanner, settings)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.AddPage(bytes.NewReader(page)); err != nil {
+			t.Fatal(err)
+		}
+		for range c.rotate / 90 {
+			if err := s.Rotate(1, 90); err != nil {
+				t.Fatal(err)
+			}
+		}
+		folder := t.TempDir()
+		debug.FreeOSMemory()
+		before := retained()
+		growth := heapGrowth(func() { _, err = Save(s, folder, "Peak", c.format, saveNow) })
+		if err != nil {
+			t.Fatal(err)
+		}
+		kept := retained() - before
+		t.Logf("%s turned %d: heap peak +%d MB, decoded page %d MB, still held +%d MB", c.format, c.rotate, growth>>20, ycc>>20, kept>>20)
+		if growth >= limit {
+			t.Errorf("%s turned %d: the heap grew by %d MB, want under %d (2.5 times the decoded page)", c.format, c.rotate, growth>>20, limit>>20)
+		}
+		if kept >= 20<<20 {
+			t.Errorf("%s turned %d: the process still holds %d MB more after the save, want under 20", c.format, c.rotate, kept>>20)
+		}
+		if err := st.Discard(s.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// oldTurn is how a page was turned before it was kept in its own color
+// model: drawn into RGBA, then turned pixel by pixel.
+func oldTurn(img image.Image, deg int) *image.RGBA {
+	b := img.Bounds()
+	rgba := image.NewRGBA(image.Rect(0, 0, b.Dx(), b.Dy()))
+	draw.Draw(rgba, rgba.Bounds(), img, b.Min, draw.Src)
+	w, h := b.Dx(), b.Dy()
+	ow, oh := w, h
+	if deg == 90 || deg == 270 {
+		ow, oh = h, w
+	}
+	out := image.NewRGBA(image.Rect(0, 0, ow, oh))
+	for y := range h {
+		for x := range w {
+			dx, dy := x, y
+			switch deg {
+			case 90:
+				dx, dy = h-1-y, x
+			case 180:
+				dx, dy = w-1-x, h-1-y
+			case 270:
+				dx, dy = y, w-1-x
+			}
+			out.SetRGBA(dx, dy, rgba.RGBAAt(x, y))
+		}
+	}
+	return out
+}
+
+// rgbAt is the color of a pixel of a turned page in RGB, as draw computes it.
+func rgbAt(t *testing.T, img image.Image, x, y int) color.RGBA {
+	t.Helper()
+	switch m := img.(type) {
+	case *image.YCbCr:
+		c := m.YCbCrAt(x, y)
+		r, g, b := color.YCbCrToRGB(c.Y, c.Cb, c.Cr)
+		return color.RGBA{R: r, G: g, B: b, A: 255}
+	case *image.Gray:
+		v := m.GrayAt(x, y).Y
+		return color.RGBA{R: v, G: v, B: v, A: 255}
+	}
+	t.Fatalf("a turned page is a %T, want the decoder's YCbCr or Gray", img)
+	return color.RGBA{}
+}
+
+// TestTurnKeepsTheColorModel turns pages of every shape the decoder gives,
+// odd sizes included, which do not split into whole chroma blocks, and
+// checks that each pixel is what the old way through RGBA gave.
+func TestTurnKeepsTheColorModel(t *testing.T) {
+	rng := rand.New(rand.NewPCG(7, 8))
+	var pages []image.Image
+	for _, ratio := range []image.YCbCrSubsampleRatio{
+		image.YCbCrSubsampleRatio420, image.YCbCrSubsampleRatio422,
+		image.YCbCrSubsampleRatio440, image.YCbCrSubsampleRatio444,
+	} {
+		for _, size := range [][2]int{{6, 4}, {8, 6}, {7, 5}, {6, 5}, {7, 4}} {
+			// A larger image cut down, as the decoder pads to whole blocks.
+			m := image.NewYCbCr(image.Rect(0, 0, 16, 16), ratio)
+			for i := range m.Y {
+				m.Y[i] = uint8(rng.UintN(256))
+			}
+			for i := range m.Cb {
+				m.Cb[i], m.Cr[i] = uint8(rng.UintN(256)), uint8(rng.UintN(256))
+			}
+			pages = append(pages, m.SubImage(image.Rect(0, 0, size[0], size[1])))
+		}
+	}
+	gray := image.NewGray(image.Rect(0, 0, 16, 16))
+	for i := range gray.Pix {
+		gray.Pix[i] = uint8(rng.UintN(256))
+	}
+	pages = append(pages, gray.SubImage(image.Rect(0, 0, 7, 5)), gray.SubImage(image.Rect(0, 0, 6, 4)))
+
+	for _, src := range pages {
+		for _, deg := range []int{0, 90, 180, 270} {
+			name := fmt.Sprintf("%T %v turned %d", src, src.Bounds().Size(), deg)
+			if m, ok := src.(*image.YCbCr); ok {
+				name = fmt.Sprintf("%s %v %v turned %d", "YCbCr", m.SubsampleRatio, m.Rect.Size(), deg)
+			}
+			got := turn(src, deg)
+			want := oldTurn(src, deg)
+			if got.Bounds() != want.Bounds() {
+				t.Errorf("%s: bounds %v, want %v", name, got.Bounds(), want.Bounds())
+				continue
+			}
+			bad := 0
+			for y := range want.Rect.Dy() {
+				for x := range want.Rect.Dx() {
+					if rgbAt(t, got, x, y) != want.RGBAAt(x, y) {
+						bad++
+					}
+				}
+			}
+			if bad > 0 {
+				t.Errorf("%s: %d pixels differ from the old turn", name, bad)
+			}
+			// A page of whole chroma blocks keeps its subsampling, so it
+			// takes no more memory turned than it did before.
+			if m, ok := src.(*image.YCbCr); ok && deg != 0 && m.Rect.Dx()%2 == 0 && m.Rect.Dy()%2 == 0 {
+				want := m.SubsampleRatio
+				if deg != 180 && want == image.YCbCrSubsampleRatio422 {
+					want = image.YCbCrSubsampleRatio440
+				} else if deg != 180 && want == image.YCbCrSubsampleRatio440 {
+					want = image.YCbCrSubsampleRatio422
+				}
+				if r := got.(*image.YCbCr).SubsampleRatio; r != want {
+					t.Errorf("%s: turned into %v, want %v", name, r, want)
+				}
+			}
+		}
+	}
 }
 
 // noisyJPEG is a w by h JPEG of random pixels, which makes a large file.
