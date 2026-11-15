@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -101,9 +102,71 @@ func oddNumber(host string) bool {
 	return err != nil || !ip.Is4()
 }
 
+// lookupAddrs and lookupTimeout are the name lookup of checkAddress, variables
+// so that tests need not wait for a real resolver.
+var (
+	lookupAddrs = func(ctx context.Context, host string) ([]netip.Addr, error) {
+		return net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+	}
+	lookupTimeout = 2 * time.Second
+)
+
+// rawHost returns the host part of the authority as typed, before url.Parse
+// decodes any escape: without user[:password]@ and without a port.
+func rawHost(raw string) string {
+	i := strings.Index(raw, "://")
+	if i < 0 {
+		return ""
+	}
+	auth := raw[i+len("://"):]
+	if end := strings.IndexAny(auth, "/?#"); end >= 0 {
+		auth = auth[:end]
+	}
+	if j := strings.LastIndex(auth, "@"); j >= 0 {
+		auth = auth[j+1:]
+	}
+	if strings.HasPrefix(auth, "[") {
+		return auth // an IPv6 address in brackets; its port is not our business here
+	}
+	if j := strings.LastIndex(auth, ":"); j >= 0 {
+		auth = auth[:j]
+	}
+	return auth
+}
+
+// pointsAtThisMachinesCUPS reports whether the host of u, once resolved, is an
+// address of this machine and the port is 631 (the default of ipp, ipps, http
+// and https included). A name that does not resolve is not: the printer may be
+// away.
+//
+// This guards against setting up a queue that loops back into this CUPS. It is
+// best effort and not a security boundary: CUPS connects to the printer, not
+// skrá, and a name can resolve differently later. The connection of skrá's own
+// status queries is refused where it is made (printer.Query).
+func pointsAtThisMachinesCUPS(ctx context.Context, u *url.URL) bool {
+	port := u.Port()
+	if port == "" && slices.Contains(driverlessSchemes, u.Scheme) {
+		port = "631"
+	}
+	if n, err := strconv.Atoi(port); err != nil || n != 631 {
+		return false
+	}
+	host := u.Hostname()
+	if ip, err := netip.ParseAddr(host); err == nil {
+		return printer.IsOwnAddress(ip)
+	}
+	ctx, cancel := context.WithTimeout(ctx, lookupTimeout)
+	defer cancel()
+	addrs, err := lookupAddrs(ctx, host)
+	if err != nil {
+		return false
+	}
+	return slices.ContainsFunc(addrs, printer.IsOwnAddress)
+}
+
 // checkAddress reads an address the page sends and returns it with its scheme
-// in lower case, or the refusal. It sends nothing anywhere.
-func checkAddress(raw string) (string, *refusal) {
+// in lower case, or the refusal. It sends nothing to the printer.
+func checkAddress(ctx context.Context, raw string) (string, *refusal) {
 	bad := func(msg string) (string, *refusal) { return "", &refusal{http.StatusBadRequest, msg} }
 	if raw == "" || len(raw) > maxText || !utf8.ValidString(raw) ||
 		strings.ContainsFunc(raw, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) {
@@ -121,15 +184,27 @@ func checkAddress(raw string) (string, *refusal) {
 		if u.Host == "" && u.Opaque == "" && u.Path == "" {
 			return bad(notAddressText)
 		}
+		return u.Scheme + raw[len(u.Scheme):], nil
 	case u.Hostname() == "":
 		return bad(notAddressText)
-	case u.Scheme != "dnssd" && strings.Contains(u.Host, "%") && !strings.HasPrefix(u.Host, "["):
-		return bad(notAddressText) // only an IPv6 zone, inside brackets, has a percent sign
-	case oddNumber(u.Hostname()):
+	case u.Scheme == "dnssd": // the instance name is percent-encoded and may be UTF-8
+		return u.Scheme + raw[len(u.Scheme):], nil
+	}
+	// The host as typed, because url.Parse has decoded its escapes and CUPS,
+	// the system resolver and IDNA fold a host name in ways nothing here can
+	// follow: %XX, fullwidth or zero-width characters turn into "localhost".
+	// Only an IPv6 zone, inside brackets, has a percent sign, and an
+	// international name is written as punycode (xn--...).
+	host := rawHost(raw)
+	if !strings.HasPrefix(host, "[") && strings.Contains(host, "%") ||
+		strings.ContainsFunc(host, func(r rune) bool { return r > unicode.MaxASCII }) {
+		return bad(notAddressText)
+	}
+	if oddNumber(u.Hostname()) {
 		return bad(numericText)
 	}
 	addr := u.Scheme + raw[len(u.Scheme):]
-	if printer.IsLocalCUPS(addr) {
+	if printer.IsLocalCUPS(addr) || pointsAtThisMachinesCUPS(ctx, u) {
 		return bad(ownCUPSText)
 	}
 	return addr, nil
@@ -151,27 +226,35 @@ func userinfoOf(addr string) string {
 	return ""
 }
 
-// withoutUserinfo is the address as it may be logged and shown.
+// withoutUserinfo is the address as it may be logged and shown. The address
+// is parsed, and what it does not parse as is withheld; the user[:password]@
+// is then cut out of the text as typed, so the rest of it stays byte for byte
+// what was sent (a re-serialized URL would change escapes).
 func withoutUserinfo(addr string) string {
-	if ui := userinfoOf(addr); ui != "" {
-		return strings.Replace(addr, ui+"@", "", 1)
+	u, err := parseAddress(addr)
+	if err != nil {
+		return "(address withheld)"
 	}
-	return addr
+	if u.User == nil {
+		return addr
+	}
+	ui := userinfoOf(addr)
+	i := strings.Index(addr, "://") + len("://")
+	return addr[:i] + addr[i+len(ui)+1:]
 }
 
-// scrub takes the credentials of addr out of a text that may quote them, such
-// as an error of CUPS: the user[:password]@ part, and the password alone.
+// scrub takes the credentials of addr out of a text that may quote the
+// address, such as an error of CUPS: the user[:password]@ part as typed and as
+// decoded. Only that, never the password alone, which may be one letter that
+// the text holds elsewhere.
 func scrub(text, addr string) string {
 	ui := userinfoOf(addr)
 	if ui == "" {
 		return text
 	}
 	text = strings.ReplaceAll(text, ui+"@", "")
-	if _, pw, ok := strings.Cut(ui, ":"); ok && pw != "" {
-		text = strings.ReplaceAll(text, pw, "***")
-		if plain, err := url.PathUnescape(pw); err == nil && plain != pw {
-			text = strings.ReplaceAll(text, plain, "***")
-		}
+	if plain, err := url.PathUnescape(ui); err == nil && plain != ui {
+		text = strings.ReplaceAll(text, plain+"@", "")
 	}
 	return text
 }
@@ -277,7 +360,7 @@ func (s *Server) addPanel(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), actionTimeout)
 	defer cancel()
 	q := r.URL.Query()
-	addr, ref := checkAddress(strings.TrimSpace(q.Get("uri")))
+	addr, ref := checkAddress(ctx, strings.TrimSpace(q.Get("uri")))
 	if ref != nil {
 		reply(w, ref.status, ref.msg)
 		return
@@ -404,7 +487,7 @@ func (s *Server) addPrinter(w http.ResponseWriter, r *http.Request) {
 		reply(w, http.StatusForbidden, name+" is declared in ravnix; add it there.")
 		return
 	}
-	addr, ref := checkAddress(text("address"))
+	addr, ref := checkAddress(ctx, text("address"))
 	if ref != nil {
 		reply(w, ref.status, ref.msg)
 		return

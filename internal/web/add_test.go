@@ -7,14 +7,19 @@ import (
 	"errors"
 	"fmt"
 	"html"
+	"net"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
+	"os"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/nemesis398/skra/internal/cups"
+	"github.com/nemesis398/skra/internal/printer"
 )
 
 func (f *fakeCUPS) Devices(ctx context.Context, timeout time.Duration) ([]cups.Device, error) {
@@ -55,6 +60,33 @@ func (f *fakeCUPS) asked() [][2]string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([][2]string(nil), f.ppdAsked...)
+}
+
+// The address check looks a host name up. Tests must not wait for the real
+// resolver, so by default no name resolves; a test that wants answers sets
+// names, and the tests of the real resolver put realLookup back.
+var (
+	realLookup = lookupAddrs
+	names      = map[string][]netip.Addr{}
+	lookups    atomic.Int32
+)
+
+func init() { lookupAddrs = fakeLookup }
+
+func fakeLookup(_ context.Context, host string) ([]netip.Addr, error) {
+	lookups.Add(1)
+	if a, ok := names[host]; ok {
+		return a, nil
+	}
+	return nil, &net.DNSError{Err: "no such host", Name: host, IsNotFound: true}
+}
+
+// withNames makes the given names resolve for the test.
+func withNames(t *testing.T, m map[string][]netip.Addr) {
+	t.Helper()
+	old := names
+	names = m
+	t.Cleanup(func() { names = old })
 }
 
 // addForm is a good form for an IPP printer; a test changes what it tests.
@@ -157,6 +189,14 @@ func TestAddChecksTheAddress(t *testing.T) {
 		{"ipp://local%25host/", notAddress},
 		{"http://local%68ost:631/", notAddress},
 		{"socket://%31%32%37.0.0.1:631", notAddress},
+		// Escapes that decode to non-ASCII, and non-ASCII written out: the system
+		// resolver may fold these to localhost. International names are punycode.
+		{"ipp://%EF%BD%8C%EF%BD%8F%EF%BD%83%EF%BD%81%EF%BD%8C%EF%BD%88%EF%BD%8F%EF%BD%93%EF%BD%94/printers/x", notAddress},
+		{"ipp://local%E2%80%8Bhost/", notAddress},
+		{"ipp://ｌｏｃａｌｈｏｓｔ/", notAddress},
+		{"ipp://Drucker-für-alle.local/ipp/print", notAddress},
+		{"socket://Fu\u00dfball.local:9100", notAddress},
+		{"ipp://user:pw@local%68ost/", notAddress},
 		// A number that is not a full dotted-quad address is read as one by the system.
 		{"ipp://127.1/", numeric},
 		{"ipp://0/", numeric},
@@ -191,7 +231,8 @@ func TestAddChecksTheAddress(t *testing.T) {
 		"dnssd://Brother%20DCP-L2530DW._ipp._tcp.local./?uuid=1", "dnssd://Fu%C3%9Fball._ipp._tcp.local./",
 		"IPP://neu.local/ipp/print", "ipp://localhost:8631/ipp/print", "ipp://[fe80::1]:631/ipp/print",
 		"ipp://[fe80::1%25eth0]:631/ipp/print", "ipp://3com.local/ipp/print", "ipp://192.168.1.5/ipp/print", "http://localhost:8631/ipp/print",
-		"ipps://localhost:443/ipp/print",
+		"ipps://localhost:443/ipp/print", "ipp://user:p%40ss@neu.local/ipp/print", "ipp://neu.local/ipp%2Fprint?a=%C3%BC",
+		"ipp://xn--drucker-fr-alle-4ob.local/ipp/print",
 	} {
 		rec := postTo(s, h, "/printers/add", addForm("address", addr, "name", fmt.Sprintf("Q%d", len(f.added()))))
 		if rec.Code != 200 {
@@ -693,5 +734,213 @@ func TestAddKeepsCredentialsOutOfTheLogAndTheAnswers(t *testing.T) {
 	head := regexp.MustCompile(`<h3>.*</h3>`).FindString(body)
 	if head == "" || strings.Contains(head, "s3cret") || !strings.Contains(head, "ipp://neu.local/ipp/print") {
 		t.Errorf("panel heading = %q", head)
+	}
+}
+
+// ownInterfaceAddr is an address of one of this machine's interfaces, or a skip.
+func ownInterfaceAddr(t *testing.T) netip.Addr {
+	t.Helper()
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		t.Skip(err)
+	}
+	for _, a := range addrs {
+		if ipn, ok := a.(*net.IPNet); ok && !ipn.IP.IsLoopback() && !ipn.IP.IsLinkLocalUnicast() {
+			if ip, ok := netip.AddrFromSlice(ipn.IP); ok {
+				return ip.Unmap()
+			}
+		}
+	}
+	t.Skip("no interface address besides loopback")
+	return netip.Addr{}
+}
+
+func TestAddRefusesANameThatPointsAtThisMachinesCUPS(t *testing.T) {
+	const own = "That address is this machine's own CUPS."
+	mine := ownInterfaceAddr(t)
+	public := netip.MustParseAddr("93.184.216.34")
+	withNames(t, map[string][]netip.Addr{
+		"alias.example":  {netip.MustParseAddr("127.0.0.1")},
+		"mapped.example": {netip.MustParseAddr("::ffff:127.0.0.1")},
+		"six.example":    {netip.MustParseAddr("::1")},
+		"zero.example":   {netip.MustParseAddr("0.0.0.0")},
+		"me.example":     {mine},
+		"mixed.example":  {public, netip.MustParseAddr("127.0.0.1")},
+		"far.example":    {public},
+	})
+	s, h := actionServer(t, queuesFake())
+	for _, tc := range []struct {
+		addr string
+		code int
+	}{
+		{"ipp://alias.example/printers/x", 400}, // no port: 631
+		{"ipps://alias.example/printers/x", 400},
+		{"http://alias.example/printers/x", 400},
+		{"https://alias.example/printers/x", 400},
+		{"ipp://alias.example:631/printers/x", 400},
+		{"ipp://alias.example:0631/printers/x", 400},
+		{"ipp://mapped.example/x", 400},
+		{"ipp://six.example/x", 400},
+		{"ipp://zero.example/x", 400},
+		{"ipp://me.example/x", 400},
+		{"ipp://mixed.example/x", 400}, // any address of the name
+		{"socket://alias.example:631", 400},
+		{"lpd://alias.example:631/q", 400},
+		{"ipp://alias.example:8631/ipp/print", 200}, // another port is another service
+		{"ipp://alias.example:60000/ipp/print", 200},
+		{"socket://alias.example", 200}, // 9100
+		{"lpd://alias.example/q", 200},  // 515
+		{"ipp://far.example/ipp/print", 200},
+		{"ipp://unknown.example/ipp/print", 200}, // does not resolve: the printer may be away
+	} {
+		form := addForm("address", tc.addr, "name", "N"+strings.NewReplacer("/", "", ":", "", ".", "").Replace(tc.addr))
+		if !strings.HasPrefix(tc.addr, "ip") && !strings.HasPrefix(tc.addr, "http") {
+			form.Set("driver", "choose")
+			form.Set("make", "Generic")
+			form.Set("ppd", "gen.ppd")
+		}
+		f := s.deps.CUPS.(*fakeCUPS)
+		f.set(func(f *fakeCUPS) {
+			f.ppdsFn = func(string, string) ([]cups.PPD, error) {
+				return []cups.PPD{{Name: "gen.ppd", MakeModel: "Generic"}}, nil
+			}
+		})
+		rec := postTo(s, h, "/printers/add", form)
+		if rec.Code != tc.code || (tc.code == 400 && rec.Body.String() != own) {
+			t.Errorf("%s: %d %q, want %d", tc.addr, rec.Code, rec.Body.String(), tc.code)
+		}
+		if panel := get(h, "/printers/new?uri="+url.QueryEscape(tc.addr)); panel.Code != tc.code {
+			t.Errorf("panel for %s: %d %q, want %d", tc.addr, panel.Code, panel.Body.String(), tc.code)
+		}
+	}
+}
+
+func TestAddLooksNoNameUpWhereItCannotMatter(t *testing.T) {
+	s, h := actionServer(t, queuesFake())
+	lookups.Store(0)
+	for _, addr := range []string{"dnssd://Neu._ipp._tcp.local./", "usb://Brother/HL?serial=1", "ipp://10.0.0.7/ipp/print", "ipp://[fe80::1]/ipp/print"} {
+		get(h, "/printers/new?uri="+url.QueryEscape(addr))
+	}
+	if n := lookups.Load(); n != 0 {
+		t.Errorf("%d lookups for a dnssd or usb address or an address literal", n)
+	}
+	_ = s
+}
+
+func TestAddDoesNotWaitLongForASlowResolver(t *testing.T) {
+	oldLookup, oldTimeout := lookupAddrs, lookupTimeout
+	lookupAddrs = func(ctx context.Context, host string) ([]netip.Addr, error) {
+		<-ctx.Done() // a resolver that never answers
+		return nil, ctx.Err()
+	}
+	lookupTimeout = 50 * time.Millisecond
+	defer func() { lookupAddrs, lookupTimeout = oldLookup, oldTimeout }()
+	_, h := actionServer(t, queuesFake())
+	start := time.Now()
+	rec := get(h, "/printers/new?uri="+url.QueryEscape("ipp://slow.example/ipp/print"))
+	if rec.Code != 200 {
+		t.Errorf("a name that did not resolve in time: %d %q", rec.Code, rec.Body.String())
+	}
+	if took := time.Since(start); took > 2*time.Second {
+		t.Errorf("took %v", took)
+	}
+}
+
+// TestAddRefusesThisMachinesOwnNames uses the machine's real resolver: the
+// hosts-file aliases and the machine's name. Each is skipped when it does not
+// resolve to this machine here.
+func TestAddRefusesThisMachinesOwnNames(t *testing.T) {
+	lookupAddrs = realLookup
+	defer func() { lookupAddrs = fakeLookup }()
+	host, _ := os.Hostname()
+	_, h := actionServer(t, queuesFake())
+	tried := 0
+	for _, name := range []string{"localhost.localdomain", "localhost4", "localhost6.localdomain6", host} {
+		if name == "" {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		ips, err := net.DefaultResolver.LookupNetIP(ctx, "ip", name)
+		cancel()
+		own := false
+		for _, ip := range ips {
+			own = own || printer.IsOwnAddress(ip.Unmap())
+		}
+		if err != nil || !own {
+			t.Logf("%s does not resolve to this machine here; skipped", name)
+			continue
+		}
+		tried++
+		for _, addr := range []string{"ipp://" + name + "/printers/x", "ipp://" + name + ":631/printers/x", "http://" + name + ":631/"} {
+			rec := get(h, "/printers/new?uri="+url.QueryEscape(addr))
+			if rec.Code != 400 || rec.Body.String() != "That address is this machine's own CUPS." {
+				t.Errorf("%s: %d %q", addr, rec.Code, rec.Body.String())
+			}
+		}
+		if rec := get(h, "/printers/new?uri="+url.QueryEscape("ipp://"+name+":8631/ipp/print")); rec.Code != 200 {
+			t.Errorf("%s on another port: %d %q", name, rec.Code, rec.Body.String())
+		}
+	}
+	if tried == 0 {
+		t.Skip("none of the local names resolves here")
+	}
+}
+
+func TestWithoutUserinfoKeepsTheRestOfTheAddress(t *testing.T) {
+	for in, want := range map[string]string{
+		"ipp://u:p@h/":                                     "ipp://h/",
+		"ipp://u:p@host-p.local/p/print":                   "ipp://host-p.local/p/print",
+		"ipp://u:neu@neu.local/neu/print":                  "ipp://neu.local/neu/print",
+		"ipp://u@h/x@y":                                    "ipp://h/x@y",
+		"ipp://a@b@localhost/":                             "ipp://localhost/",
+		"ipp://u:p%40q@h:631/ipp?x=@":                      "ipp://h:631/ipp?x=@",
+		"dnssd://u:p@Neu%20Karte._ipp._tcp.local./?uuid=1": "dnssd://Neu%20Karte._ipp._tcp.local./?uuid=1",
+		"ipp://h/no/userinfo":                              "ipp://h/no/userinfo",
+		"dnssd://Neu%20Karte._ipp._tcp.local./":            "dnssd://Neu%20Karte._ipp._tcp.local./",
+		"ipp://[bad":                                       "(address withheld)",
+		"ipp://h:xx/":                                      "(address withheld)",
+	} {
+		if got := withoutUserinfo(in); got != want {
+			t.Errorf("withoutUserinfo(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestScrubHidesTheCredentialsWithoutGarblingTheText(t *testing.T) {
+	// A one-letter password: the text may still hold the letter elsewhere.
+	const addr = "ipp://u:p@host-p.local/p/print"
+	got := scrub("Cannot add \""+addr+"\": printer p says no (u:p@ is wrong)", addr)
+	if want := "Cannot add \"ipp://host-p.local/p/print\": printer p says no ( is wrong)"; got != want {
+		t.Errorf("scrub = %q, want %q", got, want)
+	}
+}
+
+func TestAddLogsAnAddressWithAShortPasswordIntact(t *testing.T) {
+	for _, tc := range []struct{ addr, shown string }{
+		{"ipp://u:p@host-p.local/p/print", "ipp://host-p.local/p/print"},
+		{"ipp://u:neu@neu.local/neu/print", "ipp://neu.local/neu/print"},
+		{"ipp://u:i@ipp.local/i/ipp", "ipp://ipp.local/i/ipp"},
+	} {
+		f := queuesFake()
+		s, h := actionServer(t, f)
+		rec := postTo(s, h, "/printers/add", addForm("address", tc.addr))
+		if rec.Code != 200 {
+			t.Fatalf("%s: %d %q", tc.addr, rec.Code, rec.Body.String())
+		}
+		if got := f.added(); len(got) != 1 || got[0].DeviceURI != tc.addr {
+			t.Errorf("%s: CUPS got %+v", tc.addr, got)
+		}
+		if ev := lastEvent(t, s); ev.Detail != tc.shown+" with driverless" {
+			t.Errorf("%s: detail = %q, want %q", tc.addr, ev.Detail, tc.shown+" with driverless")
+		}
+		// And an error that quotes the address, once the address has gone through scrub.
+		f.addErr = errors.New("Bad device-uri \"" + tc.addr + "\".")
+		rec = postTo(s, h, "/printers/add", addForm("name", "Other", "address", tc.addr))
+		if rec.Body.String() != "Bad device-uri \""+tc.shown+"\"." {
+			t.Errorf("%s: answer %q", tc.addr, rec.Body.String())
+		}
+		if ev := lastEvent(t, s); ev.Detail != tc.shown+" with driverless: Bad device-uri \""+tc.shown+"\"." {
+			t.Errorf("%s: failed detail = %q", tc.addr, ev.Detail)
+		}
 	}
 }
