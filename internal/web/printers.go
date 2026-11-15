@@ -289,11 +289,10 @@ type jobButtons struct {
 	MoveTo, MoveTitle, MoveText, MoveLabel string
 }
 
-func jobButtonsFor(p cups.Printer, all []cups.Printer, jobs int) jobButtons {
+func jobButtonsFor(p cups.Printer, all []cups.Printer, names map[string]string, jobs int) jobButtons {
 	if jobs == 0 {
 		return jobButtons{}
 	}
-	names := shortNames(all)
 	short, count := names[p.Name], plural(jobs, "job", "jobs")
 	jb := jobButtons{
 		Jobs:        jobs,
@@ -310,7 +309,7 @@ func jobButtonsFor(p cups.Printer, all []cups.Printer, jobs int) jobButtons {
 	return jb
 }
 
-func (s *Server) queueRows(snap Snapshot, now time.Time) []queueView {
+func (s *Server) queueRows(snap Snapshot, names map[string]string, now time.Time) []queueView {
 	var out []queueView
 	for _, p := range snap.Printers {
 		pv := printerCell(p, snap.Default, now, snap.Live)
@@ -344,7 +343,7 @@ func (s *Server) queueRows(snap Snapshot, now time.Time) []queueView {
 		q.RemoveLabel = "Remove " + p.Name
 		waiting := countOn(snap.Active, p.Name)
 		q.RemoveText = removeText(waiting)
-		q.jobButtons = jobButtonsFor(p, snap.Printers, waiting)
+		q.jobButtons = jobButtonsFor(p, snap.Printers, names, waiting)
 		out = append(out, q)
 	}
 	return out

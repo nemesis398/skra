@@ -241,7 +241,7 @@ func (s *Server) view(snap Snapshot) view {
 		v.Opts = string(raw)
 	}
 	v.DefaultName = snap.Default
-	v.Queues = s.queueRows(snap, now)
+	v.Queues = s.queueRows(snap, names, now)
 	for _, j := range snap.Active {
 		if j.State == 4 {
 			held++
