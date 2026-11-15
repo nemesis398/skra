@@ -65,16 +65,17 @@ func (f *fakeCUPS) prints() int {
 	return f.printed
 }
 
-// actionServer is a server over f with a real event store in a temp dir, and a
-// first page load so the server knows the job and queue names.
-func actionServer(t *testing.T, f *fakeCUPS) (*Server, http.Handler) {
+// actionServer is a server over f with a real event store in a temp dir, the
+// given declared queues, and a first page load so the server knows the job
+// and queue names.
+func actionServer(t *testing.T, f *fakeCUPS, declared ...string) (*Server, http.Handler) {
 	t.Helper()
 	db, err := store.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
-	s := New(config.Config{Listen: "127.0.0.1:7631", User: "mika"}, Deps{CUPS: f, Store: db})
+	s := New(config.Config{Listen: "127.0.0.1:7631", User: "mika", DeclaredQueues: declared}, Deps{CUPS: f, Store: db})
 	h := s.Handler()
 	if rec := get(h, "/"); rec.Code != 200 {
 		t.Fatalf("GET /: %d", rec.Code)

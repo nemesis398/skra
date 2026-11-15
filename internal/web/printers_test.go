@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nemesis398/skra/internal/config"
 	"github.com/nemesis398/skra/internal/cups"
 	"github.com/nemesis398/skra/internal/store"
 )
@@ -85,23 +84,6 @@ func queuesFake() *fakeCUPS {
 	}
 }
 
-// queueServer is a server over f with a real store, the given declared
-// queues and a first page load.
-func queueServer(t *testing.T, f *fakeCUPS, declared ...string) (*Server, http.Handler) {
-	t.Helper()
-	db, err := store.Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { db.Close() })
-	s := New(config.Config{Listen: "127.0.0.1:7631", User: "mika", DeclaredQueues: declared}, Deps{CUPS: f, Store: db})
-	h := s.Handler()
-	if rec := get(h, "/"); rec.Code != 200 {
-		t.Fatalf("GET /: %d", rec.Code)
-	}
-	return s, h
-}
-
 // same is the settings form of a queue as it stands: posting it changes nothing.
 func same(p cups.Printer) url.Values {
 	v := url.Values{
@@ -134,7 +116,7 @@ func events(t *testing.T, s *Server, n int) []store.Event {
 func TestDeclaredQueueGuards(t *testing.T) {
 	const refusal = "Virtual-MFC is declared in ravnix; remove it there."
 	f := queuesFake()
-	s, h := queueServer(t, f, "Virtual-MFC")
+	s, h := actionServer(t, f, "Virtual-MFC")
 
 	rec := postTo(s, h, "/printers/Virtual-MFC/delete", nil)
 	if rec.Code != 403 || rec.Body.String() != refusal {
@@ -201,7 +183,7 @@ func TestDeleteNeedsConfirm(t *testing.T) {
 		return m
 	}
 	f := queuesFake()
-	_, h := queueServer(t, f)
+	_, h := actionServer(t, f)
 	page := get(h, "/printers").Body.String()
 
 	two := removeButton(page, "Virtual-MFC")
@@ -220,7 +202,7 @@ func TestDeleteNeedsConfirm(t *testing.T) {
 	}
 
 	f.set(func(f *fakeCUPS) { f.active = nil })
-	_, h = queueServer(t, f)
+	_, h = actionServer(t, f)
 	none := removeButton(get(h, "/printers").Body.String(), "Hall")
 	if !strings.Contains(none, "data-confirm=") || strings.Contains(none, "waiting job") {
 		t.Errorf("no jobs: the button still asks, and names no jobs: %s", none)
@@ -239,7 +221,7 @@ func TestQueueActions(t *testing.T) {
 		{"/printers/Hall/resume", "Resumed the queue of Hall.", "printer.resume", "pause Hall false"},
 	} {
 		f := queuesFake()
-		s, h := queueServer(t, f)
+		s, h := actionServer(t, f)
 		rec := postTo(s, h, tc.path, nil)
 		if rec.Code != 200 || rec.Body.String() != tc.want {
 			t.Errorf("%s: status %d, body %q, want %q", tc.path, rec.Code, rec.Body.String(), tc.want)
@@ -265,7 +247,7 @@ func TestQueueActions(t *testing.T) {
 func TestQueueActionsTakeAnAwkwardName(t *testing.T) {
 	f := queuesFake()
 	f.printers = append(f.printers, cups.Printer{Name: "Fußball-Drucker", State: 3, Accepting: true})
-	s, h := queueServer(t, f)
+	s, h := actionServer(t, f)
 	rec := postTo(s, h, "/printers/Fu%C3%9Fball-Drucker/pause", nil)
 	if rec.Code != 200 || rec.Body.String() != "Paused the queue of Fußball-Drucker." {
 		t.Errorf("status %d, body %q", rec.Code, rec.Body.String())
@@ -277,7 +259,7 @@ func TestQueueActionsTakeAnAwkwardName(t *testing.T) {
 
 func TestCancelAllNamesTheCount(t *testing.T) {
 	f := queuesFake()
-	s, h := queueServer(t, f)
+	s, h := actionServer(t, f)
 	rec := postTo(s, h, "/printers/Virtual-MFC/cancel-all", nil)
 	if rec.Code != 200 || rec.Body.String() != "Canceled 2 jobs on Brother." {
 		t.Errorf("status %d, body %q", rec.Code, rec.Body.String())
@@ -305,7 +287,7 @@ func TestCancelAllNamesTheCount(t *testing.T) {
 
 func TestMoveAll(t *testing.T) {
 	f := queuesFake()
-	s, h := queueServer(t, f)
+	s, h := actionServer(t, f)
 	rec := postTo(s, h, "/printers/Virtual-MFC/move-all", url.Values{"to": {"Hall"}})
 	if rec.Code != 200 || rec.Body.String() != "Moved 2 jobs from Brother to Hall." {
 		t.Errorf("status %d, body %q", rec.Code, rec.Body.String())
@@ -339,13 +321,13 @@ func TestMoveAll(t *testing.T) {
 
 func TestMoveAllIsOfferedFromTwoQueues(t *testing.T) {
 	f := queuesFake()
-	_, h := queueServer(t, f)
+	_, h := actionServer(t, f)
 	btn := regexp.MustCompile(`<button[^>]*data-act="move-all" data-q="Virtual-MFC"[^>]*>`).FindString(get(h, "/printers").Body.String())
 	if btn == "" || !strings.Contains(btn, `data-targets="[{&#34;name&#34;:&#34;Hall&#34;,&#34;label&#34;:&#34;Hall&#34;}]"`) {
 		t.Errorf("move all with the other queue as its only target is missing: %q", btn)
 	}
 	f.set(func(f *fakeCUPS) { f.printers = f.printers[1:] })
-	_, h = queueServer(t, f)
+	_, h = actionServer(t, f)
 	if strings.Contains(get(h, "/printers").Body.String(), `data-act="move-all"`) {
 		t.Error("move all is offered with one queue")
 	}
@@ -353,7 +335,7 @@ func TestMoveAllIsOfferedFromTwoQueues(t *testing.T) {
 
 func TestCommand(t *testing.T) {
 	f := queuesFake()
-	s, h := queueServer(t, f)
+	s, h := actionServer(t, f)
 	rec := postTo(s, h, "/printers/Virtual-MFC/command", url.Values{"command": {"Clean"}})
 	if rec.Code != 200 || rec.Body.String() != `Sent "clean print heads" to Brother as job 51.` {
 		t.Errorf("status %d, body %q", rec.Code, rec.Body.String())
@@ -384,7 +366,7 @@ func TestCommand(t *testing.T) {
 
 func TestMaintenanceButtonsFollowThePrintersList(t *testing.T) {
 	f := queuesFake()
-	_, h := queueServer(t, f)
+	_, h := actionServer(t, f)
 	body := get(h, "/printers/Virtual-MFC/settings").Body.String()
 	for _, want := range []string{
 		`data-command="Clean"`, ">clean print heads<", `data-command="PrintSelfTestPage"`, ">print a self-test page<",
@@ -404,7 +386,7 @@ func TestMaintenanceButtonsFollowThePrintersList(t *testing.T) {
 
 func TestSettingsPanelRows(t *testing.T) {
 	f := queuesFake()
-	_, h := queueServer(t, f)
+	_, h := actionServer(t, f)
 	rec := get(h, "/printers/Virtual-MFC/settings")
 	if rec.Code != 200 || !strings.HasPrefix(rec.Header().Get("Content-Type"), "text/html") {
 		t.Fatalf("status %d, Content-Type %q", rec.Code, rec.Header().Get("Content-Type"))
@@ -454,7 +436,7 @@ func TestSettingsPanelEscapesAndKeepsAnUnlistedDefault(t *testing.T) {
 	f := queuesFake()
 	f.printers[1].Info = `<b>x</b> "q"`
 	f.printers[1].MediaDefault = "om_odd_1x1mm"
-	_, h := queueServer(t, f)
+	_, h := actionServer(t, f)
 	body := get(h, "/printers/Virtual-MFC/settings").Body.String()
 	if strings.Contains(body, "<b>x</b>") || !strings.Contains(body, "&lt;b&gt;x&lt;/b&gt;") {
 		t.Error("the description is not escaped")
@@ -465,7 +447,7 @@ func TestSettingsPanelEscapesAndKeepsAnUnlistedDefault(t *testing.T) {
 }
 
 func TestSettingsPanelForAnUnknownQueue(t *testing.T) {
-	_, h := queueServer(t, queuesFake())
+	_, h := actionServer(t, queuesFake())
 	if rec := get(h, "/printers/Nowhere/settings"); rec.Code != 404 || rec.Body.Len() == 0 {
 		t.Errorf("status %d, body %q, want 404 with a message", rec.Code, rec.Body.String())
 	}
@@ -473,7 +455,7 @@ func TestSettingsPanelForAnUnknownQueue(t *testing.T) {
 
 func TestSettingsPostSendsOnlyWhatChanged(t *testing.T) {
 	f := queuesFake()
-	s, h := queueServer(t, f)
+	s, h := actionServer(t, f)
 	form := same(full())
 	form.Set("info", "  Study printer ")
 	form.Set("color", "monochrome")
@@ -502,7 +484,7 @@ func TestSettingsPostSendsOnlyWhatChanged(t *testing.T) {
 
 func TestSettingsPostMapsEveryField(t *testing.T) {
 	f := queuesFake()
-	s, h := queueServer(t, f)
+	s, h := actionServer(t, f)
 	form := url.Values{
 		"info": {"Brother"}, "location": {"Hall"}, "address": {"ipp://other.local/ipp/print"}, "shared": {"no"},
 		"sides": {"two-sided-short-edge"}, "color": {"monochrome"}, "quality": {"3"}, "media": {"na_letter_8.5x11in"}, "policy": {"retry-job"},
@@ -529,7 +511,7 @@ func TestSettingsPostMapsEveryField(t *testing.T) {
 
 func TestSettingsPostMapsStateAndAcceptToTheirOwnCalls(t *testing.T) {
 	f := queuesFake()
-	s, h := queueServer(t, f)
+	s, h := actionServer(t, f)
 	form := same(full())
 	form.Set("state", "paused")
 	form.Set("accept", "rejected")
@@ -551,7 +533,7 @@ func TestSettingsPostMapsStateAndAcceptToTheirOwnCalls(t *testing.T) {
 	// Back the other way, from a queue that is paused and rejecting.
 	g := queuesFake()
 	g.printers[1].State, g.printers[1].Accepting = 5, false
-	s, h = queueServer(t, g)
+	s, h = actionServer(t, g)
 	form = same(full())
 	form.Set("state", "running")
 	form.Set("accept", "accepted")
@@ -569,7 +551,7 @@ func TestSettingsPostMapsStateAndAcceptToTheirOwnCalls(t *testing.T) {
 
 func TestSettingsPostWithNothingChanged(t *testing.T) {
 	f := queuesFake()
-	s, h := queueServer(t, f)
+	s, h := actionServer(t, f)
 	rec := postTo(s, h, "/printers/Virtual-MFC/settings", func() url.Values { v := same(full()); v.Set("shared", "yes"); return v }())
 	if rec.Code != 200 || rec.Body.String() != "Nothing changed." {
 		t.Errorf("status %d, body %q", rec.Code, rec.Body.String())
@@ -584,7 +566,7 @@ func TestSettingsPostWithNothingChanged(t *testing.T) {
 
 func TestSettingsPostRejectsWhatThePrinterDoesNotOffer(t *testing.T) {
 	f := queuesFake()
-	s, h := queueServer(t, f)
+	s, h := actionServer(t, f)
 	for _, bad := range []struct{ field, value string }{
 		{"sides", "sideways"}, {"sides", ""}, {"color", "rainbow"}, {"quality", "9"}, {"quality", "high"}, {"quality", ""},
 		{"media", "iso_a0_841x1189mm"}, {"policy", "explode"}, {"state", "sleeping"}, {"accept", "maybe"}, {"shared", "perhaps"},
@@ -606,7 +588,7 @@ func TestSettingsPostRejectsWhatThePrinterDoesNotOffer(t *testing.T) {
 
 func TestSettingsPostKeepsAPartlyBadFormFromSendingAnything(t *testing.T) {
 	f := queuesFake()
-	s, h := queueServer(t, f)
+	s, h := actionServer(t, f)
 	form := same(full())
 	form.Set("info", "Fine")
 	form.Set("sides", "sideways")
@@ -622,7 +604,7 @@ func TestSettingsPostKeepsAPartlyBadFormFromSendingAnything(t *testing.T) {
 func TestSettingsPostStopsAtTheFirstRefusal(t *testing.T) {
 	f := queuesFake()
 	f.actErr = errors.New("Forbidden")
-	s, h := queueServer(t, f)
+	s, h := actionServer(t, f)
 	form := same(full())
 	form.Set("info", "New")
 	form.Set("state", "paused")
@@ -640,7 +622,7 @@ func TestSettingsPostStopsAtTheFirstRefusal(t *testing.T) {
 
 func TestPrinterRoutesNeedTheToken(t *testing.T) {
 	f := queuesFake()
-	_, h := queueServer(t, f)
+	_, h := actionServer(t, f)
 	for _, act := range []string{"settings", "default", "delete", "accept", "reject", "pause", "resume", "cancel-all", "move-all", "command"} {
 		req := httptest.NewRequest("POST", "/printers/Hall/"+act, nil)
 		req.Host = "127.0.0.1:7631"
@@ -657,7 +639,7 @@ func TestPrinterRoutesNeedTheToken(t *testing.T) {
 
 func TestPrintersPageIsAFullPageWithTheTabBar(t *testing.T) {
 	f := queuesFake()
-	_, h := queueServer(t, f)
+	_, h := actionServer(t, f)
 	rec := get(h, "/printers")
 	if rec.Code != 200 || !strings.HasPrefix(rec.Header().Get("Content-Type"), "text/html") || rec.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("status %d, headers %v", rec.Code, rec.Header())
@@ -682,7 +664,7 @@ func TestQueueTable(t *testing.T) {
 	f := queuesFake()
 	f.printers[0].Accepting = false
 	f.printers[1].Reasons = []string{"offline-report"}
-	_, h := queueServer(t, f)
+	_, h := actionServer(t, f)
 	page := get(h, "/printers").Body.String()
 	for _, want := range []string{
 		"<th>queue</th><th>printer</th><th>connection</th><th>state</th><th>notes</th>",
@@ -705,7 +687,7 @@ func TestQueueTable(t *testing.T) {
 func TestQueueTableEscapesNames(t *testing.T) {
 	f := queuesFake()
 	f.printers = append(f.printers, cups.Printer{Name: `A_b.c-1"<b>`, Info: "<i>x</i>", State: 3, Accepting: true})
-	_, h := queueServer(t, f)
+	_, h := actionServer(t, f)
 	page := get(h, "/printers").Body.String()
 	if strings.Contains(page, `"<b>`) || strings.Contains(page, "<i>x</i>") {
 		t.Error("a queue name or description is not escaped")
@@ -720,7 +702,7 @@ func TestQueueTableEscapesNames(t *testing.T) {
 
 func TestQueueTableWithoutQueuesAndWhenCUPSIsDown(t *testing.T) {
 	f := &fakeCUPS{}
-	_, h := queueServer(t, f)
+	_, h := actionServer(t, f)
 	if page := get(h, "/printers").Body.String(); !strings.Contains(page, `id="queues"`) || !strings.Contains(page, "CUPS has no printers") || strings.Contains(page, "<table") {
 		t.Errorf("empty list: %s", page)
 	}
@@ -759,7 +741,7 @@ func TestEventsCarryTheQueueTable(t *testing.T) {
 // away what was typed into an open panel.
 func TestSettingsPanelHasNoInstantActions(t *testing.T) {
 	f := queuesFake()
-	_, h := queueServer(t, f)
+	_, h := actionServer(t, f)
 	body := get(h, "/printers/Virtual-MFC/settings").Body.String()
 	for _, act := range []string{"pause", "resume", "accept", "reject", "default", "remove", "cancel-all", "move-all"} {
 		if strings.Contains(body, `data-act="`+act+`"`) {
@@ -777,7 +759,7 @@ func TestSettingsPanelHasNoInstantActions(t *testing.T) {
 // accept and reject only among the panel's settings: the table has neither.
 func TestQueueTableLeavesPauseAndAcceptToTheirOwnPlaces(t *testing.T) {
 	f := queuesFake()
-	_, h := queueServer(t, f)
+	_, h := actionServer(t, f)
 	page := get(h, "/printers").Body.String()
 	for _, act := range []string{"pause", "resume", "accept", "reject"} {
 		if strings.Contains(page, `data-act="`+act+`"`) {
@@ -789,7 +771,7 @@ func TestQueueTableLeavesPauseAndAcceptToTheirOwnPlaces(t *testing.T) {
 // Cleaning uses ink, so it asks first; the other commands go at once.
 func TestOnlyCleanAsksFirst(t *testing.T) {
 	f := queuesFake()
-	_, h := queueServer(t, f)
+	_, h := actionServer(t, f)
 	body := get(h, "/printers/Virtual-MFC/settings").Body.String()
 	buttons := regexp.MustCompile(`<button[^>]*data-act="command"[^>]*>`).FindAllString(body, -1)
 	if len(buttons) != 4 {
@@ -814,7 +796,7 @@ func TestOnlyCleanAsksFirst(t *testing.T) {
 func TestOverviewHasPauseAndResumeOnTheCard(t *testing.T) {
 	f := queuesFake()
 	f.printers[0].State = 5
-	_, h := queueServer(t, f)
+	_, h := actionServer(t, f)
 	page := get(h, "/").Body.String()
 	if !strings.Contains(page, `data-act="resume" data-q="Hall"`) || !strings.Contains(page, ">resume queue<") ||
 		!strings.Contains(page, `data-act="pause" data-q="Virtual-MFC"`) || !strings.Contains(page, ">pause queue<") {
@@ -828,7 +810,7 @@ func TestOverviewHasPauseAndResumeOnTheCard(t *testing.T) {
 func TestQueueNamesAreResolvedWhateverTheCase(t *testing.T) {
 	const refusal = "Virtual-MFC is declared in ravnix; remove it there."
 	f := queuesFake()
-	s, h := queueServer(t, f, "Virtual-MFC")
+	s, h := actionServer(t, f, "Virtual-MFC")
 	for _, path := range []string{"/printers/virtual-mfc/delete", "/printers/VIRTUAL-MFC/delete", "/printers/vIRTUAL-mfc/delete"} {
 		if rec := postTo(s, h, path, nil); rec.Code != 403 || rec.Body.String() != refusal {
 			t.Errorf("POST %s: status %d, body %q", path, rec.Code, rec.Body.String())
@@ -886,7 +868,7 @@ func TestQueueNamesAreResolvedWhateverTheCase(t *testing.T) {
 // A name CUPS would never create is refused before CUPS hears of it.
 func TestQueueNamesOfTheWrongShapeAreRefused(t *testing.T) {
 	f := queuesFake()
-	s, h := queueServer(t, f, "Virtual-MFC")
+	s, h := actionServer(t, f, "Virtual-MFC")
 	for _, name := range []string{"..%2Fx", "a%2Fb", "%2E%2E%2F%2E%2E%2Fetc", "a%23b", "a%20b", "a%09b", "a%00b", "a%0Ab", "a%7Fb", strings.Repeat("x", 128)} {
 		before := f.callCount()
 		for _, route := range []struct{ method, path string }{
@@ -925,7 +907,7 @@ func TestSettingsPostOfOneFieldLeavesTheRestAlone(t *testing.T) {
 	f := queuesFake()
 	f.printers[1].State, f.printers[1].Accepting = 5, false // the panel was loaded before this
 	f.printers[1].SidesDefault, f.printers[1].Shared = "two-sided-long-edge", false
-	s, h := queueServer(t, f)
+	s, h := actionServer(t, f)
 	rec := postTo(s, h, "/printers/Virtual-MFC/settings", url.Values{"location": {"Attic"}})
 	if rec.Code != 200 || rec.Body.String() != "Saved Virtual-MFC: 1 setting." {
 		t.Errorf("status %d, body %q", rec.Code, rec.Body.String())
@@ -949,7 +931,7 @@ func TestSettingsPanelRecordsTheLoadedValues(t *testing.T) {
 	f := queuesFake()
 	f.printers[1].Info = `Brother "B"`
 	f.printers[1].State = 5
-	_, h := queueServer(t, f)
+	_, h := actionServer(t, f)
 	body := get(h, "/printers/Virtual-MFC/settings").Body.String()
 	for _, want := range []string{
 		`name="info" data-was="Brother &#34;B&#34;"`, `name="location" data-was="Study"`, `name="address" data-was="ipp://printer.local/ipp/print"`,
