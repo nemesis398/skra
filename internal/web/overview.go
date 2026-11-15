@@ -108,10 +108,6 @@ func sameJobs(a, b []cups.Job) bool {
 // tickPoll is the hub's poll function.
 func (s *Server) tickPoll(ctx context.Context) Snapshot { return s.poll(ctx, false) }
 
-// page renders the whole overview from a fresh poll, so it works before the
-// event stream connects.
-func (s *Server) page(w http.ResponseWriter, r *http.Request) { s.render(w, r, "overview") }
-
 // render draws a full page, the overview, the printers tab or the history,
 // with the shared tab bar around it.
 func (s *Server) render(w http.ResponseWriter, r *http.Request, which string) {

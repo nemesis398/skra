@@ -390,3 +390,32 @@ func TestGuardRefusesCrossSiteReads(t *testing.T) {
 		})
 	}
 }
+
+// pages is the one list of full pages: handlerOn serves each path in it as
+// its page, and the guard lets another site navigate to it. Every tab in the
+// bar links to one of them.
+func TestPagesAreTheServedPages(t *testing.T) {
+	h := newTestServer().Handler()
+	nav := map[string]string{"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document"}
+	for path, which := range pages {
+		req := httptest.NewRequest("GET", path, nil)
+		req.Host = "localhost:7631"
+		for k, v := range nav {
+			req.Header.Set(k, v)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != 200 || !strings.Contains(rec.Body.String(), `<body data-page="`+which+`">`) {
+			t.Errorf("GET %s from a link on another site: status %d, want 200 and the %s page", path, rec.Code, which)
+		}
+	}
+	tabs := regexp.MustCompile(`<a class="tab[^"]*"[^>]* href="(/[^"]*)"`).FindAllStringSubmatch(get(h, "/").Body.String(), -1)
+	if len(tabs) == 0 {
+		t.Fatal("found no tab in the bar")
+	}
+	for _, m := range tabs {
+		if _, ok := pages[m[1]]; !ok {
+			t.Errorf("the tab to %s is not in pages", m[1])
+		}
+	}
+}

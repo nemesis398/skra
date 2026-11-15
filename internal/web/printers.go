@@ -41,7 +41,6 @@ var queueActions = map[string]struct {
 }
 
 func (s *Server) printerRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /printers", s.printersPage)
 	s.addRoutes(mux)
 	s.logRoutes(mux)
 	mux.HandleFunc("GET /printers/{name}/settings", s.settingsPanel)
@@ -364,8 +363,6 @@ func removeText(waiting int) string {
 	}
 	return fmt.Sprintf("Its %d waiting jobs are canceled with it. %s", waiting, rest)
 }
-
-func (s *Server) printersPage(w http.ResponseWriter, r *http.Request) { s.render(w, r, "printers") }
 
 // --- the settings panel ---
 

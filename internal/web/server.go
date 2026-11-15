@@ -71,10 +71,15 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) handlerOn(port string) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /static/", s.static)
-	mux.HandleFunc("GET /{$}", s.page)
+	for path, which := range pages {
+		pattern := "GET " + path
+		if path == "/" {
+			pattern = "GET /{$}" // the overview, not every path
+		}
+		mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) { s.render(w, r, which) })
+	}
 	mux.HandleFunc("GET /events", s.events)
 	s.actionRoutes(mux)
 	s.printerRoutes(mux)
-	mux.HandleFunc("GET /history", s.historyPage)
 	return Guard(mux, port, s.token)
 }

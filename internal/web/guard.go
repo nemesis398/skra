@@ -73,12 +73,17 @@ func crossSite(r *http.Request) bool {
 	return site == "cross-site" || site == "same-site"
 }
 
-// pages are the paths another site may navigate to.
-var pages = map[string]bool{"/": true, "/printers": true, "/history": true}
+// pages are the full pages by path, each with the name render draws it
+// under. handlerOn serves them from this list, and they are the paths another
+// site may navigate to. Each draws from a fresh poll, so it works before the
+// event stream connects; the history tab's rows come from the hub's
+// completed-jobs read, with no polling of its own.
+var pages = map[string]string{"/": "overview", "/printers": "printers", "/history": "history"}
 
 // pageNavigation reports whether r opens one of the pages as a document of
 // its own: a link followed, not a frame, a fetch or a form post.
 func pageNavigation(r *http.Request) bool {
-	return r.Method == http.MethodGet && pages[r.URL.Path] &&
+	_, page := pages[r.URL.Path]
+	return r.Method == http.MethodGet && page &&
 		r.Header.Get("Sec-Fetch-Mode") == "navigate" && r.Header.Get("Sec-Fetch-Dest") == "document"
 }
