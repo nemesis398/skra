@@ -160,7 +160,7 @@ Each one is a test in `internal/web/budget_test.go`, run by `make integration`.
 | --- | --- | --- |
 | Any page, server time | p95 under 50 ms | under 1 ms |
 | A CUPS action (hold, release) | p95 under 150 ms | about 1 ms |
-| Page, style and script together | under 200 KB | 54 KB |
+| Page, style and script together | under 200 KB | 55 KB |
 | Resident memory, idle | under 50 MB | about 22 MB |
 | Timers and polling with no page open | none | the idle timer only |
 
