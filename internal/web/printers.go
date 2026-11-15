@@ -84,17 +84,28 @@ func (s *Server) queue(ctx context.Context, name string) (cups.Printer, []cups.P
 	if err != nil {
 		return cups.Printer{}, nil, err
 	}
+	if p, ok := findQueue(all, name); ok {
+		return p, all, nil
+	}
+	return cups.Printer{}, all, errNoQueue
+}
+
+// findQueue finds the queue of a name among all. A queue with exactly that
+// name comes first, and then one that differs in case only: CUPS compares
+// the ASCII letters without case, but EqualFold folds more than those, so
+// two queues it keeps apart can fold together here.
+func findQueue(all []cups.Printer, name string) (cups.Printer, bool) {
 	for _, p := range all {
 		if p.Name == name {
-			return p, all, nil
+			return p, true
 		}
 	}
 	for _, p := range all {
 		if strings.EqualFold(p.Name, name) {
-			return p, all, nil
+			return p, true
 		}
 	}
-	return cups.Printer{}, all, errNoQueue
+	return cups.Printer{}, false
 }
 
 // resolve reads {name} of the route and finds the queue (resolveName).
@@ -151,7 +162,7 @@ func (s *Server) queueAction(act string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), actionTimeout)
 		defer cancel()
-		p, _, ok := s.resolve(ctx, w, r)
+		p, all, ok := s.resolve(ctx, w, r)
 		if !ok {
 			return
 		}
@@ -167,20 +178,26 @@ func (s *Server) queueAction(act string) http.HandlerFunc {
 			reply(w, http.StatusBadGateway, err.Error())
 			return
 		}
-		reply(w, http.StatusOK, a.said(name, s.shortPrinter(name)))
+		reply(w, http.StatusOK, a.said(name, shortOf(all, name)))
 	}
 }
 
 func (s *Server) cancelAll(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), actionTimeout)
 	defer cancel()
-	p, _, ok := s.resolve(ctx, w, r)
+	p, all, ok := s.resolve(ctx, w, r)
 	if !ok {
 		return
 	}
 	name := p.Name
+	// The count is read apart from the cancel, because CUPS answers the cancel
+	// with no number. A job that arrives or ends in between makes the count in
+	// the footer and the history off by that job; that is kept, since it is
+	// right in all but a narrow race, and it tells what happened.
 	n, err := s.jobsOn(ctx, name)
 	if err != nil {
+		// CUPS failed a read this action depends on: the attempt is logged.
+		s.record(r, "printer.cancelall", name, "", err)
 		reply(w, http.StatusBadGateway, err.Error())
 		return
 	}
@@ -191,7 +208,7 @@ func (s *Server) cancelAll(w http.ResponseWriter, r *http.Request) {
 		reply(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	reply(w, http.StatusOK, fmt.Sprintf("Canceled %s on %s.", plural(n, "job", "jobs"), s.shortPrinter(name)))
+	reply(w, http.StatusOK, fmt.Sprintf("Canceled %s on %s.", plural(n, "job", "jobs"), shortOf(all, name)))
 }
 
 func (s *Server) moveAll(w http.ResponseWriter, r *http.Request) {
@@ -209,15 +226,18 @@ func (s *Server) moveAll(w http.ResponseWriter, r *http.Request) {
 	}
 	// The target is named in the case CUPS has it, when it has it; a queue it
 	// does not have goes on as typed and CUPS refuses it.
-	if i := slices.IndexFunc(all, func(o cups.Printer) bool { return strings.EqualFold(o.Name, to) }); i >= 0 {
-		to = all[i].Name
+	if o, ok := findQueue(all, to); ok {
+		to = o.Name
 	}
 	if to == name {
 		reply(w, http.StatusBadRequest, "The jobs are on that queue already. Choose another one.")
 		return
 	}
+	// The count is read apart from the move, as in cancelAll, and is off by a
+	// job that arrives or ends in between.
 	n, err := s.jobsOn(ctx, name)
 	if err != nil {
+		s.record(r, "printer.moveall", name, "to "+to, err)
 		reply(w, http.StatusBadGateway, err.Error())
 		return
 	}
@@ -228,7 +248,7 @@ func (s *Server) moveAll(w http.ResponseWriter, r *http.Request) {
 		reply(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	reply(w, http.StatusOK, fmt.Sprintf("Moved %s from %s to %s.", plural(n, "job", "jobs"), s.shortPrinter(name), s.shortPrinter(to)))
+	reply(w, http.StatusOK, fmt.Sprintf("Moved %s from %s to %s.", plural(n, "job", "jobs"), shortOf(all, name), shortOf(all, to)))
 }
 
 // commandLabels are the words for the maintenance commands CUPS drivers
@@ -254,7 +274,7 @@ func (s *Server) command(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name, cmd := p.Name, r.PostFormValue("command")
-	short := shortNames(all)[name]
+	short := shortOf(all, name)
 	if !slices.Contains(p.Commands, cmd) {
 		reply(w, http.StatusBadRequest, short+" does not offer that command.")
 		return
@@ -496,7 +516,7 @@ func settingsFor(p cups.Printer, declared bool) settingsView {
 		Sides:   segOf("sides", p.SidesSupported, sidesWords.Replace, p.SidesDefault),
 		Color:   segOf("color", p.ColorSupported, colorLabel, p.ColorDefault),
 		Quality: segOf("quality", quality, qualityLabel, strconv.Itoa(p.QualityDefault)),
-		Media:   selectOf("c-media", "media", slices.DeleteFunc(slices.Clone(p.MediaSupported), func(m string) bool { return strings.HasPrefix(m, "custom_") }), mediaLabel, p.MediaDefault),
+		Media:   selectOf("c-media", "media", offeredMedia(p), mediaLabel, p.MediaDefault),
 		Policy:  selectOf("c-policy", "policy", p.ErrorPolicies, policyLabel, p.ErrorPolicy),
 	}
 	if sv.Title == "" {
@@ -511,6 +531,13 @@ func settingsFor(p cups.Printer, declared bool) settingsView {
 		sv.Commands = append(sv.Commands, cv)
 	}
 	return sv
+}
+
+// offeredMedia is the paper the settings offer: what the queue supports,
+// without the custom sizes, which need a width and a height that the select
+// cannot take. The panel shows these and a post may choose these.
+func offeredMedia(p cups.Printer) []string {
+	return slices.DeleteFunc(slices.Clone(p.MediaSupported), func(m string) bool { return strings.HasPrefix(m, "custom_") })
 }
 
 func qualityLabel(v string) string {
@@ -549,6 +576,13 @@ func okText(v string) bool {
 	return len(v) <= maxText && utf8.ValidString(v) && !strings.ContainsFunc(v, unicode.IsControl)
 }
 
+// dropBreaks removes the characters that a browser drops from the value of a
+// one-line input.
+var dropBreaks = strings.NewReplacer("\r", "", "\n", "")
+
+// fieldText is a stored value as a one-line field shows it.
+func fieldText(v string) string { return strings.TrimSpace(dropBreaks.Replace(v)) }
+
 // planSettings reads the form against the queue as CUPS has it. A field the
 // form leaves out stays as it is, and so does a field that has not changed.
 // Anything changed that the queue does not offer is refused, so it never
@@ -557,12 +591,15 @@ func (s *Server) planSettings(ctx context.Context, p cups.Printer, f url.Values)
 	var pl plan
 	bad := func(msg string) (plan, *refusal) { return plan{}, &refusal{http.StatusBadRequest, msg} }
 	// field returns the trimmed value of a form field when it differs from cur.
+	// The field shows cur as the browser makes of it: without line breaks and
+	// without spaces at the ends. The two are compared in that form, so a save
+	// that leaves the field alone does not send it.
 	field := func(name, cur string) (string, bool) {
 		if !f.Has(name) {
 			return "", false
 		}
 		v := strings.TrimSpace(f.Get(name))
-		return v, v != cur
+		return v, v != fieldText(cur)
 	}
 	note := func(label string) { pl.fields = append(pl.fields, label) }
 
@@ -631,7 +668,7 @@ func (s *Server) planSettings(ctx context.Context, p cups.Printer, f url.Values)
 		note("quality")
 	}
 	if v, ok := field("media", p.MediaDefault); ok {
-		if !slices.Contains(p.MediaSupported, v) {
+		if !slices.Contains(offeredMedia(p), v) {
 			return bad("This printer does not offer that paper.")
 		}
 		pl.ch.Media = &v
@@ -668,7 +705,7 @@ func (s *Server) planSettings(ctx context.Context, p cups.Printer, f url.Values)
 func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), actionTimeout)
 	defer cancel()
-	p, _, ok := s.resolve(ctx, w, r)
+	p, all, ok := s.resolve(ctx, w, r)
 	if !ok {
 		return
 	}
@@ -698,7 +735,12 @@ func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request) {
 		s.record(r, event, name, detail, err)
 		if err != nil {
 			s.hub.Refresh()
-			reply(w, http.StatusBadGateway, err.Error())
+			msg := err.Error()
+			if len(done) > 0 {
+				// Modify went through before this step failed.
+				msg = "Saved " + shortOf(all, name) + ": " + strings.Join(done, ", ") + ", but the next change did not go through. " + msg
+			}
+			reply(w, http.StatusBadGateway, msg)
 			return false
 		}
 		done = append(done, said)
@@ -733,5 +775,5 @@ func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.hub.Refresh()
-	reply(w, http.StatusOK, "Saved "+name+": "+strings.Join(done, ", ")+".")
+	reply(w, http.StatusOK, "Saved "+shortOf(all, name)+": "+strings.Join(done, ", ")+".")
 }

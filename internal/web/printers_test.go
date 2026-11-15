@@ -462,7 +462,7 @@ func TestSettingsPostSendsOnlyWhatChanged(t *testing.T) {
 	form.Set("quality", "5")
 	form.Set("shared", "no")
 	rec := postTo(s, h, "/printers/Virtual-MFC/settings", form)
-	if rec.Code != 200 || rec.Body.String() != "Saved Virtual-MFC: 4 settings." {
+	if rec.Code != 200 || rec.Body.String() != "Saved Brother: 4 settings." {
 		t.Errorf("status %d, body %q", rec.Code, rec.Body.String())
 	}
 	if got := f.did(); len(got) != 1 || got[0] != "modify Virtual-MFC" {
@@ -516,7 +516,7 @@ func TestSettingsPostMapsStateAndAcceptToTheirOwnCalls(t *testing.T) {
 	form.Set("state", "paused")
 	form.Set("accept", "rejected")
 	rec := postTo(s, h, "/printers/Virtual-MFC/settings", form)
-	if rec.Code != 200 || rec.Body.String() != "Saved Virtual-MFC: rejects new jobs, paused." {
+	if rec.Code != 200 || rec.Body.String() != "Saved Brother: rejects new jobs, paused." {
 		t.Errorf("status %d, body %q", rec.Code, rec.Body.String())
 	}
 	if got := strings.Join(f.did(), "; "); got != "accept Virtual-MFC false; pause Virtual-MFC true" {
@@ -908,7 +908,7 @@ func TestQueueNamesAreResolvedWhateverTheCase(t *testing.T) {
 	// An allowed call reaches CUPS with the queue's own name.
 	form = same(full())
 	form.Set("sides", "two-sided-long-edge")
-	if rec := postTo(s, h, "/printers/virtual-MFC/settings", form); rec.Code != 200 || rec.Body.String() != "Saved Virtual-MFC: 1 setting." {
+	if rec := postTo(s, h, "/printers/virtual-MFC/settings", form); rec.Code != 200 || rec.Body.String() != "Saved Brother: 1 setting." {
 		t.Errorf("sides only: status %d, body %q", rec.Code, rec.Body.String())
 	}
 	for _, act := range []string{"pause", "default", "cancel-all"} {
@@ -989,7 +989,7 @@ func TestSettingsPostOfOneFieldLeavesTheRestAlone(t *testing.T) {
 	f.printers[1].SidesDefault, f.printers[1].Shared = "two-sided-long-edge", false
 	s, h := actionServer(t, f)
 	rec := postTo(s, h, "/printers/Virtual-MFC/settings", url.Values{"location": {"Attic"}})
-	if rec.Code != 200 || rec.Body.String() != "Saved Virtual-MFC: 1 setting." {
+	if rec.Code != 200 || rec.Body.String() != "Saved Brother: 1 setting." {
 		t.Errorf("status %d, body %q", rec.Code, rec.Body.String())
 	}
 	if got := f.did(); len(got) != 1 || got[0] != "modify Virtual-MFC" {
@@ -1059,5 +1059,202 @@ func TestSettingsShowNotSetForAnEmptyDefault(t *testing.T) {
 	f.set(func(f *fakeCUPS) { f.printers[0] = full() })
 	if body := get(h, "/printers/Virtual-MFC/settings").Body.String(); strings.Contains(body, "(not set)") {
 		t.Error("a queue with defaults offers (not set)")
+	}
+}
+
+// A queue is named in a reply by the short name CUPS has just given, which
+// the handler already holds, and not by the last poll.
+func TestRepliesNameTheQueueByWhatCUPSHasNow(t *testing.T) {
+	f := queuesFake()
+	s, h := actionServer(t, f)
+	// New slices, so the snapshot of the first page load does not change too.
+	f.set(func(f *fakeCUPS) {
+		corridor, renamed := hall(), full()
+		corridor.Info, renamed.Info = "Corridor Laser", "Renamed MFC"
+		f.printers = []cups.Printer{corridor, renamed}
+	})
+	form := same(full())
+	form.Set("info", "Renamed MFC")
+	form.Set("location", "Attic")
+	for _, tc := range []struct {
+		path string
+		form url.Values
+		want string
+	}{
+		{"/printers/Virtual-MFC/pause", nil, "Paused the queue of Renamed."},
+		{"/printers/Virtual-MFC/default", nil, "Renamed is the default printer now."},
+		{"/printers/Virtual-MFC/cancel-all", nil, "Canceled 2 jobs on Renamed."},
+		{"/printers/Virtual-MFC/move-all", url.Values{"to": {"hall"}}, "Moved 2 jobs from Renamed to Corridor."},
+		{"/printers/Virtual-MFC/command", url.Values{"command": {"Clean"}}, `Sent "clean print heads" to Renamed as job 51.`},
+		{"/printers/Virtual-MFC/testpage", nil, "Test page sent to Renamed as job 32."},
+		{"/printers/Virtual-MFC/settings", form, "Saved Renamed: 1 setting."},
+	} {
+		if rec := postTo(s, h, tc.path, tc.form); rec.Code != 200 || rec.Body.String() != tc.want {
+			t.Errorf("POST %s: status %d, body %q, want %q", tc.path, rec.Code, rec.Body.String(), tc.want)
+		}
+	}
+	rec := upload(s, h, printFields, "a.pdf", strings.NewReader("%PDF-1.4\nx"), -1)
+	if want := `Sent "a.pdf" to Renamed as job 31.`; rec.Code != 200 || rec.Body.String() != want {
+		t.Errorf("print: status %d, body %q, want %q", rec.Code, rec.Body.String(), want)
+	}
+}
+
+// A queue name goes to the queue that has exactly it before one that only
+// matches it without regard to case. CUPS compares ASCII letters alone, so
+// the Kelvin sign and a k are two queues to it.
+func TestMoveAllTakesTheExactQueueBeforeACaseMatch(t *testing.T) {
+	f := queuesFake()
+	kelvin, plain := hall(), hall()
+	kelvin.Name, plain.Name = "\u212Ailn", "kiln"
+	f.printers = append(f.printers, kelvin, plain)
+	s, h := actionServer(t, f)
+	if rec := postTo(s, h, "/printers/Virtual-MFC/move-all", url.Values{"to": {"kiln"}}); rec.Code != 200 {
+		t.Fatalf("status %d, body %q", rec.Code, rec.Body.String())
+	}
+	if got := f.did(); len(got) != 1 || got[0] != "move-all Virtual-MFC kiln" {
+		t.Errorf("CUPS was asked %v, want the move to kiln", got)
+	}
+}
+
+// When CUPS fails the read of the jobs that cancel-all and move-all make
+// first, it failed an action that was asked for, and the history says so. The
+// refusals that skrá makes itself, before it asks CUPS anything, stay out.
+func TestFailedJobCountIsAnActionForTheHistory(t *testing.T) {
+	f := queuesFake()
+	s, h := actionServer(t, f, "Hall")
+	f.set(func(f *fakeCUPS) { f.jobsErr = errors.New("CUPS is busy. Try again in a moment.") })
+	for _, tc := range []struct {
+		path   string
+		form   url.Values
+		action string
+		detail string
+	}{
+		{"/printers/Virtual-MFC/cancel-all", nil, "printer.cancelall", "CUPS is busy. Try again in a moment."},
+		{"/printers/Virtual-MFC/move-all", url.Values{"to": {"Hall"}}, "printer.moveall", "to Hall: CUPS is busy. Try again in a moment."},
+	} {
+		rec := postTo(s, h, tc.path, tc.form)
+		if rec.Code != 502 || rec.Body.String() != "CUPS is busy. Try again in a moment." {
+			t.Errorf("POST %s: status %d, body %q", tc.path, rec.Code, rec.Body.String())
+		}
+		if ev := lastEvent(t, s); ev.Action != tc.action || ev.Target != "Virtual-MFC" || ev.OK || ev.Detail != tc.detail {
+			t.Errorf("POST %s: event = %+v", tc.path, ev)
+		}
+	}
+	if got := f.did(); len(got) != 0 {
+		t.Errorf("CUPS was asked %v after the count failed", got)
+	}
+
+	// None of skrá's own refusals is logged.
+	before := len(events(t, s, 10))
+	for _, r := range []struct {
+		path string
+		form url.Values
+	}{
+		{"/printers/Hall/delete", nil},
+		{"/printers/Virtual-MFC/move-all", url.Values{"to": {""}}},
+		{"/printers/Virtual-MFC/move-all", url.Values{"to": {"virtual-mfc"}}},
+		{"/printers/Nowhere/cancel-all", nil},
+		{"/printers/Virtual-MFC/settings", url.Values{"sides": {"sideways"}}},
+	} {
+		if rec := postTo(s, h, r.path, r.form); rec.Code < 400 || rec.Code == 502 {
+			t.Errorf("POST %s: status %d, want a refusal of skrá's own", r.path, rec.Code)
+		}
+	}
+	if after := len(events(t, s, 10)); after != before {
+		t.Errorf("refusals wrote %d events: %+v", after-before, events(t, s, 10))
+	}
+}
+
+// When Modify went through and the accept or pause that follows fails, the
+// footer says what was saved before it says what failed.
+func TestSettingsPostSaysWhatWasSavedBeforeAFailure(t *testing.T) {
+	f := queuesFake()
+	f.actErr, f.failOnly = errors.New("The printer or class does not exist."), "pause"
+	s, h := actionServer(t, f)
+	form := same(full())
+	form.Set("location", "Attic")
+	form.Set("state", "paused")
+	rec := postTo(s, h, "/printers/Virtual-MFC/settings", form)
+	want := "Saved Brother: 1 setting, but the next change did not go through. The printer or class does not exist."
+	if rec.Code != 502 || rec.Body.String() != want {
+		t.Errorf("status %d, body %q, want %q", rec.Code, rec.Body.String(), want)
+	}
+	if got := f.did(); len(got) != 2 {
+		t.Errorf("CUPS was asked %v", got)
+	}
+	if ev := lastEvent(t, s); ev.Action != "printer.pause" || ev.OK {
+		t.Errorf("event = %+v", ev)
+	}
+
+	// With nothing saved before it, the failure is told as it is.
+	f.set(func(f *fakeCUPS) { f.acts = nil })
+	form = same(full())
+	form.Set("state", "paused")
+	if rec = postTo(s, h, "/printers/Virtual-MFC/settings", form); rec.Code != 502 || rec.Body.String() != "The printer or class does not exist." {
+		t.Errorf("status %d, body %q", rec.Code, rec.Body.String())
+	}
+}
+
+// The page keeps a description or location as CUPS has it, with the spaces and
+// line breaks, while the field shows it without them. A save that leaves the
+// field alone does not send it, whichever of the two forms the browser posts.
+func TestSettingsPostComparesTheTextAsTheFieldShowsIt(t *testing.T) {
+	for _, tc := range []struct {
+		name, stored string
+		posted       []string
+	}{
+		{"spaces around", "  Hall ", []string{"Hall", "  Hall ", " Hall"}},
+		{"line breaks inside", "Study\r\n Room\n", []string{"Study Room"}},
+	} {
+		for _, posted := range tc.posted {
+			f := queuesFake()
+			f.printers[1].Info, f.printers[1].Location = tc.stored, tc.stored
+			s, h := actionServer(t, f)
+			form := same(full())
+			form.Set("info", posted)
+			form.Set("location", posted)
+			rec := postTo(s, h, "/printers/Virtual-MFC/settings", form)
+			if rec.Code != 200 || rec.Body.String() != "Nothing changed." {
+				t.Errorf("%s, posted %q: status %d, body %q", tc.name, posted, rec.Code, rec.Body.String())
+			}
+			if got := f.did(); len(got) != 0 {
+				t.Errorf("%s, posted %q: CUPS was asked %v", tc.name, posted, got)
+			}
+		}
+	}
+	// A real change still goes.
+	f := queuesFake()
+	f.printers[1].Location = "Study\r\n Room"
+	s, h := actionServer(t, f)
+	form := same(full())
+	form.Set("location", "Study Hall")
+	if rec := postTo(s, h, "/printers/Virtual-MFC/settings", form); rec.Code != 200 || rec.Body.String() != "Saved Brother: 1 setting." {
+		t.Errorf("status %d, body %q", rec.Code, rec.Body.String())
+	}
+}
+
+// The settings panel hides the custom sizes, so a post may not choose one.
+func TestSettingsPostRefusesACustomPaperTheSelectHides(t *testing.T) {
+	f := queuesFake()
+	s, h := actionServer(t, f)
+	form := same(full())
+	form.Set("media", "custom_min_75x127mm")
+	rec := postTo(s, h, "/printers/Virtual-MFC/settings", form)
+	if rec.Code != 400 || rec.Body.String() != "This printer does not offer that paper." {
+		t.Errorf("status %d, body %q", rec.Code, rec.Body.String())
+	}
+	if got := f.did(); len(got) != 0 {
+		t.Errorf("CUPS was asked %v", got)
+	}
+
+	// A custom size that is the current default is not posted as a change.
+	f.printers[1].MediaDefault = "custom_min_75x127mm"
+	form = same(f.printers[1])
+	form.Set("sides", "two-sided-long-edge")
+	if rec = postTo(s, h, "/printers/Virtual-MFC/settings", form); rec.Code != 200 {
+		t.Fatalf("status %d, body %q", rec.Code, rec.Body.String())
+	}
+	if ch := f.modified(); len(ch) != 1 || ch[0].Media != nil {
+		t.Errorf("Modify got %+v, want the sides alone", ch)
 	}
 }
