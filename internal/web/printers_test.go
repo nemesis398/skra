@@ -1024,3 +1024,40 @@ func TestSettingsPanelRecordsTheLoadedValues(t *testing.T) {
 		}
 	}
 }
+
+// When CUPS reports no default paper or error policy, the drop-down shows
+// "(not set)" with value "", so data-was equals what is shown and a save that
+// does not touch it sends nothing for it.
+func TestSettingsShowNotSetForAnEmptyDefault(t *testing.T) {
+	p := full()
+	p.MediaDefault, p.ErrorPolicy = "", ""
+	f := queuesFake()
+	f.printers[0] = p
+	s, h := actionServer(t, f)
+	body := get(h, "/printers/Virtual-MFC/settings").Body.String()
+	for _, id := range []string{"c-media", "c-policy"} {
+		re := regexp.MustCompile(`<select class="f" id="` + id + `" name="[a-z]+" data-was="">(<option[^>]*>[^<]*</option>)`)
+		m := re.FindStringSubmatch(body)
+		if m == nil || m[1] != `<option value="" selected>(not set)</option>` {
+			t.Errorf("%s: first option %q, want a selected (not set) with value \"\"", id, m)
+		}
+		if n := strings.Count(body, " selected>"); n != 2 {
+			t.Errorf("%d selected options, want 2", n)
+		}
+	}
+	// What the browser posts for an untouched panel plus one change.
+	form := same(p)
+	form.Set("info", "Renamed")
+	if rec := postTo(s, h, "/printers/Virtual-MFC/settings", form); rec.Code != 200 {
+		t.Fatalf("status %d, body %q", rec.Code, rec.Body.String())
+	}
+	if ch := f.modified(); len(ch) != 1 || ch[0].Media != nil || ch[0].ErrorPolicy != nil {
+		t.Errorf("Modify got %+v, want neither paper nor policy", ch)
+	}
+
+	// A set default gets no such option.
+	f.set(func(f *fakeCUPS) { f.printers[0] = full() })
+	if body := get(h, "/printers/Virtual-MFC/settings").Body.String(); strings.Contains(body, "(not set)") {
+		t.Error("a queue with defaults offers (not set)")
+	}
+}

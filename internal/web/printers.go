@@ -450,13 +450,18 @@ func segOf(group string, values []string, label func(string) string, cur string)
 }
 
 // selectOf offers the values as a drop-down. A current value that the list
-// lacks is added, so a save does not change it to the first one.
+// lacks is added, and no current value is shown as "(not set)" with value "",
+// so the drop-down shows what CUPS has and a save does not change it to the
+// first one.
 func selectOf(id, name string, values []string, label func(string) string, cur string) selView {
 	sv := selView{ID: id, Name: name}
 	if len(values) == 0 {
 		return sv
 	}
-	if cur != "" && !slices.Contains(values, cur) {
+	switch {
+	case cur == "":
+		sv.Choices = append(sv.Choices, choice{Value: "", Label: "(not set)", On: true})
+	case !slices.Contains(values, cur):
 		values = append(slices.Clone(values), cur)
 	}
 	for _, v := range values {
