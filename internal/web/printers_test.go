@@ -586,6 +586,86 @@ func TestSettingsPostRejectsWhatThePrinterDoesNotOffer(t *testing.T) {
 	}
 }
 
+// A new address in the settings goes through the same check as an address
+// that is added, so nothing refused at add time gets in through the settings.
+func TestSettingsAddressIsCheckedLikeAnAdd(t *testing.T) {
+	f := queuesFake()
+	s, h := actionServer(t, f)
+	for _, tc := range []struct{ addr, want string }{
+		{"file:///etc/passwd", badSchemeText},
+		{"file:/tmp/out", badSchemeText},
+		{"ipp://localhost:631/printers/Virtual-MFC", ownCUPSText},
+		{"ipp://127.0.0.1/printers/Virtual-MFC", ownCUPSText},
+		{"ipp://local%68ost:631/printers/x", notAddressText},
+		{"ipp://x:1?@127.0.0.1:631/printers/x", notAddressText},
+		{"ipp://a@b@printer.local/ipp/print", notAddressText},
+		{"ipp://u:secret@bad host/ipp/print", notAddressText},
+		{"ipp://127.1/ipp/print", numericText},
+	} {
+		form := same(full())
+		form.Set("address", tc.addr)
+		rec := postTo(s, h, "/printers/Virtual-MFC/settings", form)
+		if rec.Code != 400 || rec.Body.String() != tc.want {
+			t.Errorf("%s: status %d, body %q, want 400 %q", tc.addr, rec.Code, rec.Body.String(), tc.want)
+		}
+		if strings.Contains(rec.Body.String(), "secret") {
+			t.Errorf("%s: the reply holds the password: %q", tc.addr, rec.Body.String())
+		}
+	}
+	if got := f.did(); len(got) != 0 || len(f.modified()) != 0 {
+		t.Errorf("CUPS was asked %v for addresses an add refuses", got)
+	}
+	if ev := events(t, s, 10); len(ev) != 0 {
+		t.Errorf("refused addresses were logged: %+v", ev)
+	}
+
+	// A good address goes on with its scheme in lower case.
+	form := same(full())
+	form.Set("address", "IPP://printer2.local/ipp/print")
+	if rec := postTo(s, h, "/printers/Virtual-MFC/settings", form); rec.Code != 200 {
+		t.Fatalf("a good address: status %d, body %q", rec.Code, rec.Body.String())
+	}
+	if ch := f.modified(); len(ch) != 1 || ch[0].DeviceURI == nil || *ch[0].DeviceURI != "ipp://printer2.local/ipp/print" {
+		t.Errorf("Modify got %+v", ch)
+	}
+}
+
+// CUPS's error for a bad device-uri quotes the whole address. Its credentials
+// reach neither the footer nor the event store.
+func TestSettingsAddressErrorKeepsTheCredentialsOut(t *testing.T) {
+	const addr = "ipp://u:secret@bad.example/ipp/print"
+	f := queuesFake()
+	f.actErr = errors.New(`Bad device-uri "` + addr + `".`)
+	s, h := actionServer(t, f)
+	form := same(full())
+	form.Set("address", addr)
+	rec := postTo(s, h, "/printers/Virtual-MFC/settings", form)
+	if rec.Code != 502 || rec.Body.String() != `Bad device-uri "ipp://bad.example/ipp/print".` {
+		t.Errorf("status %d, body %q", rec.Code, rec.Body.String())
+	}
+	ev := lastEvent(t, s)
+	if ev.OK || strings.Contains(ev.Detail, "secret") || strings.Contains(ev.Detail, "u:") || !strings.Contains(ev.Detail, "bad.example") {
+		t.Errorf("event = %+v", ev)
+	}
+}
+
+// CUPS reports a device-uri without its user[:password]@ (cupsd keeps a
+// sanitized copy for every reply), so the field shows the address without
+// it, and a save that leaves the field as it was does not send it: the
+// stored credentials stay.
+func TestSettingsUnchangedAddressKeepsTheStoredCredentials(t *testing.T) {
+	f := queuesFake()
+	s, h := actionServer(t, f)
+	form := same(full())
+	form.Set("info", "Renamed")
+	if rec := postTo(s, h, "/printers/Virtual-MFC/settings", form); rec.Code != 200 {
+		t.Fatalf("status %d, body %q", rec.Code, rec.Body.String())
+	}
+	if ch := f.modified(); len(ch) != 1 || ch[0].DeviceURI != nil {
+		t.Errorf("Modify got %+v, want no address", ch)
+	}
+}
+
 func TestSettingsPostKeepsAPartlyBadFormFromSendingAnything(t *testing.T) {
 	f := queuesFake()
 	s, h := actionServer(t, f)

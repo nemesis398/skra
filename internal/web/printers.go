@@ -537,8 +537,6 @@ type plan struct {
 	pause  *bool
 }
 
-var addressForm = regexp.MustCompile(`(?i)^[a-z][a-z0-9+.-]*://\S+$`)
-
 // okText reports whether v can be a description or a location: one line of
 // text that fits an IPP text value.
 func okText(v string) bool {
@@ -549,7 +547,7 @@ func okText(v string) bool {
 // form leaves out stays as it is, and so does a field that has not changed.
 // Anything changed that the queue does not offer is refused, so it never
 // reaches CUPS.
-func (s *Server) planSettings(p cups.Printer, f url.Values) (plan, *refusal) {
+func (s *Server) planSettings(ctx context.Context, p cups.Printer, f url.Values) (plan, *refusal) {
 	var pl plan
 	bad := func(msg string) (plan, *refusal) { return plan{}, &refusal{http.StatusBadRequest, msg} }
 	// field returns the trimmed value of a form field when it differs from cur.
@@ -576,14 +574,19 @@ func (s *Server) planSettings(p cups.Printer, f url.Values) (plan, *refusal) {
 		pl.ch.Location = &v
 		note("location")
 	}
+	// CUPS reports the address without its user[:password]@, so an
+	// address with credentials comes back without them and the field shows
+	// it so. Left as it is, the field is not sent and the stored
+	// credentials stay; a new address goes through the checks of an add.
 	if v, ok := field("address", p.DeviceURI); ok {
-		switch {
-		case s.declared(p.Name):
+		if s.declared(p.Name) {
 			return plan{}, &refusal{http.StatusForbidden, declaredText(p.Name)}
-		case len(v) > maxText || !addressForm.MatchString(v):
-			return bad("That is not a printer address. It looks like ipp://printer.local/ipp/print.")
 		}
-		pl.ch.DeviceURI = &v
+		addr, ref := checkAddress(ctx, v)
+		if ref != nil {
+			return plan{}, ref
+		}
+		pl.ch.DeviceURI = &addr
 		note("address")
 	}
 	if f.Has("shared") {
@@ -668,16 +671,24 @@ func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request) {
 		reply(w, http.StatusBadRequest, "The form could not be read. Reload the page and try again.")
 		return
 	}
-	pl, ref := s.planSettings(p, r.PostForm)
+	pl, ref := s.planSettings(ctx, p, r.PostForm)
 	if ref != nil {
 		reply(w, ref.status, ref.msg)
 		return
 	}
 
 	var done []string
+	// An error of CUPS may quote the new address, credentials and all.
+	var addr string
+	if pl.ch.DeviceURI != nil {
+		addr = *pl.ch.DeviceURI
+	}
 	// step logs one CUPS call. When it failed, step answers for the whole save
 	// and returns false; otherwise it notes what was done.
 	step := func(event, detail, said string, err error) bool {
+		if err != nil {
+			err = errors.New(scrub(err.Error(), addr))
+		}
 		s.record(r, event, name, detail, err)
 		if err != nil {
 			s.hub.Refresh()

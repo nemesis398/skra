@@ -128,3 +128,21 @@ func TestDevicesShape(t *testing.T) {
 	}
 	t.Logf("%d devices in %v", len(devs), time.Since(start))
 }
+
+// TestAddressCredentialsAreNotReported adds a queue whose address carries a
+// user and password, and reads it back. cupsd 2.4 keeps the credentials for
+// the backend but reports the address without user[:password]@ in
+// CUPS-Get-Printers, so they never reach the page. skrá relies on that.
+func TestAddressCredentialsAreNotReported(t *testing.T) {
+	const name = "skra-test-userinfo"
+	c := testenv.Client(t)
+	ctx := ctxFor(t)
+	t.Cleanup(func() { exec.Command("podman", "exec", "skra-harness", "lpadmin", "-x", name).Run() })
+	err := c.Add(ctx, cups.AddSpec{Name: name, DeviceURI: "ipp://u:secret@printer.invalid/ipp/print", PPD: "drv:///sample.drv/generic.ppd"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := printer(t, c, name); p.DeviceURI != "ipp://printer.invalid/ipp/print" {
+		t.Errorf("device-uri = %q, want it without the credentials", p.DeviceURI)
+	}
+}
