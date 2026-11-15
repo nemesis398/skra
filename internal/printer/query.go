@@ -115,6 +115,15 @@ func newTransport(control func(network, address string, c syscall.RawConn) error
 	return t
 }
 
+// GuardedTransport is the transport of the status clients, for other clients
+// that talk to devices on the LAN: no proxy, no kept-alive connections, and a
+// dialer that never connects to this machine's CUPS. skipVerify skips the
+// certificate check, which devices with self-signed certificates need. It does
+// not stop redirects; a client sets CheckRedirect for that.
+func GuardedTransport(skipVerify bool) *http.Transport {
+	return newTransport(refuseOwnCUPS, skipVerify)
+}
+
 // interfaceAddrs lists the addresses of this machine's interfaces; a variable
 // so that a test can make it fail.
 var interfaceAddrs = net.InterfaceAddrs
