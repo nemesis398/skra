@@ -47,6 +47,14 @@ type fakeCUPS struct {
 	ppdAsked   [][2]string
 	adds       []cups.AddSpec
 	addErr     error
+
+	// The log level cupsd.conf has, what reading it answers, the levels
+	// SetLogLevel was asked for, and what it answers.
+	logLevel  string
+	logErr    error
+	setLogs   []string
+	setLogErr error
+	logReads  int
 }
 
 func (f *fakeCUPS) set(fn func(*fakeCUPS)) {

@@ -41,13 +41,33 @@ func Socket(tb testing.TB) string {
 }
 
 // Client returns a client for the harness CUPS. It skips the test when the
-// harness socket does not exist; "make integration" starts the harness.
+// harness socket does not exist; "make integration" starts the harness. The
+// test holds the restart lock shared until it ends, so a test that restarts
+// the scheduler (ExclusiveClient) waits for it and never runs beside it.
 func Client(tb testing.TB) *cups.Client {
 	tb.Helper()
 	sock := Socket(tb)
 	if _, err := os.Stat(sock); err != nil {
 		tb.Skipf("harness is not running (%s: %v); run \"make harness-up\"", sock, err)
 	}
+	lock(tb, "cupsd.lock", syscall.LOCK_SH)
+	return cups.New(sock, user)
+}
+
+// ExclusiveClient is Client for a test that makes the scheduler restart, as a
+// change of cupsd.conf does: for a moment cupsd closes and opens its socket
+// again, and a request in that moment fails. It holds the restart lock alone
+// until the test ends, so no other test of any package is using the harness
+// meanwhile, and a test that calls it must not call Client as well: its own
+// shared lock would block it. "go test ./..." runs the packages at the same
+// time, in separate processes.
+func ExclusiveClient(tb testing.TB) *cups.Client {
+	tb.Helper()
+	sock := Socket(tb)
+	if _, err := os.Stat(sock); err != nil {
+		tb.Skipf("harness is not running (%s: %v); run \"make harness-up\"", sock, err)
+	}
+	lock(tb, "cupsd.lock", syscall.LOCK_EX)
 	return cups.New(sock, user)
 }
 
@@ -58,12 +78,19 @@ func Client(tb testing.TB) *cups.Client {
 // other's scratch queue as "the default before".
 func LockDefault(tb testing.TB) {
 	tb.Helper()
-	path := filepath.Join(filepath.Dir(filepath.Dir(Socket(tb))), "default.lock") // .dev/default.lock
+	lock(tb, "default.lock", syscall.LOCK_EX)
+}
+
+// lock takes a flock on a file in .dev, shared or exclusive, and holds it
+// until the test ends.
+func lock(tb testing.TB, name string, how int) {
+	tb.Helper()
+	path := filepath.Join(filepath.Dir(filepath.Dir(Socket(tb))), name) // .dev/NAME
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		tb.Fatal(err)
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+	if err := syscall.Flock(int(f.Fd()), how); err != nil {
 		f.Close()
 		tb.Fatal(err)
 	}

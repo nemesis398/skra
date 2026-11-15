@@ -39,14 +39,20 @@ type CUPS interface {
 	Devices(ctx context.Context, timeout time.Duration) ([]cups.Device, error)
 	PPDs(ctx context.Context, deviceID, make string) ([]cups.PPD, error)
 	Add(ctx context.Context, spec cups.AddSpec) error
+
+	LogLevel(ctx context.Context) (string, error)
+	SetLogLevel(ctx context.Context, level string) error
 }
 
 var _ CUPS = (*cups.Client)(nil)
 
 // Deps are the collaborators the handlers use. Query asks one printer for its
-// live status; it may be nil, and then no printer is ever queried.
+// live status; it may be nil, and then no printer is ever queried. ReadLog
+// returns the last n lines of the CUPS journal; it may be nil, and then
+// cups.ReadLog runs journalctl. Tests set it so none of them does.
 type Deps struct {
-	CUPS  CUPS
-	Store *store.Store
-	Query func(ctx context.Context, deviceURI string) printer.Live
+	CUPS    CUPS
+	Store   *store.Store
+	Query   func(ctx context.Context, deviceURI string) printer.Live
+	ReadLog func(ctx context.Context, n int) ([]string, error)
 }
