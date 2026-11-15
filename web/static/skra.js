@@ -40,10 +40,13 @@ function showMsg() {
   el.classList.toggle("bad", m.bad);
 }
 
-function say(text, bad = false) {
+// A note goes after a few seconds, unless hold is set: that one stays until
+// the next say(), for a wait whose end is the answer.
+function say(text, bad = false, hold = false) {
   note = { text, bad };
   showMsg();
   clearTimeout(noteTimer);
+  if (hold) return;
   noteTimer = setTimeout(() => {
     note = null;
     showMsg();
@@ -175,19 +178,24 @@ function confirmBox(title, text, yes, no, restore, choices, glyph = "\u{F0156}")
 // started it is off while the request runs and on again afterwards: the poll
 // swaps a fragment only when its HTML changed, and a refused action changes
 // nothing, so the swap cannot be what turns the button back on.
-// It answers whether the server did it.
-async function send(url, body, button) {
+// sendRaw answers the Response, or null when skrá could not be reached; send
+// answers whether the server did it.
+async function sendRaw(url, body, button) {
   if (button) button.disabled = true;
   try {
     const res = await post(url, body);
     say((await res.text()).trim() || (res.ok ? "Done." : `skrá answered ${res.status}.`), !res.ok);
-    return res.ok;
+    return res;
   } catch (err) {
     say("Could not reach skrá. Is it still running?", true);
-    return false;
+    return null;
   } finally {
     if (button?.isConnected) button.disabled = false;
   }
+}
+
+async function send(url, body, button) {
+  return (await sendRaw(url, body, button))?.ok ?? false;
 }
 
 async function moveJob(b) {
@@ -216,12 +224,13 @@ async function testPage(b) {
 }
 
 document.addEventListener("click", (e) => {
-  const pick = e.target.closest("#cfg [data-pick]");
+  const pick = e.target.closest("#cfg [data-pick], #add [data-pick]");
   if (pick) {
     for (const x of pick.parentElement.children) {
       x.classList.toggle("on", x === pick);
       x.setAttribute("aria-pressed", String(x === pick));
     }
+    if (pick.parentElement.dataset.group === "driver") showDrivers(pick.dataset.pick === "choose");
     return;
   }
   const o = e.target.closest("[data-opt]");
@@ -236,6 +245,7 @@ document.addEventListener("click", (e) => {
   if (b.dataset.job) jobAction(b);
   else if (b.dataset.act === "testpage") testPage(b);
   else if (b.dataset.q) queueAction(b);
+  else addAction(b);
 });
 
 // --- the printers tab ---
@@ -339,6 +349,154 @@ async function queueAction(b) {
   }
 }
 
+
+// --- adding a printer ---
+// A search asks CUPS, which looks for as long as the button says and answers
+// when that is over, so the browser counts the seconds down meanwhile; nothing
+// runs by itself. The result is a table of devices. A device (or an address
+// typed by hand) opens the add panel, which the server renders; the panel is
+// not part of the event stream, so what is typed into it stays.
+async function search(b) {
+  const box = $("devices");
+  let left = Number(b.dataset.seconds) || 10;
+  const wait = document.createElement("div");
+  const count = document.createElement("span");
+  wait.className = "wait";
+  count.className = "cd";
+  wait.append("looking for printers \u00b7 ", count, " s");
+  const show = () => (count.textContent = String(left));
+  show();
+  box.replaceChildren(wait);
+  b.disabled = true;
+  const tick = setInterval(() => {
+    left = Math.max(0, left - 1);
+    show();
+  }, 1000);
+  try {
+    const res = await post("/printers/search");
+    const text = await res.text();
+    if (res.ok) {
+      box.innerHTML = text;
+    } else {
+      box.replaceChildren();
+      say(text.trim() || `skrá answered ${res.status}.`, true);
+    }
+  } catch (err) {
+    box.replaceChildren();
+    say("Could not reach skrá. Is it still running?", true);
+  } finally {
+    clearInterval(tick);
+    if (b.isConnected) b.disabled = false;
+  }
+}
+
+async function openAdd(device, info, model, id) {
+  const slot = $("add-panel");
+  if (!slot) return;
+  const query = new URLSearchParams({ uri: device, info, model, id });
+  try {
+    const res = await fetch(`/printers/new?${query}`, { cache: "no-store" });
+    const text = await res.text();
+    if (!res.ok) {
+      say(text.trim() || `skrá answered ${res.status}.`, true);
+      return;
+    }
+    slot.innerHTML = text;
+    if (!$("ppd-row").hidden) loadDrivers();
+    $("a-name").focus();
+  } catch (err) {
+    say("Could not reach skrá. Is it still running?", true);
+  }
+}
+
+// The driver list is loaded when it is first shown and again when the maker
+// changes. An answer that comes after a newer question is dropped.
+let driversAsked = 0;
+
+async function loadDrivers() {
+  const list = $("ppd-list");
+  if (!list) return;
+  const mine = ++driversAsked;
+  const query = new URLSearchParams({ id: document.querySelector('#add input[name="id"]').value, make: $("a-make").value.trim() });
+  const wait = document.createElement("span");
+  wait.className = "wait";
+  wait.textContent = "loading the drivers CUPS has";
+  list.replaceChildren(wait);
+  let html;
+  try {
+    const res = await fetch(`/printers/drivers?${query}`, { cache: "no-store" });
+    const text = await res.text();
+    if (mine !== driversAsked) return;
+    if (!res.ok) {
+      wait.textContent = `could not list drivers: ${text.trim() || res.status}`;
+      return;
+    }
+    html = text;
+  } catch (err) {
+    if (mine === driversAsked) wait.textContent = "could not list drivers: skrá does not answer";
+    return;
+  }
+  list.innerHTML = html;
+}
+
+function showDrivers(on) {
+  const row = $("ppd-row");
+  if (!row) return;
+  const first = row.hidden && on && !$("ppd-list").firstChild;
+  row.hidden = !on;
+  if (first) loadDrivers();
+}
+
+document.addEventListener("change", (e) => {
+  if (e.target.id === "a-make") loadDrivers();
+});
+
+// addForm reads every field of the add panel: the fields by name and the
+// button rows by group.
+function addForm(root) {
+  const form = new URLSearchParams();
+  for (const el of root.querySelectorAll("input[name], select[name]")) form.set(el.name, el.value);
+  for (const g of root.querySelectorAll("[data-group]")) {
+    const on = g.querySelector("button.on");
+    if (on) form.set(g.dataset.group, on.dataset.pick);
+  }
+  return form;
+}
+
+async function createPrinter(b) {
+  const root = $("add");
+  if (!root) return;
+  const form = addForm(root);
+  const name = form.get("name").trim();
+  say(form.get("driver") === "everywhere"
+    ? `Adding ${name}: CUPS asks the printer what it can do, this takes a few seconds.`
+    : `Adding ${name}.`, false, true);
+  const res = await sendRaw("/printers/add", form, b);
+  // The queue exists after a success, and after a failure that says so.
+  if (res && (res.ok || res.headers.get("X-Skra-Added") === "true")) $("add-panel")?.replaceChildren();
+}
+
+function addAction(b) {
+  switch (b.dataset.act) {
+    case "search":
+      return search(b);
+    case "add-device":
+      return openAdd(b.dataset.device, b.dataset.info, b.dataset.model, b.dataset.id);
+    case "add-manual": {
+      const uri = $("manual-uri").value.trim();
+      if (!uri) {
+        say("Type the printer's address first. It looks like ipp://printer.local/ipp/print.", true);
+        return;
+      }
+      return openAdd(uri, "", "", "");
+    }
+    case "cancel-add":
+      $("add-panel").replaceChildren();
+      return;
+    case "create":
+      return createPrinter(b);
+  }
+}
 
 // --- printing a file ---
 // The choices live in the #opts fragment as JSON; what was picked stays here

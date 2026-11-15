@@ -5,6 +5,7 @@ package web
 import (
 	"context"
 	"io"
+	"time"
 
 	"github.com/nemesis398/skra/internal/cups"
 	"github.com/nemesis398/skra/internal/printer"
@@ -34,6 +35,10 @@ type CUPS interface {
 	CancelAll(ctx context.Context, name string) error
 	MoveAll(ctx context.Context, from, to string) error
 	Command(ctx context.Context, printer, command string) (int, error)
+
+	Devices(ctx context.Context, timeout time.Duration) ([]cups.Device, error)
+	PPDs(ctx context.Context, deviceID, make string) ([]cups.PPD, error)
+	Add(ctx context.Context, spec cups.AddSpec) error
 }
 
 var _ CUPS = (*cups.Client)(nil)

@@ -125,6 +125,9 @@ td.flags { color:var(--sub0); }
 select.f option { background:var(--mantle); color:var(--text); }
 .panel .row { display:flex; gap:2px; justify-content:flex-end; margin-top:0.769rem; }
 .wait { color:var(--sub0); padding:0.615rem 1.846rem; }
+.frow .wait { padding:0; }
+/* the countdown of a search keeps its width from 10 to 0 */
+.cd { display:inline-block; min-width:2ch; text-align:right; }
 
 @media (max-width: 760px) {
   .frow { grid-template-columns:1fr; gap:0.231rem; }

@@ -1,7 +1,19 @@
-{{/* The printers tab: the queue table (fragments.html), and under it the
-     settings of one queue, which skra.js loads from /printers/{name}/settings. */}}
+{{/* The printers tab: the queue table (fragments.html), under it the settings
+     of one queue, which skra.js loads from /printers/{name}/settings, and
+     under that the way to add a queue. */}}
 {{define "printerspage"}}{{template "queues" .}}
-<div id="panel"></div>{{end}}
+<div id="panel"></div>
+<div class="sec"><b>add a printer</b><span class="rule"></span></div>
+<div class="head-acts">
+  <button type="button" class="btn" data-act="search" data-seconds="10"><i>&#xF0349;</i>find printers on the network and USB</button>
+</div>
+<div id="devices"></div>
+<div class="panel">
+  <div class="frow"><label class="k" for="manual-uri">or enter an address</label>
+    <span><input class="f" id="manual-uri" placeholder="ipp://printer.local/ipp/print" spellcheck="false"></span>
+    <span><button type="button" class="btn sm" data-act="add-manual"><i>&#xF0415;</i>add</button></span></div>
+</div>
+<div id="add-panel"></div>{{end}}
 
 {{define "seg"}}<div class="seg" role="group" data-group="{{.Group}}" data-was="{{range .Choices}}{{if .On}}{{.Value}}{{end}}{{end}}">{{range .Choices}}<button type="button"{{if .On}} class="on"{{end}} data-pick="{{.Value}}" aria-pressed="{{.On}}">{{.Label}}</button>{{end}}</div>{{end}}
 
@@ -28,3 +40,41 @@
   <div class="row"><button type="button" class="btn" data-act="close" data-q="{{.Name}}">close</button><button type="button" class="btn" data-act="save" data-q="{{.Name}}"><i>&#xF0193;</i>save changes</button></div>
   {{if .Commands}}<div class="frow"><span class="k">maintenance</span><span class="btns">{{range .Commands}}<button type="button" class="btn sm" data-act="command" data-q="{{$.Name}}" data-command="{{.Name}}"{{if .ConfirmText}} data-keep="{{.Keep}}" data-confirm-title="{{.ConfirmTitle}}" data-confirm="{{.ConfirmText}}" data-confirm-label="{{.ConfirmLabel}}"{{end}}><i>&#xF05B7;</i>{{.Label}}</button>{{end}}</span><span class="hint">sent to the printer as a job</span></div>{{end}}
 </div>{{end}}
+
+
+{{/* The result of a search. The buttons carry what the add panel is asked
+     for: the address, the description, the model and the IEEE 1284 id. The
+     address is not in data-uri: html/template reads that as a link and
+     blanks a dnssd: one. */}}
+{{define "devices"}}{{if .}}<table class="q">
+  <colgroup><col><col><col class="c-pr"><col class="c-st"><col class="c-a"></colgroup>
+  <thead><tr><th>printer</th><th>model</th><th>connection</th><th>queue</th><th></th></tr></thead>
+  <tbody>
+{{range .}}  <tr><td class="jn" title="{{.URI}}">{{.Name}}</td><td class="jp">{{.Model}}</td><td class="jp">{{.Conn}}</td><td{{if .Has}} class="off"{{end}}>{{if .Has}}has a queue · {{.Queue}}{{else}}none yet{{end}}</td><td class="ja"><button type="button" class="btn sm" data-act="add-device" data-device="{{.URI}}" data-info="{{.Info}}" data-model="{{.Model}}" data-id="{{.ID}}"><i>&#xF0415;</i>{{if .Has}}add again{{else}}add{{end}}</button></td></tr>
+{{end}}  </tbody>
+</table>
+{{else}}<div class="empty">No printer answered. Check that it is on and on this network, or enter its address below.</div>
+{{end}}{{end}}
+
+{{/* The add panel. Every field is named like its form field; skra.js posts
+     them all. The driver list is loaded when it is first shown. */}}
+{{define "addpanel"}}<div class="panel" id="add">
+  <h3>add {{.Title}}<span>{{.URI}}</span></h3>
+  <input type="hidden" name="address" value="{{.URI}}"><input type="hidden" name="id" value="{{.ID}}">
+  <div class="frow"><label class="k" for="a-name">queue name</label><span><input class="f" id="a-name" name="name" value="{{.Name}}" spellcheck="false"></span><span class="hint">letters, digits, . - _</span></div>
+  <div class="frow"><label class="k" for="a-info">description</label><span><input class="f" id="a-info" name="info" value="{{.Info}}"></span><span class="hint">the name shown everywhere</span></div>
+  <div class="frow"><label class="k" for="a-loc">location</label><span><input class="f" id="a-loc" name="location" value=""></span><span class="hint"></span></div>
+  <div class="frow"><span class="k">driver</span><span>{{template "seg" .Driver}}</span><span class="hint">{{.DriverHint}}</span></div>
+  <div id="ppd-row"{{if not .Choose}} hidden{{end}}>
+    <div class="frow"><label class="k" for="a-make">maker</label><span><input class="f" id="a-make" name="make" value="{{.Make}}" spellcheck="false"></span><span class="hint">narrows the list of drivers</span></div>
+    <div id="ppd-list"></div>
+  </div>
+  <div class="frow"><span class="k">shared on the network</span><span>{{template "seg" .Shared}}</span><span class="hint">only matters when CUPS listens beyond localhost</span></div>
+  <div class="frow"><span class="k">default printer</span><span>{{template "seg" .Default}}</span><span class="hint"></span></div>
+  <div class="row"><button type="button" class="btn" data-act="cancel-add">cancel</button><button type="button" class="btn" data-act="create"><i>&#xF0415;</i>add printer</button></div>
+</div>{{end}}
+
+{{/* The row of the add panel that lists drivers, or says why it does not. */}}
+{{define "drivers"}}{{if .Choices}}<div class="frow"><label class="k" for="a-ppd">driver</label><span><select class="f" id="a-ppd" name="ppd">{{range .Choices}}<option value="{{.Value}}">{{.Label}}</option>{{end}}</select></span><span class="hint">{{.Hint}}</span></div>
+{{else}}<div class="frow"><span class="k">driver</span><span class="wait">{{.Message}}</span><span class="hint"></span></div>
+{{end}}{{end}}

@@ -35,6 +35,18 @@ type fakeCUPS struct {
 	changes []cups.Changes // what Modify was asked, in order
 	printed int
 	print   func(printer, name, format string, o cups.JobOptions, doc io.Reader) (int, error)
+
+	// Adding printers: what the search finds (and the timeout it was given and
+	// the time its context had left), the drivers by device id and maker, and
+	// the queues Add was asked for.
+	devices    []cups.Device
+	devErr     error
+	devTimeout time.Duration
+	devLeft    time.Duration
+	ppdsFn     func(id, make string) ([]cups.PPD, error)
+	ppdAsked   [][2]string
+	adds       []cups.AddSpec
+	addErr     error
 }
 
 func (f *fakeCUPS) set(fn func(*fakeCUPS)) {
