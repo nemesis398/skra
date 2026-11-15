@@ -185,6 +185,9 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 
 	sent := map[string]string{} // per connection: what this tab shows now
 	page := r.URL.Query().Get("page")
+	if page == "scan" {
+		s.keptScans() // a fresh process has not drawn the Scan tab yet
+	}
 	for snap := range s.hub.Subscribe(r.Context()) {
 		for _, f := range s.fragmentsFor(page, snap) {
 			if sent[f.event] == f.html {

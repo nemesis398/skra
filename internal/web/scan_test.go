@@ -1003,6 +1003,37 @@ func TestUnsavedScanComesBack(t *testing.T) {
 	}
 }
 
+// A Scan page left open across an idle exit connects again to a fresh
+// process, which has not drawn the Scan tab. Its first scan fragment still
+// holds the scan kept from before, with its pages, and says it does not run,
+// so the page shows it as kept and not as scanning.
+func TestEventsShowAKeptScanAfterARestart(t *testing.T) {
+	rig, _ := newSaveRig(t, nil)
+	dir := t.TempDir()
+	before, err := scan.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept := addPages(t, before, rig.url, 2)
+	after, err := scan.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := restartWith(rig, after)
+	t.Cleanup(s.stopScans)
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+
+	ev := openEventsAt(t, ts, "/events?page=scan")
+	got := scanEvent(t, ev, "")
+	if !strings.Contains(got, `data-session="`+kept.ID+`" data-running="false" data-gone="false"`) {
+		t.Errorf("the first scan fragment lacks the kept scan, not running:\n%s", got)
+	}
+	if n := strings.Count(got, `class="pg"`); n != 2 {
+		t.Errorf("the first scan fragment shows %d pages, want 2:\n%s", n, got)
+	}
+}
+
 // Another site cannot read a scanned page, not even as a picture of its own.
 func TestPagesAreNotForOtherSites(t *testing.T) {
 	rig, _ := newSaveRig(t, nil)

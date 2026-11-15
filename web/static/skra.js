@@ -78,7 +78,10 @@ function connect() {
   for (const id of slots) {
     source.addEventListener(id, (e) => swap(id, e.data));
   }
-  if (page === "scan") source.addEventListener("scan", (e) => scanEvent(e.data));
+  if (page === "scan") {
+    source.addEventListener("open", () => (scanFresh = true));
+    source.addEventListener("scan", (e) => scanEvent(e.data));
+  }
   // The browser reconnects on its own, and the server then sends everything
   // again; until it does, say so instead of showing stale numbers quietly.
   source.onerror = () => {
@@ -674,6 +677,7 @@ let scanFormAsked = 0;
 let scanPathAsked = 0;
 let scanPathFor = "";
 let scanHeld = false; // a save or discard of the shown scan is on its way
+let scanFresh = false; // the stream connected and has sent no scan fragment yet
 const scanEmpty = $("scan-job")?.innerHTML ?? "";
 
 const scanButton = (which) => document.querySelector(`button[data-scan="${which}"]`);
@@ -820,19 +824,26 @@ async function startScan(b) {
 
 function scanEvent(html) {
   lastScans = html;
-  showScans();
+  const fresh = scanFresh;
+  scanFresh = false;
+  showScans(fresh);
 }
 
-function showScans() {
+// showScans draws the shown scan from the last scan fragment. fresh says the
+// fragment is the first on a stream that just connected, perhaps to a new
+// process after an idle exit, which lists every scan that is kept or runs.
+function showScans(fresh = false) {
   const t = document.createElement("template");
   t.innerHTML = lastScans;
   const jobs = [...t.content.querySelectorAll(".scanjob")];
   if (!scanSession) scanSession = jobs.findLast((j) => j.dataset.running === "true")?.dataset.session ?? "";
   const mine = jobs.find((j) => j.dataset.session === scanSession);
   if (!mine) {
-    // Saved or discarded in another tab. A scan just started may not be
-    // in the list yet, and it runs.
-    if (scanSession && !scanRunning && $("scan-job").querySelector(".scanjob")) forgetScan();
+    // Saved or discarded in another tab, or ended with no page while the
+    // page was hidden and gone with the process. A scan just started may
+    // not be in the list yet, and it runs, so it stays; on a stream that
+    // just connected it goes, and the next fragment brings it back.
+    if (scanSession && (fresh || !scanRunning) && $("scan-job").querySelector(".scanjob")) forgetScan();
     return;
   }
   $("scan-job").replaceChildren(mine);

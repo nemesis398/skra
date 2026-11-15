@@ -723,23 +723,38 @@ type unsavedView struct {
 
 // scanPage is the Scan tab's own part. It lists the scans that wait to be
 // saved and offers each to continue, which it can because each is then in
-// the event stream's scan fragment. A scan with no page from an earlier
-// process, as a crash leaves one, goes without a word; one that runs is the
-// page's to adopt, and is not offered.
+// the event stream's scan fragment.
 func (s *Server) scanPage() *scanPageView {
 	v := &scanPageView{
 		Folder: homeShort(s.cfg.ScanFolder) + "/",
 		Format: segFirst("format", slices.Clone(saveFormats), "pdf"),
 	}
+	now := s.now()
+	for _, sess := range s.keptScans() {
+		n := len(sess.PageList())
+		v.Unsaved = append(v.Unsaved, unsavedView{ID: sess.ID, From: scanFrom(sess.Created, now),
+			Pages: plural(n, "page", "pages"), Count: n})
+	}
+	return v
+}
+
+// keptScans takes the scans with pages that the store keeps into this
+// process's scans, so the scan fragment draws them, and returns them oldest
+// first. A page open across an idle exit needs them before it has drawn the
+// Scan tab again, so a scan event stream takes them too when it connects. A
+// scan with no page from an earlier process, as a crash leaves one, goes
+// without a word; one that runs or is held is the page's to adopt, and is
+// not returned.
+func (s *Server) keptScans() []*scan.Session {
 	if s.deps.Scans == nil {
-		return v
+		return nil
 	}
 	list, err := s.deps.Scans.List()
 	if err != nil {
 		log.Printf("skra: listing the scans: %v", err)
-		return v
+		return nil
 	}
-	now := s.now()
+	var out []*scan.Session
 	for _, sess := range list {
 		n := len(sess.PageList())
 		s.scanMu.Lock()
@@ -758,10 +773,9 @@ func (s *Server) scanPage() *scanPageView {
 			continue
 		}
 		s.adopt(sess)
-		v.Unsaved = append(v.Unsaved, unsavedView{ID: sess.ID, From: scanFrom(sess.Created, now),
-			Pages: plural(n, "page", "pages"), Count: n})
+		out = append(out, sess)
 	}
-	return v
+	return out
 }
 
 // scanFrom says when a scan began: the time on the day of now, or the day
