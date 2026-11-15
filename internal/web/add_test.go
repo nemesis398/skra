@@ -245,10 +245,10 @@ func TestAddChecksTheAddress(t *testing.T) {
 		}
 	})
 	for _, addr := range []string{
-		"ipp://neu.local:631/ipp/print", "ipps://neu.local/ipp/print", "http://10.0.0.7:631/ipp/print", "https://neu.local/ipp/print",
+		"ipp://neu.local:631/ipp/print", "ipps://neu.local/ipp/print", "http://192.0.2.7:631/ipp/print", "https://neu.local/ipp/print",
 		"dnssd://Brother%20DCP-L2530DW._ipp._tcp.local./?uuid=1", "dnssd://Fu%C3%9Fball._ipp._tcp.local./",
-		"IPP://neu.local/ipp/print", "ipp://localhost:8631/ipp/print", "ipp://[fe80::1]:631/ipp/print",
-		"ipp://[fe80::1%25eth0]:631/ipp/print", "ipp://3com.local/ipp/print", "ipp://192.168.1.5/ipp/print", "http://localhost:8631/ipp/print",
+		"IPP://neu.local/ipp/print", "ipp://localhost:8631/ipp/print", "ipp://[2001:db8::1]:631/ipp/print",
+		"ipp://[2001:db8::1%25eth0]:631/ipp/print", "ipp://3com.local/ipp/print", "ipp://192.0.2.5/ipp/print", "http://localhost:8631/ipp/print",
 		"ipps://localhost:443/ipp/print", "ipp://user:p%40ss@neu.local/ipp/print", "ipp://neu.local/ipp%2Fprint?a=%C3%BC",
 		"ipp://xn--drucker-fr-alle-4ob.local/ipp/print",
 		"ipp://neu.local/ipp/print?a=b#c", "ipp://u:pass@neu.local/ipp/print", "ipp://neu.local/a@b@c", "ipp://neu.local:631/x?y=@z", "ipp://neu.local/ipp#@127.0.0.1:631",
@@ -819,7 +819,7 @@ func TestAddRefusesANameThatPointsAtThisMachinesCUPS(t *testing.T) {
 func TestAddLooksNoNameUpWhereItCannotMatter(t *testing.T) {
 	s, h := actionServer(t, queuesFake())
 	lookups.Store(0)
-	for _, addr := range []string{"dnssd://Neu._ipp._tcp.local./", "usb://Brother/HL?serial=1", "ipp://10.0.0.7/ipp/print", "ipp://[fe80::1]/ipp/print"} {
+	for _, addr := range []string{"dnssd://Neu._ipp._tcp.local./", "usb://Brother/HL?serial=1", "ipp://192.0.2.7/ipp/print", "ipp://[2001:db8::1]/ipp/print"} {
 		get(h, "/printers/new?uri="+url.QueryEscape(addr))
 	}
 	if n := lookups.Load(); n != 0 {
