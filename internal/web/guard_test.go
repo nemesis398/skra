@@ -75,9 +75,12 @@ func TestGuard(t *testing.T) {
 	}
 }
 
+// tokenForm is a token: 32 bytes as unpadded base64url.
+var tokenForm = regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`)
+
 func TestNewToken(t *testing.T) {
 	a, b := NewToken(), NewToken()
-	if !regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`).MatchString(a) {
+	if !tokenForm.MatchString(a) {
 		t.Errorf("token %q is not 32 bytes of base64url", a)
 	}
 	if a == b {
@@ -106,7 +109,7 @@ func TestLoadTokenMakesOneAndKeepsIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`).MatchString(a) {
+	if !tokenForm.MatchString(a) {
 		t.Errorf("token %q is not 32 bytes of base64url", a)
 	}
 	fi, err := os.Stat(filepath.Join(dir, "token"))
