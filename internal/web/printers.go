@@ -484,31 +484,25 @@ func (s *Server) settingsPanel(w http.ResponseWriter, r *http.Request) {
 
 func settingsFor(p cups.Printer, declared bool) settingsView {
 	paused := p.State == 5
+	var quality []string
+	for _, v := range p.QualitySupported {
+		quality = append(quality, strconv.Itoa(v))
+	}
 	sv := settingsView{
 		Name: p.Name, Title: p.Info, Info: p.Info, Location: p.Location, Address: p.DeviceURI,
 		AddressHint: connection(p.DeviceURI), Declared: declared,
-		State:  segOf("state", []string{"running", "paused"}, ident, pick(paused, "paused", "running")),
-		Accept: segOf("accept", []string{"accepted", "rejected"}, ident, pick(p.Accepting, "accepted", "rejected")),
-		Shared: segOf("shared", []string{"no", "yes"}, ident, pick(p.Shared, "yes", "no")),
-		Sides:  segOf("sides", p.SidesSupported, sidesWords.Replace, p.SidesDefault),
-		Color:  segOf("color", p.ColorSupported, colorLabel, p.ColorDefault),
-		Media:  selectOf("c-media", "media", slices.DeleteFunc(slices.Clone(p.MediaSupported), func(m string) bool { return strings.HasPrefix(m, "custom_") }), mediaLabel, p.MediaDefault),
-		Policy: selectOf("c-policy", "policy", p.ErrorPolicies, policyLabel, p.ErrorPolicy),
+		State:   segOf("state", []string{"running", "paused"}, ident, pick(paused, "paused", "running")),
+		Accept:  segOf("accept", []string{"accepted", "rejected"}, ident, pick(p.Accepting, "accepted", "rejected")),
+		Shared:  segOf("shared", []string{"no", "yes"}, ident, pick(p.Shared, "yes", "no")),
+		Sides:   segOf("sides", p.SidesSupported, sidesWords.Replace, p.SidesDefault),
+		Color:   segOf("color", p.ColorSupported, colorLabel, p.ColorDefault),
+		Quality: segOf("quality", quality, qualityLabel, strconv.Itoa(p.QualityDefault)),
+		Media:   selectOf("c-media", "media", slices.DeleteFunc(slices.Clone(p.MediaSupported), func(m string) bool { return strings.HasPrefix(m, "custom_") }), mediaLabel, p.MediaDefault),
+		Policy:  selectOf("c-policy", "policy", p.ErrorPolicies, policyLabel, p.ErrorPolicy),
 	}
 	if sv.Title == "" {
 		sv.Title = p.Name
 	}
-	var q []string
-	for _, v := range p.QualitySupported {
-		q = append(q, strconv.Itoa(v))
-	}
-	sv.Quality = segOf("quality", q, func(v string) string {
-		if n, err := strconv.Atoi(v); err == nil && qualityLabels[n] != "" {
-			return qualityLabels[n]
-		}
-		return v
-	}, strconv.Itoa(p.QualityDefault))
-
 	for _, c := range p.Commands {
 		cv := commandView{Name: c, Label: commandLabel(c)}
 		if c == "Clean" {
@@ -518,6 +512,13 @@ func settingsFor(p cups.Printer, declared bool) settingsView {
 		sv.Commands = append(sv.Commands, cv)
 	}
 	return sv
+}
+
+func qualityLabel(v string) string {
+	if n, err := strconv.Atoi(v); err == nil && qualityLabels[n] != "" {
+		return qualityLabels[n]
+	}
+	return v
 }
 
 func policyLabel(p string) string {
