@@ -1,5 +1,7 @@
 # skrá
 
+[![License: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-cba6f7?style=flat-square&labelColor=313244)](LICENSE)
+
 A small web service that replaces the CUPS web interface on a Linux laptop. It
 shows your printers with live ink levels, prints a file you drop on the page,
 manages the queue, adds and configures printers, and reads the CUPS log. It
@@ -143,4 +145,4 @@ ends the process.
 
 ## 📄 License
 
-AGPL-3.0-or-later.
+The code is licensed under [AGPL-3.0-or-later](LICENSE).
