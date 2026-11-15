@@ -101,6 +101,7 @@ func TestLogLevelNeedsThePassword(t *testing.T) {
 	if orig == "debug" {
 		want = "info"
 	}
+	// Only the unit fake isolates the PUT_RECV rule: here the PeerCred name also mismatches the root peer.
 	admin := testenv.ClientAs(t, testenv.Admin)
 	for _, tc := range []struct {
 		name     string

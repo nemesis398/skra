@@ -17,9 +17,6 @@ const logLines = 200
 
 const managedText = "cupsd.conf is managed by the system configuration."
 
-// maxPassword is the longest password the level switch takes, in bytes.
-const maxPassword = 1024
-
 // logLevels are the levels the switch offers, in the order it shows them.
 var logLevels = []string{"warn", "info", "debug"}
 
@@ -128,8 +125,8 @@ func (s *Server) setLogLevel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	password := r.PostFormValue("password")
-	if len(password) > maxPassword {
-		reply(w, http.StatusBadRequest, "The password is longer than 1024 bytes.")
+	if err := cups.CheckPassword(s.cfg.User, password); err != nil {
+		reply(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), actionTimeout)

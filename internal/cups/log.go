@@ -59,8 +59,11 @@ const (
 	// maxDrain caps what is read of CUPS's answer to a PUT, which is a short
 	// status page.
 	maxDrain = 64 << 10
-	// maxPassword is the longest password SetLogLevel sends.
-	maxPassword = 1024
+	// maxBasic is the most of "user:password" that CUPS reads from a Basic
+	// login: cupsdAuthorize (scheduler/auth.c) decodes it into a buffer of
+	// HTTP_MAX_VALUE, 256 bytes with the closing NUL. A longer one reaches
+	// PAM cut short and fails like a wrong password.
+	maxBasic = 255
 )
 
 // The journal read is a variable each, so tests can lower or replace them.
@@ -313,6 +316,27 @@ func (c *Client) LogLevel(ctx context.Context) (string, error) {
 	return parseLogLevel(conf), nil
 }
 
+// MaxPassword is the longest password, in bytes, that CUPS reads whole in a
+// Basic login of user.
+func MaxPassword(user string) int {
+	return max(maxBasic-len(user)-1, 0)
+}
+
+// CheckPassword says why a Basic login of user with password cannot work, or
+// answers nil. An empty password is always fine: SetLogLevel then sends
+// PeerCred. The error never carries the password.
+func CheckPassword(user, password string) error {
+	switch {
+	case password == "":
+		return nil
+	case strings.Contains(user, ":"):
+		return errors.New("the user name has a colon, which a Basic login cannot carry")
+	case len(password) > MaxPassword(user):
+		return fmt.Errorf("The password is longer than CUPS accepts (at most %d bytes for this user). Use cupsctl in a terminal instead.", MaxPassword(user))
+	}
+	return nil
+}
+
 // SetLogLevel sets the LogLevel of cupsd.conf to warn, info or debug through
 // CUPS itself. Only the LogLevel line changes. A level that is set already is
 // not written, so the scheduler does not restart for nothing.
@@ -320,8 +344,8 @@ func (c *Client) LogLevel(ctx context.Context) (string, error) {
 // cupsd.conf is read with PeerCred. The PUT goes with PeerCred when password
 // is empty, which CUPS takes from root alone, and otherwise with Basic and
 // the configured user and password; the password is sent with that one
-// request and kept nowhere. A refusal is ErrNeedsPassword, ErrWrongPassword
-// or ErrNotSystemGroup.
+// request and kept nowhere. A password CheckPassword refuses is not sent. A
+// refusal by CUPS is ErrNeedsPassword, ErrWrongPassword or ErrNotSystemGroup.
 //
 // After the PUT it waits until CUPS reports the level with no job printing,
 // which is when CUPS has reloaded or reloads at once. It answers ErrNotBack
@@ -333,11 +357,8 @@ func (c *Client) SetLogLevel(ctx context.Context, level, password string) error 
 	default:
 		return fmt.Errorf("%q is not a log level: use warn, info or debug", level)
 	}
-	if len(password) > maxPassword {
-		return errors.New("the password is longer than 1024 bytes")
-	}
-	if password != "" && strings.Contains(c.user, ":") {
-		return errors.New("the user name has a colon, which a Basic login cannot carry")
+	if err := CheckPassword(c.user, password); err != nil {
+		return err
 	}
 	conf, err := c.readConf(ctx)
 	if err != nil {

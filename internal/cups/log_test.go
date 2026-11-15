@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os/exec"
@@ -453,6 +454,35 @@ func TestNotInSystemGroup(t *testing.T) {
 	}
 	if cs.conf != "LogLevel warn\n" {
 		t.Errorf("conf %q", cs.conf)
+	}
+}
+
+func TestCheckPassword(t *testing.T) {
+	for _, tc := range []struct {
+		user, password, want string
+	}{
+		{"mika", strings.Repeat("p", 250), ""},
+		{"mika", strings.Repeat("p", 251), "The password is longer than CUPS accepts (at most 250 bytes for this user). Use cupsctl in a terminal instead."},
+		{"root", "", ""},
+		{"mi:ka", "", ""},
+		{"mi:ka", testPassword, "the user name has a colon, which a Basic login cannot carry"},
+		{strings.Repeat("u", 300), "p", "The password is longer than CUPS accepts (at most 0 bytes for this user). Use cupsctl in a terminal instead."},
+	} {
+		err := CheckPassword(tc.user, tc.password)
+		if got := fmt.Sprint(err); (tc.want == "" && err != nil) || (tc.want != "" && got != tc.want) {
+			t.Errorf("CheckPassword(%d-byte user, %d bytes) = %v, want %q", len(tc.user), len(tc.password), err, tc.want)
+		}
+	}
+	if n := MaxPassword("mika"); n != 250 {
+		t.Errorf("MaxPassword(mika) = %d", n)
+	}
+}
+
+func TestSetLogLevelRefusesALongPassword(t *testing.T) {
+	cs := &confServer{conf: "LogLevel warn\n"}
+	err := New(fake(t, cs.handler), "mika").SetLogLevel(context.Background(), "debug", strings.Repeat("p", 251))
+	if err == nil || !strings.Contains(err.Error(), "at most 250 bytes") || len(cs.auths) != 0 {
+		t.Errorf("err = %v, requests %q", err, cs.auths)
 	}
 }
 

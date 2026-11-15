@@ -332,37 +332,66 @@ func TestSetLogLevelFailures(t *testing.T) {
 const testPassword = "hunter2-skra"
 
 // The password goes to CUPS and nowhere else: not into the answer, the
-// history, the log or the page, whatever CUPS says.
+// history, the log or the page, whatever CUPS says, and also not when skrá
+// refuses the request before CUPS sees it.
 func TestPasswordNeverStored(t *testing.T) {
 	var logged strings.Builder
 	oldOut, oldFlags := log.Writer(), log.Flags()
 	log.SetOutput(&logged)
 	t.Cleanup(func() { log.SetOutput(oldOut); log.SetFlags(oldFlags) })
 
+	tooLong := testPassword + strings.Repeat("x", 300)
 	for _, tc := range []struct {
-		name string
-		err  error
-		code int
+		name     string
+		password string
+		noToken  bool
+		readErr  error // what reading the old level answers
+		err      error // what SetLogLevel answers
+		code     int
+		body     string
+		toCUPS   bool   // CUPS gets the password
+		detail   string // the history row, or "" for none
 	}{
-		{"success", nil, 200},
-		{"wrong password", cups.ErrWrongPassword, 502},
-		{"not in the system group", cups.ErrNotSystemGroup, 502},
-		{"no password", cups.ErrNeedsPassword, 502},
-		{"not back", cups.ErrNotBack, 502},
-		{"reload waits", cups.ErrReloadWaits, 200},
-		{"other", errors.New("CUPS answered HTTP 500"), 502},
+		{name: "success", code: 200, body: "Debug logging is on.", toCUPS: true, detail: "warn → debug"},
+		{name: "wrong password", err: cups.ErrWrongPassword, code: 502, toCUPS: true, detail: "warn → debug: "},
+		{name: "not in the system group", err: cups.ErrNotSystemGroup, code: 502, toCUPS: true, detail: "warn → debug: "},
+		{name: "no password", err: cups.ErrNeedsPassword, code: 502, toCUPS: true, detail: "warn → debug: "},
+		{name: "not back", err: cups.ErrNotBack, code: 502, toCUPS: true, detail: "warn → debug: "},
+		{name: "reload waits", err: cups.ErrReloadWaits, code: 200, toCUPS: true, detail: "warn → debug"},
+		{name: "other", err: errors.New("CUPS answered HTTP 500"), code: 502, toCUPS: true, detail: "warn → debug: "},
+		{name: "the level cannot be read", readErr: errors.New("CUPS does not answer: gone"), code: 502,
+			body: "CUPS does not answer: gone", detail: "? → debug: CUPS does not answer: gone"},
+		{name: "too long", password: tooLong, code: 400,
+			body: "The password is longer than CUPS accepts (at most 250 bytes for this user). Use cupsctl in a terminal instead."},
+		{name: "no token", noToken: true, code: 403},
 	} {
-		f := &fakeCUPS{logLevel: "warn", setLogErr: tc.err}
+		password := tc.password
+		if password == "" {
+			password = testPassword
+		}
+		f := &fakeCUPS{logLevel: "warn", logErr: tc.readErr, setLogErr: tc.err}
 		s, h := logServer(t, f, &journal{lines: sampleLog}, false)
-		rec := postTo(s, h, "/printers/log/level", url.Values{"level": {"debug"}, "password": {testPassword}})
+		form := url.Values{"level": {"debug"}, "password": {password}}
+		var rec *httptest.ResponseRecorder
+		if tc.noToken {
+			req := httptest.NewRequest("POST", "/printers/log/level", strings.NewReader(form.Encode()))
+			req.Host = "127.0.0.1:7631"
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			rec = httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+		} else {
+			rec = postTo(s, h, "/printers/log/level", form)
+		}
 		body := rec.Body.String()
-		if rec.Code != tc.code {
-			t.Errorf("%s: status %d, body %q", tc.name, rec.Code, body)
+		want := tc.body
+		if want == "" && tc.err != nil {
+			want = tc.err.Error()
 		}
-		if tc.err != nil && body != tc.err.Error() {
-			t.Errorf("%s: body %q, want %q", tc.name, body, tc.err.Error())
+		if rec.Code != tc.code || (want != "" && body != want) {
+			t.Errorf("%s: status %d, body %q; want %d, %q", tc.name, rec.Code, body, tc.code, want)
 		}
-		if got := f.passwordsSent(); len(got) != 1 || got[0] != testPassword {
+		got := f.passwordsSent()
+		if tc.toCUPS && (len(got) != 1 || got[0] != password) || !tc.toCUPS && len(got) != 0 {
 			t.Errorf("%s: CUPS got %q", tc.name, got)
 		}
 		for name, h := range rec.Header() {
@@ -374,15 +403,18 @@ func TestPasswordNeverStored(t *testing.T) {
 			t.Errorf("%s: the password is in the answer %q", tc.name, body)
 		}
 		events, err := s.deps.Store.Recent(context.Background(), 100)
-		if err != nil || len(events) != 1 {
-			t.Fatalf("%s: events %+v, %v", tc.name, events, err)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n := map[bool]int{true: 1, false: 0}[tc.detail != ""]; len(events) != n {
+			t.Errorf("%s: %d history rows, want %d", tc.name, len(events), n)
 		}
 		for _, ev := range events {
 			if row := fmt.Sprintf("%+v", ev); strings.Contains(row, testPassword) {
 				t.Errorf("%s: the password is in the history: %s", tc.name, row)
 			}
-			if !strings.HasPrefix(ev.Detail, "warn → debug") {
-				t.Errorf("%s: detail %q", tc.name, ev.Detail)
+			if !strings.HasPrefix(ev.Detail, tc.detail) {
+				t.Errorf("%s: detail %q, want it to start %q", tc.name, ev.Detail, tc.detail)
 			}
 		}
 		if page := get(h, "/printers/log").Body.String(); strings.Contains(page, testPassword) {
@@ -408,12 +440,15 @@ func TestSetLogLevelSaysWhenTheReloadWaits(t *testing.T) {
 	}
 }
 
+// CUPS reads at most 255 bytes of "user:password", so for mika the password
+// may have 250.
 func TestSetLogLevelRefusesALongPassword(t *testing.T) {
 	f := &fakeCUPS{logLevel: "warn"}
 	s, h := logServer(t, f, &journal{}, false)
-	long := strings.Repeat("p", 1025)
+	long := strings.Repeat("p", 251)
 	rec := postTo(s, h, "/printers/log/level", url.Values{"level": {"debug"}, "password": {long}})
-	if rec.Code != 400 || rec.Body.String() != "The password is longer than 1024 bytes." {
+	want := "The password is longer than CUPS accepts (at most 250 bytes for this user). Use cupsctl in a terminal instead."
+	if rec.Code != 400 || rec.Body.String() != want {
 		t.Errorf("status %d, body %q", rec.Code, rec.Body.String())
 	}
 	if len(f.levelsSet()) != 0 || f.levelReads() != 0 {
@@ -422,9 +457,9 @@ func TestSetLogLevelRefusesALongPassword(t *testing.T) {
 	if ev, _ := s.deps.Store.Recent(context.Background(), 1); len(ev) != 0 {
 		t.Errorf("an event was logged: %+v", ev)
 	}
-	rec = postTo(s, h, "/printers/log/level", url.Values{"level": {"debug"}, "password": {long[:1024]}})
-	if rec.Code != 200 || len(f.passwordsSent()) != 1 || f.passwordsSent()[0] != long[:1024] {
-		t.Errorf("1024 bytes: status %d, sent %d", rec.Code, len(f.passwordsSent()))
+	rec = postTo(s, h, "/printers/log/level", url.Values{"level": {"debug"}, "password": {long[:250]}})
+	if rec.Code != 200 || len(f.passwordsSent()) != 1 || f.passwordsSent()[0] != long[:250] {
+		t.Errorf("250 bytes: status %d, sent %d", rec.Code, len(f.passwordsSent()))
 	}
 }
 
