@@ -172,6 +172,15 @@ func checkAddress(ctx context.Context, raw string) (string, *refusal) {
 		strings.ContainsFunc(raw, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) {
 		return bad(notAddressText)
 	}
+	// CUPS ends the user name at the first @ and ignores ? and # on the way;
+	// Go ends the authority at them. The two read "x:1?@127.0.0.1:631" as
+	// different hosts, so a ? or # before the first / is not an address.
+	if i := strings.Index(raw, "://"); i >= 0 {
+		authority, _, _ := strings.Cut(raw[i+len("://"):], "/")
+		if strings.ContainsAny(authority, "?#") {
+			return bad(notAddressText)
+		}
+	}
 	u, err := parseAddress(raw)
 	if err != nil || u.Scheme == "" {
 		return bad(notAddressText)
