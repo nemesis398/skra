@@ -681,44 +681,41 @@ func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var done []string
-	fail := func(err error) {
-		s.hub.Refresh()
-		reply(w, http.StatusBadGateway, err.Error())
+	// step logs one CUPS call. When it failed, step answers for the whole save
+	// and returns false; otherwise it notes what was done.
+	step := func(event, detail, said string, err error) bool {
+		s.record(r, event, name, detail, err)
+		if err != nil {
+			s.hub.Refresh()
+			reply(w, http.StatusBadGateway, err.Error())
+			return false
+		}
+		done = append(done, said)
+		return true
 	}
 	if len(pl.fields) > 0 {
 		err := s.deps.CUPS.Modify(ctx, name, pl.ch)
-		s.record(r, "printer.modify", name, strings.Join(pl.fields, ", "), err)
-		if err != nil {
-			fail(err)
+		if !step("printer.modify", strings.Join(pl.fields, ", "), plural(len(pl.fields), "setting", "settings"), err) {
 			return
 		}
-		done = append(done, plural(len(pl.fields), "setting", "settings"))
 	}
 	if pl.accept != nil {
 		event, said := "printer.reject", "rejects new jobs"
 		if *pl.accept {
 			event, said = "printer.accept", "accepts new jobs"
 		}
-		err := s.deps.CUPS.Accept(ctx, name, *pl.accept)
-		s.record(r, event, name, "", err)
-		if err != nil {
-			fail(err)
+		if err := s.deps.CUPS.Accept(ctx, name, *pl.accept); !step(event, "", said, err) {
 			return
 		}
-		done = append(done, said)
 	}
 	if pl.pause != nil {
 		event, said := "printer.resume", "running"
 		if *pl.pause {
 			event, said = "printer.pause", "paused"
 		}
-		err := s.deps.CUPS.Pause(ctx, name, *pl.pause)
-		s.record(r, event, name, "", err)
-		if err != nil {
-			fail(err)
+		if err := s.deps.CUPS.Pause(ctx, name, *pl.pause); !step(event, "", said, err) {
 			return
 		}
-		done = append(done, said)
 	}
 	if len(done) == 0 {
 		reply(w, http.StatusOK, "Nothing changed.")
