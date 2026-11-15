@@ -244,6 +244,17 @@ func isTooLarge(err error) bool {
 // receives the answer instead of a reset connection.
 func drain(r *http.Request) { io.Copy(io.Discard, r.Body) }
 
+// drainFirst drains the body of r before the answer is written.
+type drainFirst struct {
+	http.ResponseWriter
+	r *http.Request
+}
+
+func (d *drainFirst) WriteHeader(code int) {
+	drain(d.r)
+	d.ResponseWriter.WriteHeader(code)
+}
+
 // sniffFormat maps the first bytes of a file to a document format CUPS
 // prints, or "" when it is none of them. The file name plays no part.
 func sniffFormat(head []byte) string {
@@ -361,6 +372,14 @@ func (s *Server) printPart(w http.ResponseWriter, r *http.Request, part *multipa
 
 	ctx, cancel := context.WithTimeout(r.Context(), printTimeout)
 	defer cancel()
+	// The printer is found like the queue of every per-queue route, and
+	// named as CUPS knows it. The rest of the body is read first, so the
+	// browser gets the answer and not a reset connection.
+	p, _, ok := s.resolveName(ctx, &drainFirst{ResponseWriter: w, r: r}, printer)
+	if !ok {
+		return
+	}
+	printer = p.Name
 	id, err := s.deps.CUPS.Print(ctx, printer, name, format, opts, br)
 	tooLarge := counted.over || isTooLarge(err)
 	if tooLarge {

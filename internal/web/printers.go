@@ -98,11 +98,15 @@ func (s *Server) queue(ctx context.Context, name string) (cups.Printer, []cups.P
 	return cups.Printer{}, all, errNoQueue
 }
 
-// resolve reads {name} of the route and finds the queue. It answers 400 for a
+// resolve reads {name} of the route and finds the queue (resolveName).
+func (s *Server) resolve(ctx context.Context, w http.ResponseWriter, r *http.Request) (cups.Printer, []cups.Printer, bool) {
+	return s.resolveName(ctx, w, r.PathValue("name"))
+}
+
+// resolveName finds the queue of a name the page sent. It answers 400 for a
 // name no queue can have, without asking CUPS, and 404 for one it does not
 // have, and then returns false.
-func (s *Server) resolve(ctx context.Context, w http.ResponseWriter, r *http.Request) (cups.Printer, []cups.Printer, bool) {
-	name := r.PathValue("name")
+func (s *Server) resolveName(ctx context.Context, w http.ResponseWriter, name string) (cups.Printer, []cups.Printer, bool) {
 	if !validQueueName(name) {
 		reply(w, http.StatusBadRequest, "That is not a queue name.")
 		return cups.Printer{}, nil, false

@@ -590,6 +590,48 @@ func TestPrintRejectsABadForm(t *testing.T) {
 	}
 }
 
+// The printer of an upload is found like the queue of every per-queue
+// route: a name no queue can have is refused, one CUPS does not have is not
+// found, and one in another case is sent under the name CUPS knows.
+func TestPrintFindsThePrinterLikeEveryQueueRoute(t *testing.T) {
+	pdf := "%PDF-1.4\nx"
+	for _, tc := range []struct {
+		printer string
+		code    int
+		body    string
+	}{
+		{"a/b", 400, "That is not a queue name."},
+		{"a b", 400, "That is not a queue name."},
+		{strings.Repeat("x", 128), 400, "That is not a queue name."},
+		{"Nowhere", 404, "There is no queue named Nowhere."},
+	} {
+		f := twoJobs()
+		s, h := actionServer(t, f)
+		rec := upload(s, h, [][2]string{{"printer", tc.printer}}, "a.pdf", strings.NewReader(pdf), -1)
+		if rec.Code != tc.code || rec.Body.String() != tc.body {
+			t.Errorf("%.20q: status %d, body %q, want %d %q", tc.printer, rec.Code, rec.Body.String(), tc.code, tc.body)
+		}
+		if f.prints() != 0 {
+			t.Errorf("%.20q: Print was called", tc.printer)
+		}
+	}
+
+	f := twoJobs()
+	var to string
+	f.print = func(printer, _, _ string, _ cups.JobOptions, doc io.Reader) (int, error) {
+		io.Copy(io.Discard, doc)
+		to = printer
+		return 32, nil
+	}
+	s, h := actionServer(t, f)
+	if rec := upload(s, h, [][2]string{{"printer", "virtual-mfc"}}, "a.pdf", strings.NewReader(pdf), -1); rec.Code != 200 {
+		t.Fatalf("lowercase name: status %d, body %q", rec.Code, rec.Body.String())
+	}
+	if ev := lastEvent(t, s); to != "Virtual-MFC" || ev.Target != "Virtual-MFC" {
+		t.Errorf("printed to %q, event about %q; want the name CUPS knows", to, ev.Target)
+	}
+}
+
 func TestPrintNotMultipart(t *testing.T) {
 	s, h := actionServer(t, twoJobs())
 	rec := postTo(s, h, "/print", url.Values{"printer": {"x"}})

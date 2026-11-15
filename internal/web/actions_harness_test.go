@@ -96,10 +96,9 @@ func TestPrintAndCancelAgainstHarness(t *testing.T) {
 func TestPrintToAMissingQueueAgainstHarness(t *testing.T) {
 	s, _ := harnessServer(t)
 	rec := upload(s, s.Handler(), [][2]string{{"printer", "No-Such-Queue"}}, "a.txt", strings.NewReader("hi\n"), -1)
-	if rec.Code != 502 || rec.Body.Len() == 0 {
+	if rec.Code != 404 || rec.Body.String() != "There is no queue named No-Such-Queue." {
 		t.Errorf("status %d, body %q", rec.Code, rec.Body.String())
 	}
-	t.Logf("CUPS said: %s", rec.Body.String())
 }
 
 func TestTestPageAgainstHarness(t *testing.T) {
