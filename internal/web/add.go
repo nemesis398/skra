@@ -525,7 +525,8 @@ func (s *Server) addPrinter(w http.ResponseWriter, r *http.Request) {
 		reply(w, http.StatusBadRequest, "Shared on the network and default printer are yes or no.")
 		return
 	}
-	if !okText(text("id")) || !okText(text("make")) {
+	id, maker := text("id"), text("make")
+	if !okText(id) || !okText(maker) {
 		reply(w, http.StatusBadRequest, "That is not a device id or a maker.")
 		return
 	}
@@ -557,7 +558,7 @@ func (s *Server) addPrinter(w http.ResponseWriter, r *http.Request) {
 	}
 	// Only a driver that CUPS lists for this device goes on to CUPS.
 	if ppd != "" {
-		list, _, err := s.drivers(ctx, text("id"), text("make"))
+		list, _, err := s.drivers(ctx, id, maker)
 		if err != nil {
 			reply(w, http.StatusBadGateway, err.Error())
 			return
