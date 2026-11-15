@@ -661,10 +661,19 @@ document.addEventListener("drop", (e) => {
 // because it took no page. While the scan has pages the scanner and the
 // resolution stay those of its pages. An answer that comes after a newer
 // question is dropped.
+//
+// Under the strip is the save row, which the event stream does not swap, so
+// a title being typed stays. It shows while the shown scan has pages, with
+// the path the server says a save would write, asked again as the title,
+// the format or the number of pages changes. A scan kept from before is
+// offered above the form; continue shows it, as it is in the scan fragment.
 let scanSession = "";
 let scanRunning = false;
 let lastScans = "";
 let scanFormAsked = 0;
+let scanPathAsked = 0;
+let scanPathFor = "";
+const scanEmpty = $("scan-job")?.innerHTML ?? "";
 
 const scanButton = (which) => document.querySelector(`button[data-scan="${which}"]`);
 
@@ -724,18 +733,29 @@ function showScanButtons() {
   start.disabled = scanRunning || !document.querySelector("#scan-form [data-group]");
   scanButton("stop").hidden = !scanRunning;
   start.querySelector("span").textContent = $("scan-job").querySelector(".pg") ? "scan more" : "scan";
+  for (const more of document.querySelectorAll('button[data-scan="more"]')) more.disabled = start.disabled;
   tieScanForm();
+  showSaveRow();
+}
+
+// shownJob is the shown scan when it is this page's and has pages.
+function shownJob() {
+  const job = $("scan-job").querySelector(".scanjob");
+  return job && job.dataset.session === scanSession && job.querySelector(".pg") ? job : null;
 }
 
 // tieScanForm holds the scanner and the resolution to those of the shown
 // scan's pages, which the server keeps for the whole scan, and frees them
-// when the scan has none.
+// when the scan has none. A scan continued from before may be on another
+// scanner than the one picked; its form is loaded then.
 function tieScanForm() {
-  const job = $("scan-job").querySelector(".scanjob");
-  const tied = job && job.dataset.session === scanSession && job.querySelector(".pg") ? job : null;
+  const tied = shownJob();
   const scanner = $("scan-scanner");
   if (scanner) {
-    if (tied && [...scanner.options].some((o) => o.value === tied.dataset.scanner)) scanner.value = tied.dataset.scanner;
+    if (tied && scanner.value !== tied.dataset.scanner && [...scanner.options].some((o) => o.value === tied.dataset.scanner)) {
+      scanner.value = tied.dataset.scanner;
+      loadScanForm();
+    }
     scanner.disabled = Boolean(tied);
     scanner.title = tied ? "This scan stays on this scanner. Save it to change." : "";
   }
@@ -750,10 +770,11 @@ function tieScanForm() {
   }
 }
 
-// scanNote shows the answer to a start beside the form, in the color the
-// server names: a scanner that is away is never red.
-function scanNote(text, cls) {
-  const el = $("scan-note");
+// scanNote shows the answer to a start beside the form, or one to a save in
+// the save row, in the color the server names: a scanner that is away is
+// never red.
+function scanNote(text, cls, id = "scan-note") {
+  const el = $(id);
   el.textContent = text;
   el.className = cls ? `scanmsg ${cls}` : "scanmsg";
   el.hidden = !text;
@@ -806,30 +827,174 @@ function showScans() {
   const jobs = [...t.content.querySelectorAll(".scanjob")];
   if (!scanSession) scanSession = jobs.findLast((j) => j.dataset.running === "true")?.dataset.session ?? "";
   const mine = jobs.find((j) => j.dataset.session === scanSession);
-  if (!mine) return;
+  if (!mine) {
+    // Saved or discarded in another tab. A scan just started may not be
+    // in the list yet, and it runs.
+    if (scanSession && !scanRunning && $("scan-job").querySelector(".scanjob")) forgetScan();
+    return;
+  }
   $("scan-job").replaceChildren(mine);
   scanRunning = mine.dataset.running === "true";
   if (mine.dataset.gone === "true") scanSession = "";
   showScanButtons();
 }
 
+// forgetScan clears the strip once the shown scan is saved or discarded.
+function forgetScan() {
+  scanSession = "";
+  scanRunning = false;
+  $("scan-job").innerHTML = scanEmpty;
+  showScanButtons();
+}
+
+// showSaveRow shows the save row while the shown scan has pages; save and
+// discard wait while it scans.
+function showSaveRow() {
+  const row = $("scan-save");
+  if (!row) return;
+  const job = shownJob();
+  row.hidden = !job;
+  for (const b of row.querySelectorAll("button[data-scan]")) b.disabled = scanRunning;
+  const key = job ? `${job.dataset.session} ${job.dataset.pages}` : "";
+  if (key.split(" ")[0] !== scanPathFor.split(" ")[0]) scanNote("", "", "save-note");
+  if (key && key !== scanPathFor) {
+    scanPathFor = key;
+    showScanPath();
+  }
+  if (!key) scanPathFor = "";
+}
+
+const saveFormat = () => document.querySelector('#scan-save [data-group="format"] button.on')?.dataset.pick ?? "pdf";
+
+// showScanPath asks the server for the path a save would write now.
+async function showScanPath() {
+  const job = shownJob();
+  if (!job) return;
+  const mine = ++scanPathAsked;
+  const q = new URLSearchParams({ title: $("scan-title").value, format: saveFormat() });
+  try {
+    const res = await fetch(`/scan/${encodeURIComponent(job.dataset.session)}/name?${q}`, { cache: "no-store" });
+    const text = await res.text();
+    if (mine !== scanPathAsked) return;
+    if (res.ok) $("scan-path").textContent = text;
+    else scanNote(text.trim() || `skrá answered ${res.status}.`, res.headers.get("X-Skra-Class") ?? "bad", "save-note");
+  } catch (err) {
+    if (mine === scanPathAsked) scanNote("Could not reach skrá. Is it still running?", "bad", "save-note");
+  }
+}
+
+async function saveScan(b) {
+  const id = scanSession;
+  if (!id) return;
+  b.disabled = true;
+  try {
+    const res = await post(`/scan/${encodeURIComponent(id)}/save`, new URLSearchParams({ title: $("scan-title").value, format: saveFormat() }));
+    const text = (await res.text()).trim();
+    if (!res.ok) {
+      scanNote(text || `skrá answered ${res.status}.`, res.headers.get("X-Skra-Class") ?? "bad", "save-note");
+      return;
+    }
+    $("scan-title").value = "";
+    if (scanSession === id) forgetScan();
+    scanNote(text, ""); // the save row went with the scan
+  } catch (err) {
+    say("Could not reach skrá. Is it still running?", true);
+  } finally {
+    showScanButtons();
+  }
+}
+
+// discardScan asks first, naming the pages, and then deletes the scan: the
+// one a row above the form offers, or the shown one.
+async function discardScan(b) {
+  const offered = b.dataset.session;
+  const id = offered || scanSession;
+  if (!id) return;
+  let { confirm: text, confirmLabel: label } = b.dataset;
+  if (!offered) {
+    const n = Number(shownJob()?.dataset.pages ?? 0);
+    const pages = n === 1 ? "1 page" : `${n} pages`;
+    text = `The scan and its ${pages} are deleted, not saved.`;
+    label = `discard ${pages}`;
+  }
+  const restore = offered ? `[data-scan="discard"][data-session="${id}"]` : '#scan-save [data-scan="discard"]';
+  if (!(await confirmBox(b.dataset.confirmTitle, text, label, "Keep it", restore, undefined, "\u{F01B4}"))) return;
+  const note = offered ? "scan-note" : "save-note";
+  b.disabled = true;
+  try {
+    const res = await post(`/scan/${encodeURIComponent(id)}/discard`);
+    const answer = (await res.text()).trim();
+    if (!res.ok && res.status !== 404) {
+      scanNote(answer || `skrá answered ${res.status}.`, res.headers.get("X-Skra-Class") ?? "bad", note);
+      return;
+    }
+    dropOffer(id);
+    if (scanSession === id) forgetScan();
+    scanNote(answer, res.ok ? "" : res.headers.get("X-Skra-Class") ?? "need");
+  } catch (err) {
+    say("Could not reach skrá. Is it still running?", true);
+  } finally {
+    if (b.isConnected) b.disabled = false;
+    showScanButtons();
+  }
+}
+
+// dropOffer removes the row that offers a scan kept from before, and the
+// heading with the last one.
+function dropOffer(id) {
+  document.querySelector(`[data-unsaved="${id}"]`)?.remove();
+  const box = $("scan-unsaved");
+  if (box && !box.querySelector("[data-unsaved]")) box.remove();
+}
+
+// continueScan shows a scan kept from before, to scan more into, turn, drop
+// and save.
+function continueScan(b) {
+  scanSession = b.dataset.session;
+  scanRunning = false;
+  dropOffer(scanSession);
+  scanNote("");
+  showScans();
+}
+
+// editPage turns or drops a page; the strip changes with the event stream.
+function editPage(b) {
+  const id = b.closest(".scanjob")?.dataset.session;
+  if (!id) return;
+  const url = `/scan/${encodeURIComponent(id)}/page/${encodeURIComponent(b.dataset.n)}/${b.dataset.scan}`;
+  send(url, b.dataset.scan === "rotate" ? new URLSearchParams({ by: b.dataset.by }) : undefined, b);
+}
+
 document.addEventListener("click", (e) => {
-  const pick = e.target.closest("#scan-form [data-pick]");
+  const pick = e.target.closest("#scan-form [data-pick], #scan-save [data-pick]");
   if (pick) {
     for (const x of pick.parentElement.children) {
       x.classList.toggle("on", x === pick);
       x.setAttribute("aria-pressed", String(x === pick));
     }
+    if (pick.closest("#scan-save")) showScanPath();
     return;
   }
   const b = e.target.closest("button[data-scan]");
   if (!b) return;
-  if (b.dataset.scan === "start") startScan(b);
-  else if (b.dataset.scan === "stop" && scanSession) send(`/scan/${encodeURIComponent(scanSession)}/stop`, undefined, b);
-  else if (b.dataset.scan === "find") loadScanners();
+  const act = b.dataset.scan;
+  if (act === "start") startScan(b);
+  else if (act === "more") startScan(scanButton("start"));
+  else if (act === "stop" && scanSession) send(`/scan/${encodeURIComponent(scanSession)}/stop`, undefined, b);
+  else if (act === "find") loadScanners();
+  else if (act === "rotate" || act === "drop") editPage(b);
+  else if (act === "save") saveScan(b);
+  else if (act === "discard") discardScan(b);
+  else if (act === "continue") continueScan(b);
 });
 document.addEventListener("change", (e) => {
   if (e.target.id === "scan-scanner") loadScanForm();
+});
+document.addEventListener("input", (e) => {
+  if (e.target.id === "scan-title") showScanPath();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.target.id === "scan-title" && e.key === "Enter" && !scanButton("save").disabled) saveScan(scanButton("save"));
 });
 if ($("scan-scanners")) loadScanners();
 

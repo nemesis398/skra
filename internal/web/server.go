@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/nemesis398/skra/internal/config"
 	"github.com/nemesis398/skra/internal/escl"
@@ -45,6 +46,11 @@ type Server struct {
 	scanners []escl.Scanner
 	scanCaps map[string]escl.Caps
 
+	// now is the clock that dates a saved scan, and born when the server
+	// was made: a scan from before then was left by an earlier process.
+	now  func() time.Time
+	born time.Time
+
 	// idle is Serve's idle clock, nil when the server does not exit when
 	// idle. A scan job holds it while it runs.
 	idleMu sync.Mutex
@@ -68,6 +74,8 @@ func New(cfg config.Config, deps Deps, token string) *Server {
 
 		scanJobs: map[string]*scanJob{},
 		scanCaps: map[string]escl.Caps{},
+		now:      time.Now,
+		born:     time.Now(),
 	}
 	s.hub = NewHub(s.tickPoll, pollEvery)
 	if deps.Query != nil {

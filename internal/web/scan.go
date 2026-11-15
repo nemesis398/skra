@@ -8,11 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/nemesis398/skra/internal/escl"
@@ -39,6 +42,12 @@ const (
 	scanStartingText  = "Starting the scan…"
 	scanNoPagesText   = "The scanner sent no pages."
 	scanTooLongFormat = "The scan ran for %g minutes, the longest one may run, and was stopped. Scan more for the rest."
+	scanGoneText      = "That scan is no longer here: it was saved or discarded. Reload the page."
+	scanUnreadable    = "skrá cannot read that scan. Reload the page."
+	noPageText        = "There is no such page in this scan. Reload the page."
+	noPagesText       = "There are no pages to save."
+	noFolderText      = "Scans have no folder to go to. Set scan_folder in the config."
+	pickFormatText    = "Pick PDF, PNG or JPEG."
 )
 
 // The color modes the form offers, richest first, and their words.
@@ -126,6 +135,12 @@ func (s *Server) scanRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /scan/form", s.scanForm)
 	mux.HandleFunc("POST /scan/start", s.startScan)
 	mux.HandleFunc("POST /scan/{id}/stop", s.stopScan)
+	mux.HandleFunc("GET /scan/{id}/page/{n}", s.pageImage)
+	mux.HandleFunc("POST /scan/{id}/page/{n}/rotate", s.rotatePage)
+	mux.HandleFunc("POST /scan/{id}/page/{n}/drop", s.dropPage)
+	mux.HandleFunc("GET /scan/{id}/name", s.saveName)
+	mux.HandleFunc("POST /scan/{id}/save", s.saveScan)
+	mux.HandleFunc("POST /scan/{id}/discard", s.discardScan)
 }
 
 // listScanners asks for the scanners afresh and remembers them.
@@ -303,7 +318,15 @@ type scanJobView struct {
 	ID, Msg, Class, Scanner string
 	DPI                     int
 	Running, Gone           bool
-	Pages                   []int // page numbers, counted from 1
+	Pages                   []pageView
+}
+
+// pageView is one page of the strip: its number, counted from 1, its turn
+// clockwise in degrees, and its file, which tells the picture's URL apart
+// from that of the page that had the number before a drop.
+type pageView struct {
+	N, Rotate int
+	File      string
 }
 
 // scanViews lists the scans the service knows, oldest first.
@@ -323,8 +346,8 @@ func (s *Server) scanViews() []scanJobView {
 	slices.SortFunc(rows, func(a, b row) int { return a.started.Compare(b.started) })
 	out := make([]scanJobView, len(rows))
 	for i, r := range rows {
-		for n := range r.sess.PageList() {
-			r.v.Pages = append(r.v.Pages, n+1)
+		for i, p := range r.sess.PageList() {
+			r.v.Pages = append(r.v.Pages, pageView{N: i + 1, Rotate: p.Rotate, File: p.File})
 		}
 		out[i] = r.v
 	}
@@ -634,4 +657,333 @@ func (s *Server) stopScan(w http.ResponseWriter, r *http.Request) {
 	s.record(r, "scan.stop", j.scanner.Name, "scan "+id, nil)
 	msg, class, _, _ := s.scanState(id)
 	scanReply(w, http.StatusOK, msg, class)
+}
+
+// --- the pages, saving and unsaved scans ---
+
+// The formats a scan saves in, as scan.Save names them, with their labels
+// and file extensions.
+var (
+	saveFormats = []choice{{Value: "pdf", Label: "PDF"}, {Value: "png", Label: "PNG"}, {Value: "jpeg", Label: "JPEG"}}
+	saveExts    = map[string]string{"pdf": "pdf", "png": "png", "jpeg": "jpg"}
+)
+
+// scanPageView is what the Scan tab draws itself: the folder scans are saved
+// to, with ~ for the home, the format buttons, and the scans that were not
+// saved, to continue or discard.
+type scanPageView struct {
+	Folder  string
+	Format  segView
+	Unsaved []unsavedView
+}
+
+// unsavedView is one scan kept from before: when it began and its pages.
+type unsavedView struct {
+	ID, From, Pages string
+	Count           int
+}
+
+// scanPage is the Scan tab's own part. It lists the scans that wait to be
+// saved and offers each to continue, which it can because each is then in
+// the event stream's scan fragment. A scan with no page from an earlier
+// process, as a crash leaves one, goes without a word; one that runs is the
+// page's to adopt, and is not offered.
+func (s *Server) scanPage() *scanPageView {
+	v := &scanPageView{
+		Folder: homeShort(s.cfg.ScanFolder) + "/",
+		Format: segFirst("format", slices.Clone(saveFormats), "pdf"),
+	}
+	if s.deps.Scans == nil {
+		return v
+	}
+	list, err := s.deps.Scans.List()
+	if err != nil {
+		log.Printf("skra: listing the scans: %v", err)
+		return v
+	}
+	now := s.now()
+	for _, sess := range list {
+		n := len(sess.PageList())
+		s.scanMu.Lock()
+		j := s.scanJobs[sess.ID]
+		s.scanMu.Unlock()
+		switch {
+		case j != nil && j.running:
+			continue
+		case n == 0:
+			if j == nil && sess.Created.Before(s.born) {
+				if err := s.deps.Scans.Discard(sess.ID); err != nil && !errors.Is(err, os.ErrNotExist) {
+					log.Printf("skra: discarding the empty scan %s: %v", sess.ID, err)
+				}
+			}
+			continue
+		}
+		s.adopt(sess)
+		v.Unsaved = append(v.Unsaved, unsavedView{ID: sess.ID, From: scanFrom(sess.Created, now),
+			Pages: plural(n, "page", "pages"), Count: n})
+	}
+	return v
+}
+
+// scanFrom says when a scan began: the time on the day of now, or the day
+// and the time before it.
+func scanFrom(t, now time.Time) string {
+	t, now = t.Local(), now.Local()
+	if y, m, d := t.Date(); y == now.Year() && m == now.Month() && d == now.Day() {
+		return t.Format("15:04")
+	}
+	return t.Format("Mon 2 Jan 15:04")
+}
+
+// homeShort writes a path under the home directory with ~, as the config
+// may name it.
+func homeShort(p string) string {
+	home := os.Getenv("HOME")
+	if home == "" || home == "/" {
+		return p
+	}
+	if p == home {
+		return "~"
+	}
+	if rest, ok := strings.CutPrefix(p, home+"/"); ok {
+		return "~/" + rest
+	}
+	return p
+}
+
+// adopt puts a session the service did not scan into in this process, such
+// as one kept from before, among its scans, so the scan fragment draws it.
+func (s *Server) adopt(sess *scan.Session) {
+	done := make(chan struct{})
+	close(done)
+	s.scanMu.Lock()
+	defer s.scanMu.Unlock()
+	if s.scanJobs[sess.ID] == nil {
+		s.scanJobs[sess.ID] = &scanJob{session: sess, scanner: sess.Scanner, started: sess.Created,
+			cancel: func() {}, done: done}
+	}
+}
+
+// forget drops the service's record of a session that was saved or discarded.
+func (s *Server) forget(id string) {
+	s.scanMu.Lock()
+	delete(s.scanJobs, id)
+	s.scanMu.Unlock()
+}
+
+// editable finds the session a request names and refuses it while its scan
+// runs: a discard during a page on its way could leave a session of that one
+// page. When it answers false it has answered the request.
+func (s *Server) editable(w http.ResponseWriter, id string) (*scan.Session, bool) {
+	sess, ok := s.findScan(w, id)
+	if ok && s.scanRunning(id) {
+		scanReply(w, http.StatusConflict, scanRunningText, "need")
+		return nil, false
+	}
+	return sess, ok
+}
+
+// findScan finds the session a request names. When it answers false it has
+// answered the request with 404, or 503 when nothing can be scanned.
+func (s *Server) findScan(w http.ResponseWriter, id string) (*scan.Session, bool) {
+	if s.deps.Scans == nil {
+		scanReply(w, http.StatusServiceUnavailable, noScansText, "bad")
+		return nil, false
+	}
+	sess, err := s.deps.Scans.Get(id)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		scanReply(w, http.StatusNotFound, scanGoneText, "need")
+		return nil, false
+	case err != nil:
+		log.Printf("skra: reading scan %q: %v", id, err)
+		scanReply(w, http.StatusNotFound, scanUnreadable, "bad")
+		return nil, false
+	}
+	return sess, true
+}
+
+// pageNumber reads the page number of the request, counted from 1, and
+// answers 404 when the session has no such page.
+func pageNumber(w http.ResponseWriter, r *http.Request, sess *scan.Session) (int, bool) {
+	n, err := strconv.Atoi(r.PathValue("n"))
+	if err != nil || n < 1 || n > len(sess.PageList()) {
+		scanReply(w, http.StatusNotFound, noPageText, "need")
+		return 0, false
+	}
+	return n, true
+}
+
+// pageImage answers the JPEG of a page, for its thumbnail. A cross-site read
+// is refused by the guard, as this is no page another site may open.
+func (s *Server) pageImage(w http.ResponseWriter, r *http.Request) {
+	sess, ok := s.findScan(w, r.PathValue("id"))
+	if !ok {
+		return
+	}
+	n, ok := pageNumber(w, r, sess)
+	if !ok {
+		return
+	}
+	path, err := sess.PagePath(n)
+	var f *os.File
+	if err == nil {
+		f, err = os.Open(path)
+	}
+	if err != nil { // dropped or discarded since
+		scanReply(w, http.StatusNotFound, noPageText, "need")
+		return
+	}
+	defer f.Close()
+	h := w.Header()
+	h.Set("Content-Type", "image/jpeg")
+	h.Set("Cache-Control", "no-store")
+	http.ServeContent(w, r, "", time.Time{}, f)
+}
+
+// editPage turns or drops a page with edit and answers done. A failure the
+// page number explains, as when another tab dropped the page first, is a
+// 404; anything else is logged and answered with failed.
+func (s *Server) editPage(w http.ResponseWriter, r *http.Request, edit func(*scan.Session, int) error, done, failed string) {
+	sess, ok := s.editable(w, r.PathValue("id"))
+	if !ok {
+		return
+	}
+	n, ok := pageNumber(w, r, sess)
+	if !ok {
+		return
+	}
+	if err := edit(sess, n); err != nil {
+		if n > len(sess.PageList()) {
+			scanReply(w, http.StatusNotFound, noPageText, "need")
+			return
+		}
+		log.Printf("skra: scan %s, page %d: %v", sess.ID, n, err)
+		scanReply(w, http.StatusInternalServerError, failed, "bad")
+		return
+	}
+	s.adopt(sess)
+	s.hub.Refresh()
+	scanReply(w, http.StatusOK, fmt.Sprintf(done, n), "")
+}
+
+// rotatePage turns a page a quarter, by 90 (clockwise) or -90.
+func (s *Server) rotatePage(w http.ResponseWriter, r *http.Request) {
+	by, err := strconv.Atoi(r.PostFormValue("by"))
+	if err != nil || (by != 90 && by != -90) {
+		scanReply(w, http.StatusBadRequest, "A page turns by 90 or -90 degrees.", "bad")
+		return
+	}
+	s.editPage(w, r, func(sess *scan.Session, n int) error { return sess.Rotate(n, by) },
+		"Turned page %d.", "Could not turn the page. Try again.")
+}
+
+// dropPage removes a page from the scan and deletes its file.
+func (s *Server) dropPage(w http.ResponseWriter, r *http.Request) {
+	s.editPage(w, r, (*scan.Session).Drop, "Dropped page %d.", "Could not drop the page. Try again.")
+}
+
+// saveFiles are the names a save of n pages in format would write: one PDF,
+// or a picture a page, numbered when there are several. The names are those
+// of an empty folder; a save adds " (2)" when one is taken.
+func saveFiles(title, format string, n int, now time.Time) (first string, count int) {
+	ext := saveExts[format]
+	first = scan.FileName(title, now, ext)
+	if format == "pdf" || n < 2 {
+		return first, 1
+	}
+	return strings.TrimSuffix(first, "."+ext) + " 1." + ext, n
+}
+
+// andMore names the first of count files, and how many follow it.
+func andMore(first string, count int) string {
+	if count < 2 {
+		return first
+	}
+	return fmt.Sprintf("%s and %d more", first, count-1)
+}
+
+// saveName answers the path a save would write, with ~ for the home, so the
+// page shows it as the title is typed and before anything is written.
+func (s *Server) saveName(w http.ResponseWriter, r *http.Request) {
+	sess, ok := s.findScan(w, r.PathValue("id"))
+	if !ok {
+		return
+	}
+	q := r.URL.Query()
+	format := q.Get("format")
+	if _, ok := saveExts[format]; !ok {
+		scanReply(w, http.StatusBadRequest, pickFormatText, "bad")
+		return
+	}
+	if s.cfg.ScanFolder == "" {
+		scanReply(w, http.StatusServiceUnavailable, noFolderText, "bad")
+		return
+	}
+	first, count := saveFiles(q.Get("title"), format, len(sess.PageList()), s.now())
+	scanReply(w, http.StatusOK, andMore(homeShort(s.cfg.ScanFolder)+"/"+first, count), "")
+}
+
+// saveScan writes the scan into the scan folder under its title, and then
+// forgets it. A failed save keeps the scan, so it can be saved again.
+func (s *Server) saveScan(w http.ResponseWriter, r *http.Request) {
+	sess, ok := s.editable(w, r.PathValue("id"))
+	if !ok {
+		return
+	}
+	format := r.PostFormValue("format")
+	if _, ok := saveExts[format]; !ok {
+		scanReply(w, http.StatusBadRequest, pickFormatText, "bad")
+		return
+	}
+	folder := s.cfg.ScanFolder
+	if folder == "" {
+		scanReply(w, http.StatusServiceUnavailable, noFolderText, "bad")
+		return
+	}
+	n := len(sess.PageList())
+	if n == 0 {
+		scanReply(w, http.StatusBadRequest, noPagesText, "need")
+		return
+	}
+	detail := fmt.Sprintf("%s, %s · scan %s", strings.ToUpper(format), plural(n, "page", "pages"), sess.ID)
+	paths, err := scan.Save(sess, folder, r.PostFormValue("title"), format, s.now())
+	if err != nil {
+		log.Printf("skra: saving scan %s in %s: %v", sess.ID, folder, err)
+		s.record(r, "scan.save", folder, detail, err)
+		scanReply(w, http.StatusInternalServerError, "Could not save the scan in "+filepath.Base(folder)+
+			". Check that the folder exists or can be made and that skrá may write there, then save again.", "bad")
+		return
+	}
+	if err := s.deps.Scans.Discard(sess.ID); err != nil {
+		log.Printf("skra: forgetting the saved scan %s: %v", sess.ID, err)
+	}
+	s.forget(sess.ID)
+	s.record(r, "scan.save", strings.Join(paths, ", "), detail, nil)
+	s.hub.Refresh()
+	scanReply(w, http.StatusOK, "Saved "+andMore(`"`+filepath.Base(paths[0])+`"`, len(paths))+
+		" in "+filepath.Base(folder)+".", "")
+}
+
+// discardScan deletes the scan and its pages.
+func (s *Server) discardScan(w http.ResponseWriter, r *http.Request) {
+	sess, ok := s.editable(w, r.PathValue("id"))
+	if !ok {
+		return
+	}
+	n := len(sess.PageList())
+	if err := s.deps.Scans.Discard(sess.ID); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			s.forget(sess.ID)
+			scanReply(w, http.StatusNotFound, scanGoneText, "need")
+			return
+		}
+		log.Printf("skra: discarding scan %s: %v", sess.ID, err)
+		scanReply(w, http.StatusInternalServerError, "Could not discard the scan. Try again.", "bad")
+		return
+	}
+	s.forget(sess.ID)
+	s.record(r, "scan.discard", sess.Scanner.Name, plural(n, "page", "pages")+" · scan "+sess.ID, nil)
+	s.hub.Refresh()
+	scanReply(w, http.StatusOK, "Discarded the scan and its "+plural(n, "page", "pages")+".", "")
 }

@@ -117,6 +117,9 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, which string) {
 		Token, Page string
 		V           view
 	}{s.token, which, s.view(snap)}
+	if which == "scan" {
+		data.V.Scan = s.scanPage()
+	}
 	if err := s.tpl.ExecuteTemplate(&buf, "layout.html", data); err != nil {
 		http.Error(w, "Could not render the page.", http.StatusInternalServerError)
 		return
@@ -185,6 +188,8 @@ type view struct {
 	// queue it starts on.
 	Opts        string
 	DefaultName string
+	// Scan is the Scan tab's own part; only that tab draws it.
+	Scan *scanPageView
 }
 
 // moveTarget is a queue the move dialog offers.

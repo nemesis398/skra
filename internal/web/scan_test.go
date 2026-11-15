@@ -5,10 +5,16 @@ package web
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
+	"image"
+	"image/jpeg"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -645,5 +651,384 @@ func TestStartAnswersCarryTheirColor(t *testing.T) {
 	form.Set("resolution", "1200")
 	if rec := postTo(busy.s, busy.h, "/scan/start", form); rec.Header().Get("X-Skra-Class") != "bad" {
 		t.Errorf("a refused form has class %q, want bad", rec.Header().Get("X-Skra-Class"))
+	}
+}
+
+// --- rotate, drop, save and unsaved scans ---
+
+// tinyJPEG is a small gray page.
+func tinyJPEG(t *testing.T) []byte {
+	t.Helper()
+	img := image.NewGray(image.Rect(0, 0, 21, 30))
+	for i := range img.Pix {
+		img.Pix[i] = uint8(i)
+	}
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, nil); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// saveDay is the day of the brief's example, and the time the page asks.
+var saveDay = time.Date(2026, 11, 14, 10, 5, 0, 0, time.Local)
+
+// newSaveRig is a scan rig whose home is a directory of its own, which holds
+// the scan folder ~/Nextcloud/Documents/Scans, and whose clock says saveDay.
+func newSaveRig(t *testing.T, wrap func(http.Handler) http.Handler) (rig *scanRig, folder string) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	rig = newScanRig(t, 3, wrap)
+	folder = filepath.Join(home, "Nextcloud", "Documents", "Scans")
+	rig.s.cfg.ScanFolder = folder
+	rig.s.now = func() time.Time { return saveDay }
+	return rig, folder
+}
+
+// session makes a session of n pages on the fake, as a scan at 100 dpi
+// leaves it.
+func (rig *scanRig) session(t *testing.T, n int) *scan.Session {
+	t.Helper()
+	return addPages(t, rig.s.deps.Scans, rig.url, n)
+}
+
+func addPages(t *testing.T, st *scan.Store, url string, n int) *scan.Session {
+	t.Helper()
+	sess, err := st.New(escl.Scanner{Name: fakeScannerName, URL: url},
+		escl.Settings{Source: "Feeder", Color: "Grayscale8", Resolution: 100, Width: 2480, Height: 3507})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range n {
+		if _, err := sess.AddPage(bytes.NewReader(tinyJPEG(t))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return sess
+}
+
+// The save row shows the path a save will write, made from the title as it
+// is typed, before anything is written.
+func TestSaveShowsThePathFirst(t *testing.T) {
+	rig, folder := newSaveRig(t, nil)
+	sess := rig.session(t, 2)
+	name := func(title, format string) *httptest.ResponseRecorder {
+		return get(rig.h, "/scan/"+sess.ID+"/name?"+url.Values{"title": {title}, "format": {format}}.Encode())
+	}
+	for _, c := range []struct{ title, format, want string }{
+		{"Krankenkasse Beitragsbescheid", "pdf", "~/Nextcloud/Documents/Scans/2026-11-14 Krankenkasse Beitragsbescheid.pdf"},
+		{"Krankenkasse Mahnung", "pdf", "~/Nextcloud/Documents/Scans/2026-11-14 Krankenkasse Mahnung.pdf"},
+		{"a/b", "png", "~/Nextcloud/Documents/Scans/2026-11-14 a b 1.png and 1 more"},
+		{"X", "jpeg", "~/Nextcloud/Documents/Scans/2026-11-14 X 1.jpg and 1 more"},
+	} {
+		rec := name(c.title, c.format)
+		if rec.Code != 200 || rec.Body.String() != c.want || rec.Header().Get("Cache-Control") != "no-store" {
+			t.Errorf("%q as %s: status %d, %q; want %q", c.title, c.format, rec.Code, rec.Body.String(), c.want)
+		}
+	}
+	if rec := name("X", "tiff"); rec.Code != 400 {
+		t.Errorf("tiff: status %d, want 400", rec.Code)
+	}
+	if rec := get(rig.h, "/scan/"+strings.Repeat("0", 32)+"/name?format=pdf"); rec.Code != 404 {
+		t.Errorf("a gone scan: status %d, want 404", rec.Code)
+	}
+	body := get(rig.h, "/scan").Body.String()
+	for _, want := range []string{
+		`id="scan-save"`, `id="scan-title"`, `data-group="format"`,
+		`<button type="button" class="on" data-pick="pdf" aria-pressed="true">PDF</button>`,
+		`data-pick="png" aria-pressed="false">PNG</button>`, `data-pick="jpeg" aria-pressed="false">JPEG</button>`,
+		`id="scan-path">~/Nextcloud/Documents/Scans/</span>`, `data-scan="save"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the scan page lacks %q", want)
+		}
+	}
+	if _, err := os.Stat(filepath.Dir(filepath.Dir(folder))); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("showing the path wrote to the home: %v", err)
+	}
+}
+
+func TestSaveWritesAndForgets(t *testing.T) {
+	rig, folder := newSaveRig(t, nil)
+	sess := rig.session(t, 2)
+	rig.s.adopt(sess)
+	rec := postTo(rig.s, rig.h, "/scan/"+sess.ID+"/save", url.Values{"title": {"X"}, "format": {"pdf"}})
+	if rec.Code != 200 || rec.Body.String() != `Saved "2026-11-14 X.pdf" in Scans.` {
+		t.Fatalf("save: status %d, %q", rec.Code, rec.Body.String())
+	}
+	file := filepath.Join(folder, "2026-11-14 X.pdf")
+	if fi, err := os.Stat(file); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Errorf("the saved file: %v, %v; want mode 0600", fi, err)
+	}
+	if _, err := rig.s.deps.Scans.Get(sess.ID); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the session is still kept: %v", err)
+	}
+	if _, _, _, ok := rig.s.scanState(sess.ID); ok {
+		t.Error("the service still lists the saved scan")
+	}
+	if e := lastEvent(t, rig.s); e.Action != "scan.save" || e.Target != file || e.Actor != "mika" || !e.OK {
+		t.Errorf("logged %+v, want scan.save of %s", e, file)
+	}
+
+	three := rig.session(t, 3)
+	rec = postTo(rig.s, rig.h, "/scan/"+three.ID+"/save", url.Values{"title": {"Y"}, "format": {"jpeg"}})
+	if rec.Code != 200 || rec.Body.String() != `Saved "2026-11-14 Y 1.jpg" and 2 more in Scans.` {
+		t.Errorf("save as JPEG: status %d, %q", rec.Code, rec.Body.String())
+	}
+	if e := lastEvent(t, rig.s); e.Action != "scan.save" || !strings.Contains(e.Target, filepath.Join(folder, "2026-11-14 Y 3.jpg")) {
+		t.Errorf("logged %+v, want every path", e)
+	}
+
+	for _, c := range []struct {
+		name, path string
+		form       url.Values
+		code       int
+		want       string
+	}{
+		{"saved before", "/scan/" + sess.ID + "/save", url.Values{"format": {"pdf"}}, 404, ""},
+		{"no pages", "/scan/" + rig.session(t, 0).ID + "/save", url.Values{"format": {"pdf"}}, 400, "There are no pages to save."},
+		{"bad format", "/scan/" + rig.session(t, 1).ID + "/save", url.Values{"format": {"tiff"}}, 400, ""},
+		{"not an ID", "/scan/nope/save", url.Values{"format": {"pdf"}}, 404, ""},
+	} {
+		rec := postTo(rig.s, rig.h, c.path, c.form)
+		if rec.Code != c.code || (c.want != "" && rec.Body.String() != c.want) {
+			t.Errorf("%s: status %d, %q; want %d %q", c.name, rec.Code, rec.Body.String(), c.code, c.want)
+		}
+	}
+}
+
+// A save that fails says so in a sentence of its own and keeps the scan.
+func TestSaveFailureKeepsTheScan(t *testing.T) {
+	rig, folder := newSaveRig(t, nil)
+	if err := os.MkdirAll(filepath.Dir(folder), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(folder, nil, 0o600); err != nil { // a file where the folder goes
+		t.Fatal(err)
+	}
+	sess := rig.session(t, 1)
+	rec := postTo(rig.s, rig.h, "/scan/"+sess.ID+"/save", url.Values{"title": {"X"}, "format": {"pdf"}})
+	if rec.Code != 500 || strings.Contains(rec.Body.String(), "scan:") || !strings.Contains(rec.Body.String(), "Scans") {
+		t.Errorf("failed save: status %d, %q", rec.Code, rec.Body.String())
+	}
+	if n := rig.pages(t, sess.ID); n != 1 {
+		t.Errorf("the failed save left %d pages, want 1", n)
+	}
+}
+
+func TestRotateAndDrop(t *testing.T) {
+	rig, _ := newSaveRig(t, nil)
+	sess := rig.session(t, 3)
+	id := sess.ID
+	edit := func(path string, form url.Values) *httptest.ResponseRecorder {
+		return postTo(rig.s, rig.h, "/scan/"+id+"/page/"+path, form)
+	}
+	frag := func() string {
+		f, err := rig.s.scanFragment()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return f
+	}
+	if rec := edit("2/rotate", url.Values{"by": {"90"}}); rec.Code != 200 {
+		t.Fatalf("rotate: status %d, %q", rec.Code, rec.Body.String())
+	}
+	if f := frag(); !strings.Contains(f, `<img class="turn90" src="/scan/`+id+`/page/2?`) || strings.Count(f, "turn") != 1 {
+		t.Errorf("page 2 is not shown turned:\n%s", f)
+	}
+	edit("2/rotate", url.Values{"by": {"-90"}})
+	edit("2/rotate", url.Values{"by": {"-90"}})
+	if f := frag(); !strings.Contains(f, `<img class="turn270" src="/scan/`+id+`/page/2?`) {
+		t.Errorf("page 2 is not turned back past upright:\n%s", f)
+	}
+	if rec := edit("2/rotate", url.Values{"by": {"45"}}); rec.Code != 400 {
+		t.Errorf("rotate by 45: status %d, want 400", rec.Code)
+	}
+
+	first, err := sess.PagePath(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec := edit("1/drop", nil); rec.Code != 200 {
+		t.Fatalf("drop: status %d, %q", rec.Code, rec.Body.String())
+	}
+	if _, err := os.Stat(first); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the dropped page is still on disk: %v", err)
+	}
+	if f := frag(); strings.Count(f, `class="pg"`) != 2 || !strings.Contains(f, `<img class="turn270" src="/scan/`+id+`/page/1?`) {
+		t.Errorf("the strip does not show the 2 pages left, the turned one first:\n%s", f)
+	}
+
+	for _, path := range []string{"3/rotate", "0/rotate", "x/rotate", "3/drop", "0/drop", "-1/drop"} {
+		if rec := edit(path, url.Values{"by": {"90"}}); rec.Code != 404 {
+			t.Errorf("%s: status %d, want 404", path, rec.Code)
+		}
+	}
+	if rec := get(rig.h, "/scan/"+id+"/page/3"); rec.Code != 404 {
+		t.Errorf("GET page 3: status %d, want 404", rec.Code)
+	}
+	rec := get(rig.h, "/scan/"+id+"/page/2")
+	want, _ := os.ReadFile(mustPath(t, sess, 2))
+	if rec.Code != 200 || rec.Header().Get("Content-Type") != "image/jpeg" || rec.Header().Get("Cache-Control") != "no-store" || !bytes.Equal(rec.Body.Bytes(), want) {
+		t.Errorf("GET page 2: status %d, %q, %q, %d bytes", rec.Code, rec.Header().Get("Content-Type"), rec.Header().Get("Cache-Control"), rec.Body.Len())
+	}
+}
+
+func mustPath(t *testing.T, sess *scan.Session, n int) string {
+	t.Helper()
+	p, err := sess.PagePath(n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// A running scan's session takes no save, discard, turn or drop: a discard
+// during a page on its way could leave a session of that one page.
+func TestPageEditsWaitForTheScan(t *testing.T) {
+	rig, _ := newSaveRig(t, slowPages(time.Minute))
+	sess := rig.session(t, 1)
+	rig.start(t, rig.feeder(sess.ID))
+	for _, c := range []struct {
+		path string
+		form url.Values
+	}{
+		{"save", url.Values{"format": {"pdf"}}},
+		{"discard", nil},
+		{"page/1/rotate", url.Values{"by": {"90"}}},
+		{"page/1/drop", nil},
+	} {
+		rec := postTo(rig.s, rig.h, "/scan/"+sess.ID+"/"+c.path, c.form)
+		if rec.Code != 409 || rec.Body.String() != "A scan is running. Wait for it or stop it." || rec.Header().Get("X-Skra-Class") != "need" {
+			t.Errorf("%s while scanning: status %d, %q, class %q", c.path, rec.Code, rec.Body.String(), rec.Header().Get("X-Skra-Class"))
+		}
+	}
+	if n := rig.pages(t, sess.ID); n != 1 {
+		t.Errorf("the session holds %d pages, want 1", n)
+	}
+}
+
+// restartWith is the rig's server as it starts again over the scans in st.
+func restartWith(rig *scanRig, st *scan.Store) *Server {
+	deps := rig.s.deps
+	deps.Scans = st
+	s := New(rig.s.cfg, deps, NewToken())
+	s.now = rig.s.now
+	return s
+}
+
+// setCreated rewrites when the session in dir/scans/id says it began.
+func setCreated(t *testing.T, dir, id string, at time.Time) {
+	t.Helper()
+	path := filepath.Join(dir, "scans", id, "session.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatal(err)
+	}
+	m["Created"] = at
+	if data, err = json.Marshal(m); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A scan that was not saved before skrá exited shows on the Scan tab again,
+// to continue or discard. One that holds no page, as a crash can leave, goes
+// without a word.
+func TestUnsavedScanComesBack(t *testing.T) {
+	rig, _ := newSaveRig(t, nil)
+	dir := t.TempDir()
+	before, err := scan.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept := addPages(t, before, rig.url, 3)
+	empty := addPages(t, before, rig.url, 0)
+	setCreated(t, dir, kept.ID, time.Date(2026, 11, 14, 9, 41, 0, 0, time.Local))
+	after, err := scan.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := restartWith(rig, after)
+	t.Cleanup(s.stopScans)
+	h := s.Handler()
+
+	body := get(h, "/scan").Body.String()
+	for _, want := range []string{
+		`An unsaved scan from 09:41 with 3 pages.`,
+		`data-scan="continue" data-session="` + kept.ID + `"`,
+		`data-scan="discard" data-session="` + kept.ID + `"`,
+		`data-confirm="The scan and its 3 pages are deleted, not saved."`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the scan page lacks %q", want)
+		}
+	}
+	if strings.Count(body, "An unsaved scan") != 1 {
+		t.Errorf("the page lists the empty scan too:\n%s", body)
+	}
+	if _, err := after.Get(empty.ID); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the empty scan is still kept: %v", err)
+	}
+	if f, _ := s.scanFragment(); !strings.Contains(f, `data-session="`+kept.ID+`"`) || strings.Count(f, `class="pg"`) != 3 {
+		t.Errorf("the scan fragment lacks the scan to continue:\n%s", f)
+	}
+
+	rec := postTo(s, h, "/scan/"+kept.ID+"/discard", nil)
+	if rec.Code != 200 {
+		t.Fatalf("discard: status %d, %q", rec.Code, rec.Body.String())
+	}
+	if _, err := after.Get(kept.ID); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the discarded scan is still kept: %v", err)
+	}
+	if _, _, _, ok := s.scanState(kept.ID); ok {
+		t.Error("the service still lists the discarded scan")
+	}
+	if e := lastEvent(t, s); e.Action != "scan.discard" || !e.OK {
+		t.Errorf("logged %+v, want scan.discard", e)
+	}
+	if body := get(h, "/scan").Body.String(); strings.Contains(body, "An unsaved scan") {
+		t.Error("the discarded scan still shows")
+	}
+	if rec := postTo(s, h, "/scan/"+kept.ID+"/discard", nil); rec.Code != 404 {
+		t.Errorf("a second discard: status %d, want 404", rec.Code)
+	}
+}
+
+// Another site cannot read a scanned page, not even as a picture of its own.
+func TestPagesAreNotForOtherSites(t *testing.T) {
+	rig, _ := newSaveRig(t, nil)
+	sess := rig.session(t, 1)
+	for _, h := range []map[string]string{
+		{"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "no-cors", "Sec-Fetch-Dest": "image"},
+		{"Sec-Fetch-Site": "same-site", "Sec-Fetch-Mode": "no-cors", "Sec-Fetch-Dest": "image"},
+		{"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document"},
+	} {
+		req := httptest.NewRequest("GET", "/scan/"+sess.ID+"/page/1", nil)
+		req.Host = "127.0.0.1:7631"
+		for k, v := range h {
+			req.Header.Set(k, v)
+		}
+		rec := httptest.NewRecorder()
+		rig.h.ServeHTTP(rec, req)
+		if rec.Code != 403 {
+			t.Errorf("%v: status %d, want 403", h, rec.Code)
+		}
+	}
+	req := httptest.NewRequest("GET", "/scan/"+sess.ID+"/page/1", nil)
+	req.Host = "127.0.0.1:7631"
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	req.Header.Set("Sec-Fetch-Dest", "image")
+	rec := httptest.NewRecorder()
+	rig.h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Errorf("the page's own picture: status %d", rec.Code)
 	}
 }

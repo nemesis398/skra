@@ -1,7 +1,12 @@
 {{/* The scan tab. The page asks no scanner: skra.js loads the list of
      scanners from data-src, and then the form for the one picked. The
-     pages of the scan come with the event stream's scan fragment. */}}
-{{define "scanpage"}}<div class="sec"><b>scan</b><span class="rule"></span></div>
+     pages of the scan come with the event stream's scan fragment. Scans
+     kept from before are offered first, to continue or discard. The save
+     row is not swapped by the event stream, so a title being typed stays;
+     skra.js shows it while the shown scan has pages. */}}
+{{define "scanpage"}}{{with .Scan}}{{if .Unsaved}}<div id="scan-unsaved"><div class="sec"><b>unsaved</b><span class="rule"></span></div>
+{{range .Unsaved}}<div class="unsaved" data-unsaved="{{.ID}}"><span>An unsaved scan from {{.From}} with {{.Pages}}.</span><span class="btns"><button type="button" class="btn sm" data-scan="continue" data-session="{{.ID}}"><i>&#xF040A;</i>continue</button><button type="button" class="btn sm" data-scan="discard" data-session="{{.ID}}" data-confirm-title="Discard this scan?" data-confirm="The scan and its {{.Pages}} are deleted, not saved." data-confirm-label="discard {{.Pages}}"><i>&#xF01B4;</i>discard</button></span></div>
+{{end}}</div>{{end}}{{end}}<div class="sec"><b>scan</b><span class="rule"></span></div>
 <div class="panel" id="scan">
   <div class="frow"><label class="k" for="scan-scanner">scanner</label><span id="scan-scanners" data-src="/scan/scanners"><span class="wait">looking for scanners</span></span><span class="btns"><button type="button" class="btn sm" data-scan="find"><i>&#xF0450;</i>look again</button></span></div>
   <div id="scan-form"></div>
@@ -9,7 +14,14 @@
   <div class="row"><button type="button" class="btn" data-scan="stop" hidden><i>&#xF04DB;</i>stop</button><button type="button" class="btn" data-scan="start" disabled><i>&#xF06AB;</i><span>scan</span></button></div>
 </div>
 <div class="sec"><b>pages</b><span class="rule"></span></div>
-<div id="scan-job"><div class="empty">The pages show here as they come from the scanner.</div></div>{{end}}
+<div id="scan-job"><div class="empty">The pages show here as they come from the scanner.</div></div>
+{{with .Scan}}<div class="panel" id="scan-save" hidden>
+  <div class="frow"><label class="k" for="scan-title">title</label><input class="f" id="scan-title" type="text" maxlength="200" autocomplete="off" spellcheck="false" placeholder="the date and time stand in for an empty title"><span class="hint"></span></div>
+  <div class="frow"><span class="k">format</span><span>{{template "seg" .Format}}</span><span class="hint">PNG and JPEG give a file a page</span></div>
+  <div class="frow"><span class="k">saves</span><span class="path" id="scan-path">{{.Folder}}</span></div>
+  <div class="scanmsg" id="save-note" hidden></div>
+  <div class="row"><button type="button" class="btn" data-scan="discard" data-confirm-title="Discard this scan?"><i>&#xF01B4;</i>discard</button><button type="button" class="btn" data-scan="save"><i>&#xF0193;</i>save</button></div>
+</div>{{end}}{{end}}
 
 {{/* The scanner drop-down, or why there is none. */}}
 {{define "scanners"}}{{if .}}<select class="f" id="scan-scanner" name="scanner">{{range .}}<option value="{{.URL}}">{{.Name}}</option>{{end}}</select>{{else}}<span class="wait">No scanner found. Check that it is on and on this network, or add it to scanners in the config.</span>{{end}}{{end}}
@@ -25,8 +37,10 @@
 
 {{/* The event stream's scan fragment: every scan the service knows, with
      its last message, its pages, and the scanner and resolution they share.
-     skra.js shows the one the page started, and forgets it when it is gone. */}}
-{{define "scan"}}<div id="scans">{{range .}}<div class="scanjob" data-session="{{.ID}}" data-running="{{.Running}}" data-gone="{{.Gone}}" data-scanner="{{.Scanner}}" data-dpi="{{.DPI}}">
+     skra.js shows the one the page started, and forgets it when it is gone.
+     Each page is its picture, turned by a class, with its number under it;
+     turn and drop show while no scan runs. */}}
+{{define "scan"}}<div id="scans">{{range .}}{{$id := .ID}}{{$running := .Running}}<div class="scanjob" data-session="{{.ID}}" data-running="{{.Running}}" data-gone="{{.Gone}}" data-scanner="{{.Scanner}}" data-dpi="{{.DPI}}" data-pages="{{len .Pages}}">
 <div class="scanmsg{{if .Class}} {{.Class}}{{end}}">{{.Msg}}</div>
-<div class="strip">{{range .Pages}}<div class="pg"><span class="n">{{.}}</span></div>{{end}}</div>
+<div class="strip">{{range .Pages}}<div class="pg"><div class="th"><img{{if .Rotate}} class="turn{{.Rotate}}"{{end}} src="/scan/{{$id}}/page/{{.N}}?f={{.File}}" alt="page {{.N}}"></div><div class="pgbar">{{if not $running}}<button type="button" data-scan="rotate" data-n="{{.N}}" data-by="-90" title="Turn page {{.N}} to the left" aria-label="Turn page {{.N}} to the left"><i>&#xF0465;</i></button>{{end}}<span class="n">{{.N}}</span>{{if not $running}}<button type="button" data-scan="rotate" data-n="{{.N}}" data-by="90" title="Turn page {{.N}} to the right" aria-label="Turn page {{.N}} to the right"><i>&#xF0467;</i></button><button type="button" data-scan="drop" data-n="{{.N}}" title="Drop page {{.N}}" aria-label="Drop page {{.N}}"><i>&#xF0156;</i></button>{{end}}</div></div>{{end}}{{if and .Pages (not .Running)}}<button type="button" class="more" data-scan="more"><i>&#xF0415;</i>scan more</button>{{end}}</div>
 </div>{{end}}</div>{{end}}
