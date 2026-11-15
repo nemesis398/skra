@@ -637,7 +637,10 @@ func (s *Server) runScan(ctx context.Context, j *scanJob, c ScannerClient, set e
 	for err == nil {
 		s.setScan(j, scanningText(set, n+1), "", true)
 		var page io.ReadCloser
-		if page, err = c.NextPage(ctx, job); err == io.EOF {
+		page, err = c.NextPage(ctx, job)
+		// Some scanners say the feeder is empty, not that the job has no
+		// more pages, once it took its last page.
+		if err == io.EOF || (n > 0 && errors.Is(err, escl.ErrFeederEmpty)) {
 			err = nil
 			break
 		} else if err != nil {

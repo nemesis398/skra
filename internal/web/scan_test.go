@@ -433,6 +433,50 @@ func TestFeederEmptyKeepsThePages(t *testing.T) {
 	}
 }
 
+// emptyAtTheEnd stands for a scanner that answers the request after the last
+// page of the feeder with 409 and an empty feeder, where the fake answers
+// 404. next is the fake.
+func emptyAtTheEnd(next http.Handler) http.Handler {
+	fake := next.(*fakescanner.Scanner)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/NextDocument") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		rec := httptest.NewRecorder()
+		next.ServeHTTP(rec, r)
+		if rec.Code == http.StatusNotFound {
+			fake.SetState("empty", false)
+			http.Error(w, "feeder empty", http.StatusConflict)
+			return
+		}
+		for k, v := range rec.Header() {
+			w.Header()[k] = v
+		}
+		w.WriteHeader(rec.Code)
+		w.Write(rec.Body.Bytes())
+	})
+}
+
+// A feeder that runs empty after the job took its pages ends the job as a
+// scanner that says it has no more pages does. An empty feeder at the start
+// is still the person's to fix.
+func TestFeederEmptyAfterPagesEndsTheJob(t *testing.T) {
+	rig := newScanRig(t, 2, emptyAtTheEnd)
+	id := rig.start(t, rig.feeder(""))
+	if msg, class := rig.waitDone(t, id); msg != "2 pages scanned." || class != "" {
+		t.Errorf("a feeder empty after 2 pages ended with %q in %q, want 2 pages scanned.", msg, class)
+	}
+	if n := rig.pages(t, id); n != 2 {
+		t.Errorf("the session holds %d pages, want 2", n)
+	}
+
+	rig.start(t, rig.feeder(id))
+	if msg, class := rig.waitDone(t, id); msg != escl.ErrFeederEmpty.Error() || class != "need" {
+		t.Errorf("a scan more with the feeder empty ended with %q in %q, want the feeder sentence in need", msg, class)
+	}
+}
+
 // hangUpAfterFirstPage answers the first page and then hangs up on every
 // request for another, as a scanner does that left the network mid-scan.
 func hangUpAfterFirstPage(next http.Handler) http.Handler {
