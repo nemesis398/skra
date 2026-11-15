@@ -16,8 +16,11 @@ import (
 )
 
 // ErrJournalNotReadable is what ReadLog answers when the journal cannot be read
-// by this user, or journalctl is not installed.
+// by this user.
 var ErrJournalNotReadable = errors.New("The journal is not readable for this user.")
+
+// ErrNoJournalctl is what ReadLog answers when journalctl is not installed.
+var ErrNoJournalctl = errors.New("journalctl is not installed, so skrá cannot show the CUPS log.")
 
 // ErrNotBack is what SetLogLevel answers when CUPS does not report the new
 // level within logPollFor of the change: it is still restarting, or it did not
@@ -91,7 +94,8 @@ type cmdResult struct {
 // ReadLog returns the last lines of the CUPS journal, oldest first, so the
 // newest line is the last. lines is clamped to 1..1000. It runs journalctl
 // without a shell and gives it five seconds. A journal this user may not read
-// gives ErrJournalNotReadable.
+// gives ErrJournalNotReadable, and a missing journalctl gives ErrNoJournalctl.
+// A caller that cancels ctx gets context.Canceled back.
 func ReadLog(ctx context.Context, lines int) ([]string, error) {
 	lines = min(max(lines, minLines), maxLines)
 	ctx, cancel := context.WithTimeout(ctx, journalTimeout)
@@ -99,9 +103,11 @@ func ReadLog(ctx context.Context, lines int) ([]string, error) {
 	res, err := runJournal(ctx, []string{"journalctl", "-u", "cups.service", "-n", strconv.Itoa(lines), "-o", "short-iso", "--no-pager"})
 	switch {
 	case errors.Is(err, exec.ErrNotFound):
-		return nil, ErrJournalNotReadable
-	case err != nil && ctx.Err() != nil:
+		return nil, ErrNoJournalctl
+	case err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded):
 		return nil, fmt.Errorf("journalctl did not answer in time: %w", ctx.Err())
+	case err != nil && ctx.Err() != nil:
+		return nil, ctx.Err() // the caller gave up; that is not a slow journal
 	case err != nil:
 		return nil, fmt.Errorf("journalctl: %w", err)
 	}
@@ -183,8 +189,10 @@ type tailBuffer struct {
 func (t *tailBuffer) Write(p []byte) (int, error) {
 	n := len(p)
 	if len(p) >= t.max {
+		// Bytes are lost when p is longer than max or pushes old ones out.
+		hadOld := len(t.buf) > 0
 		t.buf = append(t.buf[:0], p[len(p)-t.max:]...)
-		t.cut = t.cut || len(p) > t.max || len(t.buf) > 0
+		t.cut = t.cut || len(p) > t.max || hadOld
 		return n, nil
 	}
 	if over := len(t.buf) + len(p) - t.max; over > 0 {

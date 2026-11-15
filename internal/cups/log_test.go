@@ -135,8 +135,6 @@ func TestReadLogNotReadable(t *testing.T) {
 		{"permission", cmdResult{ExitCode: 1, Stderr: "Failed to open journal: Permission denied\n"}, nil},
 		{"no journal files", cmdResult{ExitCode: 1, Stderr: "No journal files were found.\n"}, nil},
 		{"insufficient, exit 0, nothing shown", cmdResult{Stderr: "Hint: not seeing messages. No journal files were opened due to insufficient permissions.\n", Stdout: "-- No entries --\n"}, nil},
-		{"not installed", cmdResult{}, exec.ErrNotFound},
-		{"not installed, wrapped", cmdResult{}, &exec.Error{Name: "journalctl", Err: exec.ErrNotFound}},
 	} {
 		fakeJournal(t, func(context.Context, []string) (cmdResult, error) { return tc.res, tc.err })
 		_, err := ReadLog(context.Background(), 10)
@@ -145,6 +143,26 @@ func TestReadLogNotReadable(t *testing.T) {
 		}
 		if !errors.Is(err, ErrJournalNotReadable) {
 			t.Errorf("%s: err is not ErrJournalNotReadable", tc.name)
+		}
+	}
+}
+
+func TestReadLogNoJournalctl(t *testing.T) {
+	for name, runErr := range map[string]error{
+		"not found":         exec.ErrNotFound,
+		"not found wrapped": &exec.Error{Name: "journalctl", Err: exec.ErrNotFound},
+	} {
+		fakeJournal(t, func(context.Context, []string) (cmdResult, error) { return cmdResult{}, runErr })
+		_, err := ReadLog(context.Background(), 10)
+		if err == nil || err.Error() != "journalctl is not installed, so skrá cannot show the CUPS log." {
+			t.Errorf("%s: err = %v", name, err)
+		}
+		if !errors.Is(err, ErrNoJournalctl) {
+			t.Errorf("%s: err is not ErrNoJournalctl", name)
+		}
+		// Permissions are not what to look at.
+		if errors.Is(err, ErrJournalNotReadable) {
+			t.Errorf("%s: err is ErrJournalNotReadable", name)
 		}
 	}
 }
@@ -190,6 +208,22 @@ func TestReadLogTimesOut(t *testing.T) {
 	}
 }
 
+func TestReadLogCancelledIsNotATimeout(t *testing.T) {
+	fakeJournal(t, func(ctx context.Context, _ []string) (cmdResult, error) {
+		<-ctx.Done()
+		return cmdResult{}, ctx.Err()
+	})
+	parent, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := ReadLog(parent, 10)
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want context.Canceled", err)
+	}
+	if err != nil && strings.Contains(err.Error(), "did not answer") {
+		t.Errorf("a cancelled parent reads as a timeout: %v", err)
+	}
+}
+
 func TestTailBufferKeepsTheNewest(t *testing.T) {
 	b := &tailBuffer{max: 10}
 	for _, p := range []string{"aaaa\n", "bbbb\n", "cccc\n", "d\n"} {
@@ -205,6 +239,35 @@ func TestTailBufferKeepsTheNewest(t *testing.T) {
 	b.Write([]byte("0123456789"))
 	if b.String() != "6789" || !b.cut {
 		t.Errorf("kept %q", b.String())
+	}
+}
+
+func TestTailBufferExactSizeWrite(t *testing.T) {
+	// One write of exactly max bytes into an empty buffer loses nothing, so
+	// its first line is whole and stays.
+	b := &tailBuffer{max: 12}
+	b.Write([]byte("first\nsecond\n")[:12])
+	if b.cut {
+		t.Errorf("cut = true after %q went in whole", b.String())
+	}
+	b = &tailBuffer{max: 15}
+	b.Write([]byte("first\nsecond\nxx"))
+	if got := splitLines(b.complete()); !reflect.DeepEqual(got, []string{"first", "second", "xx"}) {
+		t.Errorf("lines = %q, want the first line kept", got)
+	}
+	// With bytes already there, the write pushes them out, and where the new
+	// ones start is not known to be a line start.
+	b = &tailBuffer{max: 4}
+	b.Write([]byte("ab"))
+	b.Write([]byte("cdef"))
+	if b.String() != "cdef" || !b.cut {
+		t.Errorf("kept %q, cut %v; want cdef, true", b.String(), b.cut)
+	}
+	// A write above max cuts, empty buffer or not.
+	b = &tailBuffer{max: 4}
+	b.Write([]byte("abcde"))
+	if b.String() != "bcde" || !b.cut {
+		t.Errorf("kept %q, cut %v; want bcde, true", b.String(), b.cut)
 	}
 }
 
