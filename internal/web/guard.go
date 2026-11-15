@@ -8,30 +8,39 @@ import (
 	"net/http"
 )
 
+// contentSecurityPolicy lets a page load scripts from skrá only, no plugin,
+// no base URL and no form target, and be framed by nobody.
+const contentSecurityPolicy = "script-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+
 // Guard protects next from other web pages and from DNS rebinding.
 //
 // Every request must carry a Host of 127.0.0.1:port or localhost:port, which
 // stops a hostile name that resolves to 127.0.0.1 from reading the page.
 // Every request that is not GET, HEAD or OPTIONS must also carry the
 // X-Skra-Token header equal to token, and an Origin that is absent or equal to
-// "http://" + Host. A request that the browser marks as coming from another
-// site (Sec-Fetch-Site cross-site or same-site) is refused unless it is a
-// top-level navigation to one of the pages, so another site can link to a
-// tab but cannot read the event stream, the log or a panel; a request
+// "http://" + Host; an empty token lets no write through, since an empty
+// header would match it. A request that the browser marks as coming from
+// another site (Sec-Fetch-Site cross-site or same-site) is refused unless it
+// is a top-level navigation to one of the pages, so another site can link to
+// a tab but cannot read the event stream, the log or a panel; a request
 // without Sec-Fetch headers passes, and the token still guards writes.
-// Anything else gets 403. An empty token lets no write
-// through: an empty header would match it. Every response, 403s included,
-// forbids framing (X-Frame-Options and frame-ancestors).
+// Anything else gets 403. Every response, 403s included, forbids framing
+// (X-Frame-Options and frame-ancestors) and content sniffing, and carries the
+// Content-Security-Policy.
 func Guard(next http.Handler, port, token string) http.Handler {
 	hosts := map[string]bool{
 		"127.0.0.1:" + port: true,
 		"localhost:" + port: true,
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// No page may frame this one: a framed page would pass every check
-		// below, and a click could be steered onto a button.
-		w.Header().Set("X-Frame-Options", "DENY")
-		w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
+		// No other page may frame skrá: a framed page would pass every check
+		// below, and a click could be steered onto a button. The page runs
+		// its own script file and nothing else; styles stay open, because
+		// the ink bars set their width inline.
+		h := w.Header()
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Content-Security-Policy", contentSecurityPolicy)
+		h.Set("X-Content-Type-Options", "nosniff")
 		if !hosts[r.Host] {
 			http.Error(w, "Forbidden: unexpected Host header.", http.StatusForbidden)
 			return

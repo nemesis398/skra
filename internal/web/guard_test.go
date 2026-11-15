@@ -240,7 +240,12 @@ func TestServerStaticAndGuard(t *testing.T) {
 	}
 }
 
-func TestGuardForbidsFraming(t *testing.T) {
+// wantCSP lets the page run its own script and nothing else, load no plugin,
+// set no base, post no form, and be framed by nobody. Styles are not
+// restricted: the ink bars set their width inline.
+const wantCSP = "script-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+
+func TestGuardSetsTheSecurityHeaders(t *testing.T) {
 	h := guarded()
 	for _, tc := range []struct {
 		name, method, host string
@@ -249,10 +254,14 @@ func TestGuardForbidsFraming(t *testing.T) {
 		{"a 200", "GET", "localhost:7631", 200},
 		{"a 403 for the host", "GET", "evil.example:7631", 403},
 		{"a 403 for the token", "POST", "localhost:7631", 403},
+		{"a 403 for another site", "GET", "localhost:7631", 403},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			req := httptest.NewRequest(tc.method, "/x", nil)
 			req.Host = tc.host
+			if tc.name == "a 403 for another site" {
+				req.Header.Set("Sec-Fetch-Site", "cross-site")
+			}
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, req)
 			if rec.Code != tc.want {
@@ -261,8 +270,11 @@ func TestGuardForbidsFraming(t *testing.T) {
 			if got := rec.Header().Get("X-Frame-Options"); got != "DENY" {
 				t.Errorf("X-Frame-Options %q, want DENY", got)
 			}
-			if got := rec.Header().Get("Content-Security-Policy"); got != "frame-ancestors 'none'" {
-				t.Errorf("Content-Security-Policy %q, want frame-ancestors 'none'", got)
+			if got := rec.Header().Get("Content-Security-Policy"); got != wantCSP {
+				t.Errorf("Content-Security-Policy %q, want %q", got, wantCSP)
+			}
+			if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+				t.Errorf("X-Content-Type-Options %q, want nosniff", got)
 			}
 		})
 	}

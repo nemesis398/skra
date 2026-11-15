@@ -81,7 +81,8 @@ requests with `lpadmin` today. It adds a new door, and the door is guarded:
   readable by others; delete it, and the next start makes a new one.
 - Another site may link to the three tabs and do nothing else: any other
   request the browser marks as coming from another site gets `403`.
-- No other page may frame skrá.
+- No other page may frame skrá, and a page loads no script but skra's own
+  (`Content-Security-Policy`).
 
 ## ⚙️ Configuration
 
