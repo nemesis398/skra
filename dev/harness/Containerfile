@@ -1,5 +1,6 @@
 FROM registry.fedoraproject.org/fedora:44
-RUN dnf -y install cups cups-printerapp cups-filters procps-ng avahi dbus-daemon \
+RUN dnf -y install --setopt=install_weak_deps=False \
+    cups cups-printerapp cups-filters procps-ng avahi dbus-daemon \
     && dnf clean all \
     && mkdir -p /etc/skra /var/spool/skra
 # Two users beside root, with one password, for the log-level switch: CUPS

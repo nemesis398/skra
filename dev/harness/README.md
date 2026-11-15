@@ -4,7 +4,7 @@ A rootless podman container with its own CUPS and a virtual IPP Everywhere
 printer. Integration tests talk to it through `.dev/run/cups.sock`, so nothing
 touches the laptop's real CUPS.
 
-    make harness-up       build and start (reuses a running container)
+    make harness-up       build and start (reuses a running container; see below)
     make integration      harness-up, then go test -tags integration ./...
     make printer-stop     stop ippeveprinter inside the container
     make printer-start    start it again
@@ -18,6 +18,15 @@ the host-side service could not query it. Tests get a client from
 `internal/testenv`, which acts as user `root` (the host user maps to root
 inside the rootless container, and CUPS checks the PeerCred name against the
 socket peer) and skips when the socket is missing.
+
+## After changing dev/harness/
+
+`make harness-up` reuses a container that is running, answers, and is mounted
+on this checkout's `.dev/run`, even when the files in `dev/harness/` have
+changed since it was built. After a change to the Containerfile, the
+entrypoint, `cupsd.conf` or `printer.attrs`, run `make harness-down` first, so
+that `harness-up` builds the image again. A container that another checkout
+started (the name and port 8631 are shared) is replaced, not reused.
 
 ## Changing cupsd.conf
 
