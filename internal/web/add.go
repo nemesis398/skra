@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"regexp"
 	"slices"
@@ -40,6 +41,7 @@ const (
 const (
 	notAddressText = "That is not a printer address. It looks like ipp://printer.local/ipp/print."
 	badSchemeText  = "skrá adds printers by network or USB address."
+	numericText    = "Write the address as a full IPv4 address, a host name, or an IPv6 address in brackets."
 	ownCUPSText    = "That address is this machine's own CUPS."
 	badNameText    = "A queue name takes letters, digits, dot, dash and underscore, without spaces."
 	noDriverText   = "Choose a driver first."
@@ -69,15 +71,34 @@ var (
 
 // parseAddress parses a device address with url.Parse. A dnssd address holds
 // the service name percent-encoded in its host ("Brother%20DCP._ipp._tcp.local."),
-// which url.Parse refuses in a host, so the percent signs of the authority are
-// escaped for the parse; only the parse sees that.
+// which url.Parse refuses in a host, so for that scheme only the percent signs
+// of the authority are escaped for the parse. Any other scheme is parsed as it
+// is: CUPS decodes %XX in a host name before it connects, so a host such as
+// local%68ost has to be refused, not read some other way.
 func parseAddress(raw string) (*url.URL, error) {
-	if i := strings.Index(raw, "://"); i >= 0 {
+	if i := strings.Index(raw, "://"); i >= 0 && strings.EqualFold(raw[:i], "dnssd") {
 		start := i + len("://")
 		end := start + strings.IndexAny(raw[start:]+"/", "/?#")
 		raw = raw[:start] + strings.ReplaceAll(raw[start:end], "%", "%25") + raw[end:]
 	}
 	return url.Parse(raw)
+}
+
+// numberLabel is a part of a host that the system's address parser reads as a
+// number: decimal, or hexadecimal with 0x.
+var numberLabel = regexp.MustCompile(`^([0-9]+|0[xX][0-9a-fA-F]*)$`)
+
+// oddNumber reports whether host is made of numbers only but is not a full
+// dotted-quad IPv4 address in its canonical form. inet_aton reads "127.1",
+// "2130706433" and "0x7f.0.0.1" as 127.0.0.1.
+func oddNumber(host string) bool {
+	for _, label := range strings.Split(host, ".") {
+		if !numberLabel.MatchString(label) {
+			return false
+		}
+	}
+	ip, err := netip.ParseAddr(host)
+	return err != nil || !ip.Is4()
 }
 
 // checkAddress reads an address the page sends and returns it with its scheme
@@ -95,18 +116,64 @@ func checkAddress(raw string) (string, *refusal) {
 	if !slices.Contains(addressSchemes, u.Scheme) { // url.Parse has made the scheme lower case
 		return bad(badSchemeText)
 	}
-	if u.Scheme == "usb" {
+	switch {
+	case u.Scheme == "usb":
 		if u.Host == "" && u.Opaque == "" && u.Path == "" {
 			return bad(notAddressText)
 		}
-	} else if u.Hostname() == "" {
+	case u.Hostname() == "":
 		return bad(notAddressText)
+	case u.Scheme != "dnssd" && strings.Contains(u.Host, "%") && !strings.HasPrefix(u.Host, "["):
+		return bad(notAddressText) // only an IPv6 zone, inside brackets, has a percent sign
+	case oddNumber(u.Hostname()):
+		return bad(numericText)
 	}
 	addr := u.Scheme + raw[len(u.Scheme):]
 	if printer.IsLocalCUPS(addr) {
 		return bad(ownCUPSText)
 	}
 	return addr, nil
+}
+
+// userinfoOf returns the user[:password] part of an address, or "".
+func userinfoOf(addr string) string {
+	i := strings.Index(addr, "://")
+	if i < 0 {
+		return ""
+	}
+	rest := addr[i+len("://"):]
+	if end := strings.IndexAny(rest, "/?#"); end >= 0 {
+		rest = rest[:end]
+	}
+	if j := strings.LastIndex(rest, "@"); j >= 0 {
+		return rest[:j]
+	}
+	return ""
+}
+
+// withoutUserinfo is the address as it may be logged and shown.
+func withoutUserinfo(addr string) string {
+	if ui := userinfoOf(addr); ui != "" {
+		return strings.Replace(addr, ui+"@", "", 1)
+	}
+	return addr
+}
+
+// scrub takes the credentials of addr out of a text that may quote them, such
+// as an error of CUPS: the user[:password]@ part, and the password alone.
+func scrub(text, addr string) string {
+	ui := userinfoOf(addr)
+	if ui == "" {
+		return text
+	}
+	text = strings.ReplaceAll(text, ui+"@", "")
+	if _, pw, ok := strings.Cut(ui, ":"); ok && pw != "" {
+		text = strings.ReplaceAll(text, pw, "***")
+		if plain, err := url.PathUnescape(pw); err == nil && plain != pw {
+			text = strings.ReplaceAll(text, plain, "***")
+		}
+	}
+	return text
 }
 
 func schemeOf(addr string) string {
@@ -172,9 +239,9 @@ func (s *Server) fragment(w http.ResponseWriter, name string, data any) {
 // --- the add panel ---
 
 type addView struct {
-	URI, Title, Name, Info, ID, Make, DriverHint string
-	Choose                                       bool // the driver list is open
-	Driver, Shared, Default                      segView
+	URI, Shown, Title, Name, Info, ID, Make, DriverHint string
+	Choose                                              bool // the driver list is open
+	Driver, Shared, Default                             segView
 }
 
 var notNameChars = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
@@ -226,13 +293,13 @@ func (s *Server) addPanel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	v := addView{
-		URI: addr, Title: info, Name: s.suggestName(info, model, queues), Info: info, ID: q.Get("id"),
+		URI: addr, Shown: withoutUserinfo(addr), Title: info, Name: s.suggestName(info, model, queues), Info: info, ID: q.Get("id"),
 		Driver:  segView{Group: "driver"},
 		Shared:  segOf("shared", []string{"no", "yes"}, ident, "no"),
 		Default: segOf("default", []string{"no", "yes"}, ident, pick(len(queues) == 0, "yes", "no")),
 	}
 	if v.Title == "" {
-		v.Title = pick(model != "", model, addr)
+		v.Title = pick(model != "", model, v.Shown)
 	}
 	v.Make, _, _ = strings.Cut(model, " ")
 	if slices.Contains(driverlessSchemes, schemeOf(addr)) {
@@ -404,16 +471,23 @@ func (s *Server) addPrinter(w http.ResponseWriter, r *http.Request) {
 		info = name
 	}
 	err = s.deps.CUPS.Add(ctx, cups.AddSpec{Name: name, DeviceURI: addr, Info: info, Location: location, PPD: ppd, Shared: shared, Default: asDefault})
-	s.record(r, "printer.add", name, addr+" with "+pick(ppd == "", "driverless", ppd), err)
-	s.hub.Refresh()
+	// Credentials in the address stay out of the log and the answers.
 	var late *cups.SetDefaultError
+	isLate := errors.As(err, &late)
+	said := ""
+	if err != nil {
+		said = scrub(err.Error(), addr)
+		err = errors.New(said)
+	}
+	s.record(r, "printer.add", name, withoutUserinfo(addr)+" with "+pick(ppd == "", "driverless", ppd), err)
+	s.hub.Refresh()
 	switch {
-	case errors.As(err, &late):
+	case isLate:
 		// The queue exists; the page closes its panel and says so.
 		w.Header().Set("X-Skra-Added", "true")
-		reply(w, http.StatusBadGateway, "Added "+name+", but making it the default failed: "+late.Err.Error()+" Make it the default from the table.")
+		reply(w, http.StatusBadGateway, "Added "+name+", but making it the default failed: "+scrub(late.Err.Error(), addr)+" Make it the default from the table.")
 	case err != nil:
-		reply(w, http.StatusBadGateway, err.Error())
+		reply(w, http.StatusBadGateway, said)
 	default:
 		reply(w, http.StatusOK, "Added "+name+". Send it a test page from the overview.")
 	}

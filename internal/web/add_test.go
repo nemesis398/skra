@@ -116,6 +116,7 @@ func TestAddChecksTheAddress(t *testing.T) {
 	const notAddress = "That is not a printer address. It looks like ipp://printer.local/ipp/print."
 	const scheme = "skrá adds printers by network or USB address."
 	const own = "That address is this machine's own CUPS."
+	const numeric = "Write the address as a full IPv4 address, a host name, or an IPv6 address in brackets."
 	f := queuesFake()
 	s, h := actionServer(t, f)
 	bad := []struct{ addr, text string }{
@@ -135,6 +136,36 @@ func TestAddChecksTheAddress(t *testing.T) {
 		{"ipp://localhost/printers/Hall", own},
 		{"ipp://localhost:631/printers/Hall", own},
 		{"IPPS://127.0.0.1:631/printers/Hall", own},
+		{"IPP://localhost", own},
+		{"ipp://localhost./printers/Hall", own},
+		{"ipp://foo.localhost/printers/Hall", own},
+		{"ipp://user:pw@localhost/printers/Hall", own},
+		{"ipp://a@b@localhost/", own},
+		{"ipp://[::1]/printers/Hall", own},
+		{"ipp://[::ffff:127.0.0.1]/printers/Hall", own},
+		{"ipp://[::1%25lo]/printers/Hall", own},
+		{"ipp://[::]:631/", own},
+		{"ipp://0.0.0.0/", own},
+		{"ipp://localhost:0631/printers/Hall", own},
+		{"http://localhost:631/printers/Hall", own},
+		{"https://127.0.0.1:631/printers/Hall", own},
+		{"http://127.0.0.1/", own},
+		// A percent-encoded host is what CUPS decodes before it connects.
+		{"ipp://local%68ost/printers/x", notAddress},
+		{"ipp://%31%32%37.0.0.1:631/printers/x", notAddress},
+		{"ipp://127%2e0.0.1/printers/x", notAddress},
+		{"ipp://local%25host/", notAddress},
+		{"http://local%68ost:631/", notAddress},
+		{"socket://%31%32%37.0.0.1:631", notAddress},
+		// A number that is not a full dotted-quad address is read as one by the system.
+		{"ipp://127.1/", numeric},
+		{"ipp://0/", numeric},
+		{"ipp://2130706433/", numeric},
+		{"ipp://0x7f.0.0.1/", numeric},
+		{"ipp://127.0.1/", numeric},
+		{"ipp://010.0.0.1/", numeric},
+		{"socket://127.1:9100", numeric},
+		{"ipp://0x7f000001:631/", numeric},
 	}
 	for _, tc := range bad {
 		rec := postTo(s, h, "/printers/add", addForm("address", tc.addr))
@@ -159,6 +190,8 @@ func TestAddChecksTheAddress(t *testing.T) {
 		"ipp://neu.local:631/ipp/print", "ipps://neu.local/ipp/print", "http://10.0.0.7:631/ipp/print", "https://neu.local/ipp/print",
 		"dnssd://Brother%20DCP-L2530DW._ipp._tcp.local./?uuid=1", "dnssd://Fu%C3%9Fball._ipp._tcp.local./",
 		"IPP://neu.local/ipp/print", "ipp://localhost:8631/ipp/print", "ipp://[fe80::1]:631/ipp/print",
+		"ipp://[fe80::1%25eth0]:631/ipp/print", "ipp://3com.local/ipp/print", "ipp://192.168.1.5/ipp/print", "http://localhost:8631/ipp/print",
+		"ipps://localhost:443/ipp/print",
 	} {
 		rec := postTo(s, h, "/printers/add", addForm("address", addr, "name", fmt.Sprintf("Q%d", len(f.added()))))
 		if rec.Code != 200 {
@@ -615,5 +648,50 @@ func TestAddRoutesNeedTheToken(t *testing.T) {
 	}
 	if len(f.added()) != 0 || f.devTimeout != 0 {
 		t.Error("CUPS was asked")
+	}
+}
+
+func TestAddKeepsCredentialsOutOfTheLogAndTheAnswers(t *testing.T) {
+	const addr = "ipp://mika:s3cret@neu.local/ipp/print"
+	f := queuesFake()
+	s, h := actionServer(t, f)
+
+	// The address CUPS gets is the one typed.
+	if rec := postTo(s, h, "/printers/add", addForm("address", addr)); rec.Code != 200 || strings.Contains(rec.Body.String(), "s3cret") {
+		t.Fatalf("%d %q", rec.Code, rec.Body.String())
+	}
+	if got := f.added(); len(got) != 1 || got[0].DeviceURI != addr {
+		t.Errorf("added %+v, want the address as typed", got)
+	}
+	ev := lastEvent(t, s)
+	if strings.Contains(ev.Detail, "s3cret") || strings.Contains(ev.Detail, "mika:") || !strings.Contains(ev.Detail, "ipp://neu.local/ipp/print") {
+		t.Errorf("event detail = %q", ev.Detail)
+	}
+
+	// A CUPS error that quotes the address, plain or with the part before the @.
+	for _, msg := range []string{"Bad device-uri \"" + addr + "\".", "Cannot reach mika:s3cret@neu.local."} {
+		f.addErr = errors.New(msg)
+		rec := postTo(s, h, "/printers/add", addForm("name", "Other", "address", addr))
+		if rec.Code != 502 || strings.Contains(rec.Body.String(), "s3cret") || !strings.Contains(rec.Body.String(), "neu.local") {
+			t.Errorf("%q: answer %d %q", msg, rec.Code, rec.Body.String())
+		}
+		if ev := lastEvent(t, s); ev.OK || strings.Contains(ev.Detail, "s3cret") {
+			t.Errorf("%q: event %+v", msg, ev)
+		}
+	}
+	f.addErr = &cups.SetDefaultError{Err: errors.New("no default for " + addr)}
+	rec := postTo(s, h, "/printers/add", addForm("name", "Third", "address", addr, "default", "yes"))
+	if rec.Code != 502 || strings.Contains(rec.Body.String(), "s3cret") {
+		t.Errorf("default failure: %d %q", rec.Code, rec.Body.String())
+	}
+	if ev := lastEvent(t, s); strings.Contains(ev.Detail, "s3cret") {
+		t.Errorf("default failure event %+v", ev)
+	}
+
+	// The panel shows the address without them.
+	body := get(h, "/printers/new?"+url.Values{"uri": {addr}}.Encode()).Body.String()
+	head := regexp.MustCompile(`<h3>.*</h3>`).FindString(body)
+	if head == "" || strings.Contains(head, "s3cret") || !strings.Contains(head, "ipp://neu.local/ipp/print") {
+		t.Errorf("panel heading = %q", head)
 	}
 }

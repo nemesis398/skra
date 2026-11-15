@@ -59,7 +59,7 @@
 {{/* The add panel. Every field is named like its form field; skra.js posts
      them all. The driver list is loaded when it is first shown. */}}
 {{define "addpanel"}}<div class="panel" id="add">
-  <h3>add {{.Title}}<span>{{.URI}}</span></h3>
+  <h3>add {{.Title}}<span>{{.Shown}}</span></h3>
   <input type="hidden" name="address" value="{{.URI}}"><input type="hidden" name="id" value="{{.ID}}">
   <div class="frow"><label class="k" for="a-name">queue name</label><span><input class="f" id="a-name" name="name" value="{{.Name}}" spellcheck="false"></span><span class="hint">letters, digits, . - _</span></div>
   <div class="frow"><label class="k" for="a-info">description</label><span><input class="f" id="a-info" name="info" value="{{.Info}}"></span><span class="hint">the name shown everywhere</span></div>
