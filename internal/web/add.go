@@ -197,16 +197,17 @@ func checkAddress(ctx context.Context, raw string) (string, *refusal) {
 	if !slices.Contains(addressSchemes, u.Scheme) { // url.Parse has made the scheme lower case
 		return bad(badSchemeText)
 	}
+	addr := u.Scheme + raw[len(u.Scheme):]
 	switch {
 	case u.Scheme == "usb":
 		if u.Host == "" && u.Opaque == "" && u.Path == "" {
 			return bad(notAddressText)
 		}
-		return u.Scheme + raw[len(u.Scheme):], nil
+		return addr, nil
 	case u.Hostname() == "":
 		return bad(notAddressText)
 	case u.Scheme == "dnssd": // the instance name is percent-encoded and may be UTF-8
-		return u.Scheme + raw[len(u.Scheme):], nil
+		return addr, nil
 	}
 	// The host as typed, because url.Parse has decoded its escapes and CUPS,
 	// the system resolver and IDNA fold a host name in ways nothing here can
@@ -221,7 +222,6 @@ func checkAddress(ctx context.Context, raw string) (string, *refusal) {
 	if oddNumber(u.Hostname()) {
 		return bad(numericText)
 	}
-	addr := u.Scheme + raw[len(u.Scheme):]
 	if printer.IsLocalCUPS(addr) || pointsAtThisMachinesCUPS(ctx, u) {
 		return bad(ownCUPSText)
 	}
