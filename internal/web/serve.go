@@ -15,15 +15,27 @@ import (
 // once it has decided to exit.
 const shutdownGrace = 2 * time.Second
 
+// readHeaderTimeout bounds how long a connection may take to send its request
+// headers, so a client that opens one and sends nothing does not hold it.
+const readHeaderTimeout = 10 * time.Second
+
 // idleClock tells when nothing has used the server for a while. Activity is a
 // request in flight, an open event stream counting as one, and the end of the
 // last request. Its one timer runs only while no request is in flight, and it
-// is the timer that ends the process.
+// is the timer that ends the process, by closing expired.
 type idleClock struct {
-	mu    sync.Mutex
-	n     int
-	timer *time.Timer
-	idle  time.Duration
+	mu      sync.Mutex
+	n       int
+	timer   *time.Timer
+	idle    time.Duration
+	expired chan struct{}
+	over    bool
+}
+
+func newIdleClock(idle time.Duration) *idleClock {
+	c := &idleClock{idle: idle, expired: make(chan struct{})}
+	c.timer = time.AfterFunc(idle, c.fire)
+	return c
 }
 
 // start counts a request and stops the timer.
@@ -43,6 +55,26 @@ func (c *idleClock) end() {
 	}
 }
 
+// fire is the timer's function. It decides and closes expired under the
+// lock, so a request that starts as the timer fires either is counted first,
+// and then the server stays and end arms the timer again, or starts after the
+// decision. A request in flight here was started just as the timer fired,
+// too late for its Stop.
+func (c *idleClock) fire() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.n > 0 || c.over {
+		return
+	}
+	c.over = true
+	close(c.expired)
+}
+
+// httpServer is the server for the routes behind the guard of port.
+func (s *Server) httpServer(port string) *http.Server {
+	return &http.Server{Handler: s.handlerOn(port), ReadHeaderTimeout: readHeaderTimeout}
+}
+
 // Serve serves on ln until ln fails, or, when idle is above 0, until idle has
 // passed with no request in flight, which ends it with a nil error. Idle 0
 // never exits: the process was started by hand, not by its socket. The
@@ -50,21 +82,11 @@ func (c *idleClock) end() {
 // another port than listen in the config works.
 func (s *Server) Serve(ln net.Listener, idle time.Duration) error {
 	_, port, _ := net.SplitHostPort(ln.Addr().String()) // no port matches no Host: closed
-	srv := &http.Server{Handler: s.handlerOn(port)}
+	srv := s.httpServer(port)
 	if idle <= 0 {
 		return srv.Serve(ln)
 	}
-	expired := make(chan struct{})
-	var once sync.Once
-	c := &idleClock{idle: idle}
-	c.timer = time.AfterFunc(idle, func() {
-		c.mu.Lock()
-		quiet := c.n == 0 // a request that began as the timer fired wins
-		c.mu.Unlock()
-		if quiet {
-			once.Do(func() { close(expired) })
-		}
-	})
+	c := newIdleClock(idle)
 	defer c.timer.Stop()
 	inner := srv.Handler
 	srv.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -78,7 +100,7 @@ func (s *Server) Serve(ln net.Listener, idle time.Duration) error {
 	select {
 	case err := <-done:
 		return err
-	case <-expired:
+	case <-c.expired:
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
 	defer cancel()

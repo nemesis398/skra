@@ -122,3 +122,36 @@ func TestServeGuardsTheListenersPort(t *testing.T) {
 		}
 	}
 }
+
+// The timer decides under the clock's lock whether to end the server, and
+// closes expired under it too, so a request that starts as it fires either
+// counts first and keeps the server up, or comes after the decision.
+func TestIdleClockFireKeepsARequestInFlight(t *testing.T) {
+	c := newIdleClock(time.Hour)
+	defer c.timer.Stop()
+	c.start()
+	c.fire() // the timer fired just as the request began
+	select {
+	case <-c.expired:
+		t.Fatal("expired with a request in flight")
+	default:
+	}
+	c.end() // the last request ends and starts the timer over
+	if !c.timer.Stop() {
+		t.Error("the timer was not armed again after the last request")
+	}
+	c.fire()
+	select {
+	case <-c.expired:
+	default:
+		t.Fatal("not expired with nothing in flight")
+	}
+	c.fire() // a second firing does not close twice
+}
+
+func TestServeBoundsTheWaitForHeaders(t *testing.T) {
+	srv := serverFor(&fakeCUPS{}).httpServer("7631")
+	if srv.ReadHeaderTimeout != 10*time.Second {
+		t.Errorf("ReadHeaderTimeout = %v, want 10s", srv.ReadHeaderTimeout)
+	}
+}
