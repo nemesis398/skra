@@ -6,10 +6,11 @@ package web
 
 import (
 	"net/url"
-	"os/exec"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/nemesis398/skra/internal/testenv"
 )
 
 // TestAddAgainstHarness adds a queue through the page's own routes and checks
@@ -19,7 +20,7 @@ func TestAddAgainstHarness(t *testing.T) {
 	s, c := harnessServer(t)
 	h := s.Handler()
 	const name = "Scratch-Web-A"
-	t.Cleanup(func() { exec.Command("podman", "exec", "skra-harness", "lpadmin", "-x", name).Run() }) // gone already is fine
+	t.Cleanup(func() { testenv.Command("lpadmin", "-x", name).Run() }) // gone already is fine
 	get(h, "/")
 
 	panel := get(h, "/printers/new?"+url.Values{"uri": {"ipp://localhost:8631/ipp/print"}, "info": {"Scratch Web"}}.Encode())

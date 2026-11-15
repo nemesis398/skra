@@ -5,7 +5,6 @@
 package cups_test
 
 import (
-	"os/exec"
 	"slices"
 	"strings"
 	"testing"
@@ -23,7 +22,7 @@ const added = "Virtual-MFC-3"
 func TestAddDriverless(t *testing.T) {
 	c := testenv.Client(t)
 	ctx := ctxFor(t)
-	t.Cleanup(func() { exec.Command("podman", "exec", "skra-harness", "lpadmin", "-x", added).Run() }) // gone already is fine
+	t.Cleanup(func() { testenv.Command("lpadmin", "-x", added).Run() }) // gone already is fine
 
 	err := c.Add(ctx, cups.AddSpec{Name: added, DeviceURI: "ipp://localhost:8631/ipp/print", Info: "Third virtual MFC", Location: "Harness"})
 	if err != nil {
@@ -68,9 +67,9 @@ func TestAddAsDefault(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		if was != "" {
-			exec.Command("podman", "exec", "skra-harness", "lpadmin", "-d", was).Run()
+			testenv.Command("lpadmin", "-d", was).Run()
 		}
-		exec.Command("podman", "exec", "skra-harness", "lpadmin", "-x", added).Run()
+		testenv.Command("lpadmin", "-x", added).Run()
 	})
 	if err := c.Add(ctx, cups.AddSpec{Name: added, DeviceURI: "ipp://localhost:8631/ipp/print", Default: true}); err != nil {
 		t.Fatal(err)
@@ -137,7 +136,7 @@ func TestAddressCredentialsAreNotReported(t *testing.T) {
 	const name = "skra-test-userinfo"
 	c := testenv.Client(t)
 	ctx := ctxFor(t)
-	t.Cleanup(func() { exec.Command("podman", "exec", "skra-harness", "lpadmin", "-x", name).Run() })
+	t.Cleanup(func() { testenv.Command("lpadmin", "-x", name).Run() })
 	err := c.Add(ctx, cups.AddSpec{Name: name, DeviceURI: "ipp://u:secret@printer.invalid/ipp/print", PPD: "drv:///sample.drv/generic.ppd"})
 	if err != nil {
 		t.Fatal(err)

@@ -6,7 +6,6 @@ package cups_test
 
 import (
 	"context"
-	"os/exec"
 	"slices"
 	"testing"
 
@@ -31,11 +30,11 @@ func printer(t *testing.T, c *cups.Client, name string) cups.Printer {
 // not. The queue is paused, so a command sent to it stays waiting.
 func commandQueue(t *testing.T, name string) {
 	t.Helper()
-	podmanExec(t, "sh", "-c", "set -e; lpadmin -p "+name+" -v ipp://localhost:8631/ipp/print -m drv:///sample.drv/generic.ppd; "+
+	testenv.Exec(t, "sh", "-c", "set -e; lpadmin -p "+name+" -v ipp://localhost:8631/ipp/print -m drv:///sample.drv/generic.ppd; "+
 		"cp /etc/cups/ppd/"+name+".ppd /tmp/"+name+".ppd; "+
 		"printf '*cupsFilter: \"application/vnd.cups-command 0 commandtops\"\n*cupsCommands: \"Clean PrintSelfTestPage ReportLevels\"\n' >> /tmp/"+name+".ppd; "+
 		"lpadmin -p "+name+" -P /tmp/"+name+".ppd; rm /tmp/"+name+".ppd; lpadmin -p "+name+" -E; cupsdisable "+name)
-	t.Cleanup(func() { exec.Command("podman", "exec", "skra-harness", "lpadmin", "-x", name).Run() })
+	t.Cleanup(func() { testenv.Command("lpadmin", "-x", name).Run() })
 }
 
 // TestSettingsRoundTrip changes the defaults of Virtual-MFC, reads them back

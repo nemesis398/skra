@@ -8,7 +8,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -142,21 +141,13 @@ func TestRestartAJob(t *testing.T) {
 	}
 }
 
-func podmanExec(t *testing.T, args ...string) {
-	t.Helper()
-	out, err := exec.Command("podman", append([]string{"exec", "skra-harness"}, args...)...).CombinedOutput()
-	if err != nil {
-		t.Fatalf("podman exec %v: %v\n%s", args, err, out)
-	}
-}
-
 func TestMoveJob(t *testing.T) {
 	c := testenv.Client(t)
 	ctx := ctxFor(t)
 	// The add-queue API arrives in a later task, so the second queue is made
 	// inside the container.
-	podmanExec(t, "lpadmin", "-p", "Virtual-MFC-2", "-E", "-v", "ipp://localhost:8631/ipp/print", "-m", "everywhere")
-	t.Cleanup(func() { podmanExec(t, "lpadmin", "-x", "Virtual-MFC-2") })
+	testenv.Exec(t, "lpadmin", "-p", "Virtual-MFC-2", "-E", "-v", "ipp://localhost:8631/ipp/print", "-m", "everywhere")
+	t.Cleanup(func() { testenv.Exec(t, "lpadmin", "-x", "Virtual-MFC-2") })
 
 	id := held(t, c, "move")
 	if err := c.Move(ctx, id, "Virtual-MFC-2"); err != nil {
