@@ -36,10 +36,18 @@ func TestRealSocketReadOnly(t *testing.T) {
 			t.Logf("  marker name=%q color=%s type=%s level=%d low=%d", m.Name, m.Color, m.Type, m.Level, m.Low)
 		}
 	}
+	// Four markers alone prove little: the longest of the five lists sets the
+	// count, so the levels have to be there as well.
 	for _, p := range ps {
-		if p.Name == "Brother-MFC-J6975DW" && len(p.Markers) == 4 {
-			return
+		if p.Name != "Brother-MFC-J6975DW" || len(p.Markers) != 4 {
+			continue
 		}
+		for _, m := range p.Markers {
+			if m.Level < 0 {
+				t.Errorf("marker %q has level %d, want a level CUPS read from the printer", m.Name, m.Level)
+			}
+		}
+		return
 	}
 	t.Errorf("no Brother-MFC-J6975DW with four markers in %d queues", len(ps))
 }
