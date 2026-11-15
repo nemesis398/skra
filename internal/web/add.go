@@ -173,11 +173,12 @@ func checkAddress(ctx context.Context, raw string) (string, *refusal) {
 		return bad(notAddressText)
 	}
 	// CUPS ends the user name at the first @ and ignores ? and # on the way;
-	// Go ends the authority at them. The two read "x:1?@127.0.0.1:631" as
-	// different hosts, so a ? or # before the first / is not an address.
+	// Go ends the authority at them and the user name at the last @. The two
+	// read "x:1?@127.0.0.1:631" and "a@b@host" as different hosts, so a ? or #
+	// before the first /, or a second @, is not an address.
 	if i := strings.Index(raw, "://"); i >= 0 {
 		authority, _, _ := strings.Cut(raw[i+len("://"):], "/")
-		if strings.ContainsAny(authority, "?#") {
+		if strings.ContainsAny(authority, "?#") || strings.Count(authority, "@") > 1 {
 			return bad(notAddressText)
 		}
 	}

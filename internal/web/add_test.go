@@ -172,7 +172,6 @@ func TestAddChecksTheAddress(t *testing.T) {
 		{"ipp://localhost./printers/Hall", own},
 		{"ipp://foo.localhost/printers/Hall", own},
 		{"ipp://user:pw@localhost/printers/Hall", own},
-		{"ipp://a@b@localhost/", own},
 		{"ipp://[::1]/printers/Hall", own},
 		{"ipp://[::ffff:127.0.0.1]/printers/Hall", own},
 		{"ipp://[::1%25lo]/printers/Hall", own},
@@ -206,6 +205,12 @@ func TestAddChecksTheAddress(t *testing.T) {
 		{"ipp://neu.local?x=1", notAddress},
 		{"ipp://neu.local:631#frag", notAddress},
 		{"lpd://x?@127.0.0.1:631/q", notAddress},
+		// CUPS cuts the user name at the first @, Go at the last: with more than
+		// one @ in the authority they read different hosts.
+		{"ipp://a@b@localhost/", notAddress},
+		{"ipp://u:p@127.0.0.1:631@printer.local/", notAddress},
+		{"socket://a@b@host:9100", notAddress},
+		{"ipp://a@@neu.local/ipp/print", notAddress},
 		// A number that is not a full dotted-quad address is read as one by the system.
 		{"ipp://127.1/", numeric},
 		{"ipp://0/", numeric},
@@ -242,7 +247,7 @@ func TestAddChecksTheAddress(t *testing.T) {
 		"ipp://[fe80::1%25eth0]:631/ipp/print", "ipp://3com.local/ipp/print", "ipp://192.168.1.5/ipp/print", "http://localhost:8631/ipp/print",
 		"ipps://localhost:443/ipp/print", "ipp://user:p%40ss@neu.local/ipp/print", "ipp://neu.local/ipp%2Fprint?a=%C3%BC",
 		"ipp://xn--drucker-fr-alle-4ob.local/ipp/print",
-		"ipp://neu.local/ipp/print?a=b#c", "ipp://neu.local:631/x?y=@z", "ipp://neu.local/ipp#@127.0.0.1:631",
+		"ipp://neu.local/ipp/print?a=b#c", "ipp://u:pass@neu.local/ipp/print", "ipp://neu.local/a@b@c", "ipp://neu.local:631/x?y=@z", "ipp://neu.local/ipp#@127.0.0.1:631",
 	} {
 		rec := postTo(s, h, "/printers/add", addForm("address", addr, "name", fmt.Sprintf("Q%d", len(f.added()))))
 		if rec.Code != 200 {
