@@ -58,7 +58,7 @@ function say(text, bad = false, hold = false) {
 // connect and then only what changed, as HTML fragments that each replace the
 // element with the same id as the event.
 let source = null;
-const slots = ["printers", "opts", "queue", "queues", "recent", "need", "foot"];
+const slots = ["printers", "opts", "queue", "queues", "recent", "history", "need", "foot"];
 
 function swap(id, html) {
   const el = $(id);
@@ -71,7 +71,8 @@ function swap(id, html) {
 
 function connect() {
   if (source) return;
-  source = new EventSource("/events");
+  // The history tab asks for its own fragments only.
+  source = new EventSource(document.body.dataset.page === "history" ? "/events?page=history" : "/events");
   for (const id of slots) {
     source.addEventListener(id, (e) => swap(id, e.data));
   }

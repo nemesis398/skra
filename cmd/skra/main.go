@@ -7,8 +7,8 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"net/http"
 	"os"
+	"time"
 
 	"github.com/nemesis398/skra/internal/activation"
 	"github.com/nemesis398/skra/internal/config"
@@ -48,5 +48,13 @@ func run() error {
 			return printer.Query(ctx, deviceURI, printer.Avahi{})
 		},
 	}
-	return http.Serve(ln, web.New(cfg, deps).Handler())
+	// Only a service that systemd can start again on the next request may
+	// exit when idle; one started by hand stays.
+	var idle time.Duration
+	if activated {
+		if idle, err = time.ParseDuration(cfg.IdleExit); err != nil {
+			return fmt.Errorf("idle_exit: %w", err)
+		}
+	}
+	return web.New(cfg, deps).Serve(ln, idle)
 }

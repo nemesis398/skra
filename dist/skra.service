@@ -1,0 +1,11 @@
+[Unit]
+Description=skrá print service
+Requires=skra.socket
+After=skra.socket
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/skra
+MemoryMax=100M
+Restart=on-failure
+NoNewPrivileges=true

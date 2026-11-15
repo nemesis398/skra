@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
-/* Ported from prototype/index.html. Mocha, Mauve as the only accent, square, no motion. */
+/* Ported from the single-file prototype in the git history. Mocha, Mauve as the only accent, square, no motion. */
 :root {
   --crust:#11111b; --mantle:#181825; --base:#1e1e2e;
   --s0:#313244; --s1:#45475a; --s2:#585b70;
@@ -142,7 +142,7 @@ select.f option { background:var(--mantle); color:var(--text); }
   .drop { grid-template-columns:1fr; }
   .opts { justify-content:flex-start; }
   .c-pr, td.jp, .c-t, td.jt { display:none; }
-  .bar .tab.hist, .bar .clock { display:none; }
+  .bar .clock { display:none; }
 }
 .frow .btns { display:flex; gap:2px; flex-wrap:wrap; }
 .c-qa { width:34rem; }

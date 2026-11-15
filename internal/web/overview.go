@@ -112,8 +112,8 @@ func (s *Server) tickPoll(ctx context.Context) Snapshot { return s.poll(ctx, fal
 // event stream connects.
 func (s *Server) page(w http.ResponseWriter, r *http.Request) { s.render(w, r, "overview") }
 
-// render draws a full page, the overview or the printers tab, with the shared
-// tab bar around it.
+// render draws a full page, the overview, the printers tab or the history,
+// with the shared tab bar around it.
 func (s *Server) render(w http.ResponseWriter, r *http.Request, which string) {
 	snap := s.poll(r.Context(), true)
 	var buf bytes.Buffer
@@ -132,11 +132,24 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, which string) {
 
 type fragment struct{ event, html string }
 
-// fragments renders the pieces of the overview that the event stream swaps.
-func (s *Server) fragments(snap Snapshot) []fragment {
+// Which fragments a page's event stream swaps. The history page asks for its
+// own set, so the overview's pieces are not sent to a page that has no place
+// for them, nor its 200 rows to the others.
+var (
+	overviewSlots = []string{"printers", "opts", "queue", "queues", "recent", "need", "foot"}
+	historySlots  = []string{"history", "need", "foot"}
+)
+
+// fragmentsFor renders the pieces the event stream of the page swaps; page is
+// "history" for the history tab and anything else for the rest.
+func (s *Server) fragmentsFor(page string, snap Snapshot) []fragment {
 	v := s.view(snap)
 	var out []fragment
-	for _, name := range []string{"printers", "opts", "queue", "queues", "recent", "need", "foot"} {
+	slots := overviewSlots
+	if page == "history" {
+		slots = historySlots
+	}
+	for _, name := range slots {
 		var buf bytes.Buffer
 		if err := s.tpl.ExecuteTemplate(&buf, name, v); err != nil {
 			continue // a template bug must not end the stream
@@ -155,6 +168,8 @@ type view struct {
 	QueueCount   string
 	Queues       []queueView // the table of the printers tab
 	Recent       []jobView
+	History      []jobView // every completed job CUPS keeps
+	HistoryCount string
 	Need         string
 	Msg          string
 	MsgBad       bool
@@ -253,11 +268,13 @@ func (s *Server) view(snap Snapshot) view {
 		v.Queue = append(v.Queue, jv)
 	}
 	for i, j := range snap.Done {
-		if i == recentJobs {
-			break
+		jv := jobRow(j, names, now, false)
+		if i < recentJobs {
+			v.Recent = append(v.Recent, jv)
 		}
-		v.Recent = append(v.Recent, jobRow(j, names, now, false))
+		v.History = append(v.History, jv)
 	}
+	v.HistoryCount = "the last " + plural(len(snap.Done), "job", "jobs") + " CUPS keeps"
 
 	var need []string
 	if held > 0 {

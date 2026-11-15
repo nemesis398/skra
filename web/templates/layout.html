@@ -7,13 +7,13 @@
 <title>skrá</title>
 <link rel="stylesheet" href="/static/skra.css">
 </head>
-<body>
+<body data-page="{{.Page}}">
 <div class="app" id="app">
   <nav class="bar">
     <div class="brand"><i>&#xF042A;</i> skrá</div>
     <a class="tab{{if eq .Page "overview"}} on{{end}}" id="tab-overview" href="/">Overview</a>
     <a class="tab{{if eq .Page "printers"}} on{{end}}" id="tab-printers" href="/printers">Printers</a>
-    <a class="tab hist" id="tab-history" href="#history">History</a>
+    <a class="tab{{if eq .Page "history"}} on{{end}}" id="tab-history" href="/history">History</a>
     <a class="tab" href="http://localhost:631/admin">CUPS <i class="ext">&#xF03CC;</i></a>
     <div class="spacer"></div>
     {{template "need" .V}}
@@ -21,7 +21,7 @@
   </nav>
 
   <main id="main">
-{{if eq .Page "printers"}}{{template "printerspage" .V}}{{else}}{{template "overview" .V}}{{end}}
+{{if eq .Page "printers"}}{{template "printerspage" .V}}{{else if eq .Page "history"}}{{template "historypage" .V}}{{else}}{{template "overview" .V}}{{end}}
   </main>
 
   {{template "foot" .V}}

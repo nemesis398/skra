@@ -1,4 +1,4 @@
-.PHONY: build test integration run dev harness-up harness-down printer-stop printer-start
+.PHONY: build test integration run dev install-user harness-up harness-down printer-stop printer-start
 
 build:
 	go build -o skra ./cmd/skra
@@ -20,6 +20,17 @@ printer-stop:
 
 printer-start:
 	./dev/harness.sh printer-start
+
+# install-user puts the binary in ~/.local/bin and the units in the user's
+# systemd directory, and starts the socket. The service starts on the first
+# request and exits when idle.
+install-user: build
+	install -D -m 0755 skra $(HOME)/.local/bin/skra
+	install -D -m 0644 dist/skra.socket $(HOME)/.config/systemd/user/skra.socket
+	install -D -m 0644 dist/skra.service $(HOME)/.config/systemd/user/skra.service
+	systemctl --user daemon-reload
+	systemctl --user enable --now skra.socket
+	systemctl --user try-restart skra.service
 
 run: build
 	./skra

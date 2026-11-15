@@ -182,8 +182,9 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sent := map[string]string{} // per connection: what this tab shows now
+	page := r.URL.Query().Get("page")
 	for snap := range s.hub.Subscribe(r.Context()) {
-		for _, f := range s.fragments(snap) {
+		for _, f := range s.fragmentsFor(page, snap) {
 			if sent[f.event] == f.html {
 				continue
 			}
