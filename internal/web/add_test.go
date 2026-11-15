@@ -20,6 +20,7 @@ import (
 
 	"github.com/nemesis398/skra/internal/cups"
 	"github.com/nemesis398/skra/internal/printer"
+	"github.com/nemesis398/skra/internal/testenv"
 )
 
 func (f *fakeCUPS) Devices(ctx context.Context, timeout time.Duration) ([]cups.Device, error) {
@@ -752,27 +753,9 @@ func TestAddKeepsCredentialsOutOfTheLogAndTheAnswers(t *testing.T) {
 	}
 }
 
-// ownInterfaceAddr is an address of one of this machine's interfaces, or a skip.
-func ownInterfaceAddr(t *testing.T) netip.Addr {
-	t.Helper()
-	addrs, err := net.InterfaceAddrs()
-	if err != nil {
-		t.Skip(err)
-	}
-	for _, a := range addrs {
-		if ipn, ok := a.(*net.IPNet); ok && !ipn.IP.IsLoopback() && !ipn.IP.IsLinkLocalUnicast() {
-			if ip, ok := netip.AddrFromSlice(ipn.IP); ok {
-				return ip.Unmap()
-			}
-		}
-	}
-	t.Skip("no interface address besides loopback")
-	return netip.Addr{}
-}
-
 func TestAddRefusesANameThatPointsAtThisMachinesCUPS(t *testing.T) {
 	const own = "That address is this machine's own CUPS."
-	mine := ownInterfaceAddr(t)
+	mine := testenv.InterfaceAddr(t)
 	public := netip.MustParseAddr("93.184.216.34")
 	withNames(t, map[string][]netip.Addr{
 		"alias.example":  {netip.MustParseAddr("127.0.0.1")},

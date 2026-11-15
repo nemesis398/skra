@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 // Package testenv gives integration tests a CUPS client for the harness
-// container, so no test ever touches the laptop's own CUPS.
+// container, so no test ever touches the laptop's own CUPS, and any test an
+// address of this machine.
 package testenv
 
 import (
+	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -65,6 +68,25 @@ func LockDefault(tb testing.TB) {
 		tb.Fatal(err)
 	}
 	tb.Cleanup(func() { f.Close() }) // closing releases the lock
+}
+
+// InterfaceAddr returns an address of one of this machine's interfaces that is
+// not loopback or link-local, or skips the test.
+func InterfaceAddr(tb testing.TB) netip.Addr {
+	tb.Helper()
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		tb.Skip(err)
+	}
+	for _, a := range addrs {
+		if ipn, ok := a.(*net.IPNet); ok && !ipn.IP.IsLoopback() && !ipn.IP.IsLinkLocalUnicast() {
+			if ip, ok := netip.AddrFromSlice(ipn.IP); ok {
+				return ip.Unmap()
+			}
+		}
+	}
+	tb.Skip("no interface address besides loopback")
+	return netip.Addr{}
 }
 
 // ScratchQueue makes a driverless queue in the harness container and removes

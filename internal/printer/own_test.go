@@ -12,6 +12,8 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+
+	"github.com/nemesis398/skra/internal/testenv"
 )
 
 // No test in this file ever connects to port 631. The tests of the dialer
@@ -60,27 +62,8 @@ func wrapped(t *testing.T) *recorder {
 	return r
 }
 
-// interfaceAddr returns an address of one of this machine's interfaces that is
-// not loopback, or skips the test.
-func interfaceAddr(t *testing.T) netip.Addr {
-	t.Helper()
-	addrs, err := net.InterfaceAddrs()
-	if err != nil {
-		t.Skip(err)
-	}
-	for _, a := range addrs {
-		if ipn, ok := a.(*net.IPNet); ok && !ipn.IP.IsLoopback() && !ipn.IP.IsLinkLocalUnicast() {
-			if ip, ok := netip.AddrFromSlice(ipn.IP); ok {
-				return ip.Unmap()
-			}
-		}
-	}
-	t.Skip("no interface address besides loopback")
-	return netip.Addr{}
-}
-
 func TestIsOwnAddress(t *testing.T) {
-	mine := interfaceAddr(t)
+	mine := testenv.InterfaceAddr(t)
 	for addr, want := range map[netip.Addr]bool{
 		netip.MustParseAddr("127.0.0.1"):                 true,
 		netip.MustParseAddr("127.1.2.3"):                 true,
@@ -113,7 +96,7 @@ func TestIsOwnAddress(t *testing.T) {
 // The verdict of the guard for an address Go hands to Control. It is a plain
 // function, so these cases dial nothing.
 func TestGuardVerdicts(t *testing.T) {
-	mine := interfaceAddr(t)
+	mine := testenv.InterfaceAddr(t)
 	for _, addr := range []string{
 		"127.0.0.1:631", "127.5.5.5:631", "[::1]:631", "0.0.0.0:631", "[::]:631", "[::ffff:127.0.0.1]:631",
 		net.JoinHostPort(mine.String(), "631"),
