@@ -1019,3 +1019,53 @@ func TestAddRecordsARefusalWithoutTheCredentials(t *testing.T) {
 		t.Errorf("events = %+v", ev)
 	}
 }
+
+// With a device id the maker still narrows the list: the drivers of the device
+// are kept when their model starts with the maker, and the maker's own list
+// stands in when none does.
+func TestDriversNarrowTheDeviceListByTheMaker(t *testing.T) {
+	f := queuesFake()
+	f.ppdsFn = func(id, make string) ([]cups.PPD, error) {
+		switch {
+		case id != "":
+			return []cups.PPD{
+				{Name: "a.ppd", MakeModel: "Brother HL-L2350DW"},
+				{Name: "b.ppd", MakeModel: "brother Generic"},
+				{Name: "c.ppd", MakeModel: "Generic PCL"},
+				{Name: "d.ppd", MakeModel: ""},
+			}, nil
+		case make == "Xerox":
+			return []cups.PPD{{Name: "x.ppd", MakeModel: "Xerox Phaser"}}, nil
+		}
+		return nil, nil
+	}
+	s, h := actionServer(t, f)
+	list := func(id, make string) string {
+		return get(h, "/printers/drivers?"+url.Values{"id": {id}, "make": {make}}.Encode()).Body.String()
+	}
+	body := list("MFG:Brother;MDL:HL;", "BROTHER")
+	if !strings.Contains(body, `value="a.ppd"`) || !strings.Contains(body, `value="b.ppd"`) ||
+		strings.Contains(body, `value="c.ppd"`) || strings.Contains(body, `value="d.ppd"`) || !strings.Contains(body, "2 found") {
+		t.Errorf("the maker did not narrow the list of the device:\n%s", body)
+	}
+	// When none of the device's drivers matches, the maker's own list stands in.
+	body = list("MFG:Brother;MDL:HL;", "Xerox")
+	if !strings.Contains(body, `value="x.ppd"`) || strings.Contains(body, `value="a.ppd"`) {
+		t.Errorf("no fall back to the maker's drivers when none of the device's matches:\n%s", body)
+	}
+	// Without a maker the device's list stands whole.
+	if body = list("MFG:Brother;MDL:HL;", ""); strings.Count(body, "<option") != 4 {
+		t.Errorf("a list without a maker was cut:\n%s", body)
+	}
+
+	// Adding checks the driver against the same narrowed list.
+	form := addForm("address", "socket://192.0.2.7:9100", "driver", "choose", "id", "MFG:Brother;MDL:HL;", "make", "Brother")
+	form.Set("ppd", "c.ppd")
+	if rec := postTo(s, h, "/printers/add", form); rec.Code != 400 || rec.Body.String() != wrongDriver {
+		t.Errorf("a driver the maker excludes: %d %q", rec.Code, rec.Body.String())
+	}
+	form.Set("ppd", "a.ppd")
+	if rec := postTo(s, h, "/printers/add", form); rec.Code != 200 {
+		t.Errorf("a driver the maker keeps: %d %q", rec.Code, rec.Body.String())
+	}
+}

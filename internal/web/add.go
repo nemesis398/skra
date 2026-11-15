@@ -418,16 +418,21 @@ func (s *Server) addPanel(w http.ResponseWriter, r *http.Request) {
 // --- the driver list ---
 
 // drivers lists the drivers CUPS has for a device, sorted by model and cut to
-// maxDrivers. The device id finds the ones made for it; when none is, the
-// maker's drivers are listed instead. Without either, none are listed, because
-// CUPS would answer with all of them. total is how many CUPS had.
+// maxDrivers. The device id finds the ones made for it, and a maker narrows
+// them to those whose model starts with it, without regard to case. When none
+// is left, the maker's drivers are listed instead. Without either, none are
+// listed, because CUPS would answer with all of them. total is how many there
+// were before the cut.
 func (s *Server) drivers(ctx context.Context, id, maker string) (list []cups.PPD, total int, err error) {
 	if id == "" && maker == "" {
 		return nil, 0, nil
 	}
 	list, err = s.deps.CUPS.PPDs(ctx, id, maker)
-	if err == nil && len(list) == 0 && id != "" && maker != "" {
-		list, err = s.deps.CUPS.PPDs(ctx, "", maker)
+	if err == nil && id != "" && maker != "" {
+		list = slices.DeleteFunc(list, func(p cups.PPD) bool { return !hasPrefixFold(p.MakeModel, maker) })
+		if len(list) == 0 {
+			list, err = s.deps.CUPS.PPDs(ctx, "", maker)
+		}
 	}
 	if err != nil {
 		return nil, 0, err
@@ -436,6 +441,11 @@ func (s *Server) drivers(ctx context.Context, id, maker string) (list []cups.PPD
 	slices.SortStableFunc(list, func(a, b cups.PPD) int { return strings.Compare(key(a), key(b)) })
 	total = len(list)
 	return list[:min(total, maxDrivers)], total, nil
+}
+
+// hasPrefixFold reports whether s starts with prefix, ignoring case.
+func hasPrefixFold(s, prefix string) bool {
+	return len(s) >= len(prefix) && strings.EqualFold(s[:len(prefix)], prefix)
 }
 
 // driverLabel is how the list shows a driver: its make and model, or its name.
