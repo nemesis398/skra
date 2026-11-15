@@ -30,14 +30,26 @@ func TestHarnessPrinters(t *testing.T) {
 		if p.Name != "Virtual-MFC" {
 			continue
 		}
-		if p.State != 3 {
-			t.Errorf("state = %d, want 3 (idle)", p.State)
+		// Idle or processing: other packages print on Virtual-MFC at the
+		// same time. Only stopped (5) means the queue is broken.
+		if p.State != 3 && p.State != 4 {
+			t.Errorf("state = %d, want 3 (idle) or 4 (processing)", p.State)
 		}
 		if !p.Accepting {
 			t.Error("Virtual-MFC does not accept jobs")
 		}
-		if len(p.Markers) != 4 {
-			t.Errorf("markers = %d, want 4 (Black, Cyan, Magenta, Yellow)", len(p.Markers))
+		// The values are the ones in dev/harness/printer.attrs.
+		want := []struct {
+			name       string
+			level, low int
+		}{{"Black", 68, 10}, {"Cyan", 48, 10}, {"Magenta", 56, 10}, {"Yellow", 12, 10}}
+		if len(p.Markers) != len(want) {
+			t.Fatalf("markers = %d, want %d (Black, Cyan, Magenta, Yellow)", len(p.Markers), len(want))
+		}
+		for i, w := range want {
+			if m := p.Markers[i]; m.Name != w.name || m.Level != w.level || m.Low != w.low {
+				t.Errorf("marker %d = %q level %d low %d, want %q level %d low %d", i, m.Name, m.Level, m.Low, w.name, w.level, w.low)
+			}
 		}
 		return
 	}
