@@ -524,6 +524,16 @@ func (s *Server) startScan(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if sess != nil && len(sess.PageList()) == 0 {
+		// Every page was dropped, so there are no pages before to match.
+		// A page takes the resolution the session was opened with, so the
+		// scan starts a new session and the empty one goes.
+		if err := s.deps.Scans.Discard(sess.ID); err != nil && !errors.Is(err, os.ErrNotExist) {
+			log.Printf("skra: discarding the empty scan %s: %v", sess.ID, err)
+		}
+		s.forget(sess.ID)
+		sess = nil
+	}
 	if sess != nil {
 		// A page's size in the PDF comes from the resolution the session
 		// was opened with, so the pages of one scan share it.

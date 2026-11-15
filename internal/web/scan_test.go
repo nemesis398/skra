@@ -606,6 +606,39 @@ func TestAFailedFirstScanLeavesNoSession(t *testing.T) {
 	}
 }
 
+// A scan whose every page was dropped has no pages before to match: a start
+// that names it at another resolution starts a new scan, and the empty one
+// goes.
+func TestScanAfterDroppingEveryPageStartsAfresh(t *testing.T) {
+	rig := newScanRig(t, 1, nil)
+	id := rig.start(t, rig.feeder(""))
+	rig.waitDone(t, id)
+	if rec := postTo(rig.s, rig.h, "/scan/"+id+"/page/1/drop", nil); rec.Code != 200 {
+		t.Fatalf("drop: status %d, %q", rec.Code, rec.Body.String())
+	}
+	form := rig.feeder(id)
+	form.Set("resolution", "200")
+	rec := postTo(rig.s, rig.h, "/scan/start", form)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("start at 200 dpi after dropping every page: status %d: %s", rec.Code, rec.Body.String())
+	}
+	again := strings.TrimSpace(rec.Body.String())
+	if again == id {
+		t.Error("the new scan reuses the emptied session")
+	}
+	rig.waitDone(t, again)
+	if _, err := rig.s.deps.Scans.Get(id); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the emptied session is still kept: %v", err)
+	}
+	if _, _, _, ok := rig.s.scanState(id); ok {
+		t.Error("the service still lists the emptied scan")
+	}
+	sess, err := rig.s.deps.Scans.Get(again)
+	if err != nil || sess.Settings.Resolution != 200 {
+		t.Errorf("the new scan: %v, at %d dpi, want 200", err, sess.Settings.Resolution)
+	}
+}
+
 // A scan more that takes no page keeps the session and the pages before.
 func TestScanMoreThatTakesNothingKeepsTheSession(t *testing.T) {
 	rig := newScanRig(t, 2, nil)
