@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite" // registers the "sqlite" driver, pure Go
@@ -75,7 +76,11 @@ func Open(dir string) (*Store, error) {
 		return nil, fmt.Errorf("store: create %s: %w", path, err)
 	}
 
-	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)")
+	// The path goes into a SQLite URI, where "?" and "#" end it and "%" starts
+	// an escape. _txlock=immediate makes every write transaction take the
+	// write lock when it begins, so a second process that migrates the same
+	// new file waits for the first instead of failing halfway.
+	db, err := sql.Open("sqlite", "file:"+uriPath.Replace(path)+"?_txlock=immediate&_pragma=busy_timeout(5000)")
 	if err != nil {
 		return nil, fmt.Errorf("store: open %s: %w", path, err)
 	}
@@ -89,33 +94,40 @@ func Open(dir string) (*Store, error) {
 	return &Store{db: db}, nil
 }
 
+// uriPath escapes the characters of a file name that mean something in a
+// SQLite URI.
+var uriPath = strings.NewReplacer("%", "%25", "?", "%3f", "#", "%23")
+
+// migrate brings the schema to the current version in one transaction. The
+// transaction holds the write lock from its start, and the version is read
+// inside it, so a process that waited for another one sees the schema that
+// one made and has nothing left to do.
 func migrate(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() // does nothing once committed
 	var version int
-	if err := db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+	if err := tx.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		return err
 	}
 	if version > len(migrations) {
 		return fmt.Errorf("database schema version %d is newer than this skra (%d)", version, len(migrations))
 	}
+	if version == len(migrations) {
+		return nil
+	}
 	for ; version < len(migrations); version++ {
-		tx, err := db.Begin()
-		if err != nil {
-			return err
-		}
 		if _, err := tx.Exec(migrations[version]); err != nil {
-			tx.Rollback()
-			return err
-		}
-		// PRAGMA does not take bound parameters; version is our own int.
-		if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, version+1)); err != nil {
-			tx.Rollback()
-			return err
-		}
-		if err := tx.Commit(); err != nil {
 			return err
 		}
 	}
-	return nil
+	// PRAGMA does not take bound parameters; len(migrations) is our own int.
+	if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, len(migrations))); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // Log records e. A zero At is replaced by the current time.
@@ -136,9 +148,12 @@ func (s *Store) Log(ctx context.Context, e Event) error {
 	return nil
 }
 
-// Recent returns up to n events, newest first. Events with the same time come
-// back in reverse insertion order.
+// Recent returns up to n events, newest first; an n of 0 or less returns none.
+// Events with the same time come back in reverse insertion order.
 func (s *Store) Recent(ctx context.Context, n int) ([]Event, error) {
+	if n <= 0 {
+		return nil, nil // SQLite reads a negative LIMIT as "no limit"
+	}
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT at, actor, action, target, detail, ok FROM events ORDER BY at DESC, rowid DESC LIMIT ?`, n)
 	if err != nil {
