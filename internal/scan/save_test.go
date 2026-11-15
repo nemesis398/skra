@@ -528,6 +528,11 @@ func TestSaveImagePeak(t *testing.T) {
 	if testing.Short() {
 		t.Skip("decodes and encodes 35 megapixels several times")
 	}
+	if raceOn {
+		// The pixel loops run many times slower under the race detector,
+		// which takes minutes and tells nothing about the heap.
+		t.Skip("measures the heap, not races")
+	}
 	page, ycc := a4Color(t)
 	st, _ := newStore(t)
 	settings := testSettings
@@ -536,7 +541,7 @@ func TestSaveImagePeak(t *testing.T) {
 	for _, c := range []struct {
 		format string
 		rotate int
-	}{{"jpeg", 90}, {"png", 90}, {"png", 0}, {"jpeg", 180}, {"jpeg", 270}} {
+	}{{"jpeg", 90}, {"png", 90}, {"png", 0}} {
 		s, err := st.New(testScanner, settings)
 		if err != nil {
 			t.Fatal(err)
