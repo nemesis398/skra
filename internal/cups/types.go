@@ -21,7 +21,10 @@ type Printer struct {
 }
 
 // Marker is one supply (ink, toner). Level and Low are -1 when CUPS sent no
-// value; CUPS itself uses -2 for unknown and -3 for "some ink left".
+// value, and also when CUPS sent -1, which IPP uses for "unavailable": the two
+// cases share -1 and cannot be told apart. CUPS itself uses -2 for unknown and
+// -3 for "some ink left". The overview draws every level below 0 alike, as
+// "·" with an empty bar.
 type Marker struct {
 	Name, Color, Type string
 	Level, Low        int
