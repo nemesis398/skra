@@ -19,6 +19,18 @@ the host-side service could not query it. Tests get a client from
 inside the rootless container, and CUPS checks the PeerCred name against the
 socket peer) and skips when the socket is missing.
 
+## Changing cupsd.conf
+
+CUPS takes PeerCred for a PUT of `cupsd.conf` from root alone, and Fedora
+guards `/admin/conf` with Basic and `Require user @SYSTEM`. The harness does
+the same for the PUT only (reading the file stays open), so the log-level
+switch meets the rule it meets on a laptop. The image has two users with the
+password `hunter2-skra`: `skra-admin` is in `wheel`, which Fedora's
+`SystemGroup` lists, and `skra-user` is not. CUPS checks their passwords
+through PAM (`/etc/pam.d/cups`). A client acting as either sends a PeerCred
+that CUPS turns down, since the socket peer is root, so it gets in only where
+no login is asked for, or with the password. `testenv.ClientAs` gives one.
+
 ## Markers
 
 `ippeveprinter` does serve the marker attributes from `printer.attrs`: four

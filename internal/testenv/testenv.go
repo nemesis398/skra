@@ -21,6 +21,17 @@ import (
 // container, and CUPS checks the PeerCred name against the socket peer.
 const user = "root"
 
+// The harness container has two users besides root, both with the password
+// Password: Admin is in wheel, which CUPS's SystemGroup lists, and NonAdmin
+// is not. A client acting as either sends a PeerCred that CUPS does not
+// accept, because the socket peer is root; it gets in only where the harness
+// asks for no login, or with Basic and the password.
+const (
+	Admin    = "skra-admin"
+	NonAdmin = "skra-user"
+	Password = "hunter2-skra"
+)
+
 // Socket returns the harness socket path under the repository root.
 func Socket(tb testing.TB) string {
 	tb.Helper()
@@ -59,6 +70,14 @@ func Client(tb testing.TB) *cups.Client {
 func ExclusiveClient(tb testing.TB) *cups.Client {
 	tb.Helper()
 	return client(tb, syscall.LOCK_EX)
+}
+
+// ClientAs returns a client for the harness CUPS that acts as name, one of
+// Admin and NonAdmin. It takes no lock, so the test calls ExclusiveClient
+// first and holds the harness alone.
+func ClientAs(tb testing.TB, name string) *cups.Client {
+	tb.Helper()
+	return cups.New(Socket(tb), name)
 }
 
 // client skips the test when the harness socket does not exist, takes the

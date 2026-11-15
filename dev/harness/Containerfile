@@ -2,6 +2,14 @@ FROM registry.fedoraproject.org/fedora:44
 RUN dnf -y install cups cups-printerapp cups-filters procps-ng avahi dbus-daemon \
     && dnf clean all \
     && mkdir -p /etc/skra /var/spool/skra
+# Two users beside root, with one password, for the log-level switch: CUPS
+# takes skra-admin's Basic login for a change of cupsd.conf because wheel is
+# in Fedora's SystemGroup, and refuses skra-user's. The grep fails the build
+# if Fedora ever drops wheel from it. internal/testenv names both.
+RUN grep -Eq '^SystemGroup .*\bwheel\b' /etc/cups/cups-files.conf \
+    && useradd -M -G wheel skra-admin \
+    && useradd -M skra-user \
+    && printf '%s\n' skra-admin:hunter2-skra skra-user:hunter2-skra | chpasswd
 COPY cupsd.conf /etc/cups/cupsd.conf
 COPY printer.attrs /etc/skra/printer.attrs
 COPY entrypoint.sh printer-start /usr/local/bin/
