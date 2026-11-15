@@ -36,3 +36,26 @@ about it are not obvious:
 
 `ippeveprinter` also exits without a DNS-SD daemon (`-r off` does not skip
 that), which is why the image runs dbus and avahi.
+
+## The fake scanner
+
+`make dev` also starts `cmd/fakescanner` on `127.0.0.1:8632` and stops it when
+skra exits. It answers eSCL like the Brother MFC-J6975DW (capabilities from
+`internal/escl/fakescanner/capabilities.xml`), and every page it scans is a
+white sheet with one dark band whose position says which page it is. The glass
+gives one page, the feeder gives 3 (6 with duplex; `-adf-pages` changes the
+3). Run it alone with `go run ./cmd/fakescanner`.
+
+    curl -s localhost:8632/eSCL/ScannerCapabilities
+    curl -s localhost:8632/eSCL/ScannerStatus
+
+Drive the feeder and the busy state with the control endpoint. A field you
+leave out keeps its value:
+
+    curl -X POST -d adf=empty  localhost:8632/_fake/state    # POST ScanJobs: 409
+    curl -X POST -d adf=jam    localhost:8632/_fake/state    # NextDocument: 409
+    curl -X POST -d adf=loaded localhost:8632/_fake/state
+    curl -X POST -d busy=true  localhost:8632/_fake/state    # POST ScanJobs: 503
+
+Tests use the package directly: `fakescanner.New`, `SetState(adf, busy)`, and
+`LastSettings()` for what the last job asked for.
