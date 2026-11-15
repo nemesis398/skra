@@ -248,19 +248,19 @@ const wantCSP = "script-src 'self'; object-src 'none'; base-uri 'none'; form-act
 func TestGuardSetsTheSecurityHeaders(t *testing.T) {
 	h := guarded()
 	for _, tc := range []struct {
-		name, method, host string
-		want               int
+		name, method, host, site string
+		want                     int
 	}{
-		{"a 200", "GET", "localhost:7631", 200},
-		{"a 403 for the host", "GET", "evil.example:7631", 403},
-		{"a 403 for the token", "POST", "localhost:7631", 403},
-		{"a 403 for another site", "GET", "localhost:7631", 403},
+		{"a 200", "GET", "localhost:7631", "", 200},
+		{"a 403 for the host", "GET", "evil.example:7631", "", 403},
+		{"a 403 for the token", "POST", "localhost:7631", "", 403},
+		{"a 403 for another site", "GET", "localhost:7631", "cross-site", 403},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			req := httptest.NewRequest(tc.method, "/x", nil)
 			req.Host = tc.host
-			if tc.name == "a 403 for another site" {
-				req.Header.Set("Sec-Fetch-Site", "cross-site")
+			if tc.site != "" {
+				req.Header.Set("Sec-Fetch-Site", tc.site)
 			}
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, req)
