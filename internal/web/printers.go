@@ -44,6 +44,7 @@ var queueActions = map[string]struct {
 func (s *Server) printerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /printers", s.printersPage)
 	s.addRoutes(mux)
+	s.logRoutes(mux)
 	mux.HandleFunc("GET /printers/{name}/settings", s.settingsPanel)
 	mux.HandleFunc("POST /printers/{name}/settings", s.saveSettings)
 	for act := range queueActions {

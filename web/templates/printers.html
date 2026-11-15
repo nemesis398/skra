@@ -13,7 +13,9 @@
     <span><input class="f" id="manual-uri" placeholder="ipp://printer.local/ipp/print" spellcheck="false"></span>
     <span><button type="button" class="btn sm" data-act="add-manual"><i>&#xF0415;</i>add</button></span></div>
 </div>
-<div id="add-panel"></div>{{end}}
+<div id="add-panel"></div>
+<div class="sec"><b>CUPS log</b><span class="rule"></span></div>
+<div id="log"></div>{{end}}
 
 {{define "seg"}}<div class="seg" role="group" data-group="{{.Group}}" data-was="{{range .Choices}}{{if .On}}{{.Value}}{{end}}{{end}}">{{range .Choices}}<button type="button"{{if .On}} class="on"{{end}} data-pick="{{.Value}}" aria-pressed="{{.On}}">{{.Label}}</button>{{end}}</div>{{end}}
 
@@ -41,6 +43,17 @@
   {{if .Commands}}<div class="frow"><span class="k">maintenance</span><span class="btns">{{range .Commands}}<button type="button" class="btn sm" data-act="command" data-q="{{$.Name}}" data-command="{{.Name}}"{{if .ConfirmText}} data-keep="{{.Keep}}" data-confirm-title="{{.ConfirmTitle}}" data-confirm="{{.ConfirmText}}" data-confirm-label="{{.ConfirmLabel}}"{{end}}><i>&#xF05B7;</i>{{.Label}}</button>{{end}}</span><span class="hint">sent to the printer as a job</span></div>{{end}}
 </div>{{end}}
 
+
+{{/* The log section, which skra.js loads from /printers/log when the tab opens
+     and again on "refresh log". The level switch is off when cupsd.conf is
+     managed or CUPS does not answer. The lines are text: html/template
+     escapes them. */}}
+{{define "log"}}<div class="panel">
+  <div class="frow"><span class="k">log level</span><span><div class="seg" role="group" aria-label="log level">{{range .Levels}}<button type="button"{{if .On}} class="on"{{end}} aria-pressed="{{.On}}" data-act="log-level" data-level="{{.Value}}"{{if $.Locked}} disabled{{end}}>{{.Label}}</button>{{end}}</div></span><span class="hint">{{.Hint}}</span></div>
+  <div class="frow"><span class="k">cups.service journal</span><span class="btns"><button type="button" class="btn sm" data-act="log-refresh"><i>&#xF0450;</i>refresh log</button></span><span class="hint">the last {{.Count}} lines, newest at the bottom</span></div>
+</div>
+{{if .Error}}<div class="wait">{{.Error}}</div>{{else if not .Lines}}<div class="wait">The journal has no CUPS lines yet.</div>{{else}}<pre class="logbox" id="logbox" tabindex="0">{{range .Lines}}{{if .TS}}<span class="ts">{{.TS}}</span>{{end}}{{.Rest}}
+{{end}}</pre>{{end}}{{end}}
 
 {{/* The result of a search. The buttons carry what the add panel is asked
      for: the address, the description, the model and the IEEE 1284 id. The

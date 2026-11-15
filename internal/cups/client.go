@@ -79,13 +79,8 @@ func (c *Client) Do(ctx context.Context, path string, req *ipp.Request, doc io.R
 		return nil, fmt.Errorf("CUPS does not answer: %w", err)
 	}
 	defer resp.Body.Close()
-	switch {
-	case resp.StatusCode == http.StatusUnauthorized:
-		return nil, errors.New("CUPS refused the login: it did not accept this user over the local socket")
-	case resp.StatusCode == http.StatusForbidden:
-		return nil, errors.New("CUPS refused this: the user may not do it (403)")
-	case resp.StatusCode != http.StatusOK:
-		return nil, fmt.Errorf("CUPS answered HTTP %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		return nil, httpFailure(resp.StatusCode)
 	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponse))
 	if err != nil {
@@ -96,4 +91,40 @@ func (c *Client) Do(ctx context.Context, path string, req *ipp.Request, doc io.R
 		return nil, fmt.Errorf("CUPS sent an unreadable answer: %w", err)
 	}
 	return res, res.Err()
+}
+
+// httpFailure is the error for an HTTP status that is not the success of the
+// request: the two refusals CUPS gives for the login and for the right, and
+// the bare status for anything else.
+func httpFailure(code int) error {
+	switch code {
+	case http.StatusUnauthorized:
+		return errors.New("CUPS refused the login: it did not accept this user over the local socket")
+	case http.StatusForbidden:
+		return errors.New("CUPS refused this: the user may not do it (403)")
+	}
+	return fmt.Errorf("CUPS answered HTTP %d", code)
+}
+
+// raw sends a plain HTTP request to the CUPS resource at path, over the same
+// socket and with the same PeerCred login as Do. The caller closes the body of
+// the response and checks its status. A body is sent as text/plain, which is
+// what CUPS takes for a configuration file. Do stays IPP only.
+func (c *Client) raw(ctx context.Context, method, path string, body io.Reader) (*http.Response, error) {
+	if c.user == "" {
+		return nil, errors.New("no user configured")
+	}
+	hr, err := http.NewRequestWithContext(ctx, method, "http://localhost"+path, body)
+	if err != nil {
+		return nil, fmt.Errorf("CUPS request: %w", err)
+	}
+	if body != nil {
+		hr.Header.Set("Content-Type", "text/plain")
+	}
+	hr.Header.Set("Authorization", "PeerCred "+c.user)
+	resp, err := c.http.Do(hr)
+	if err != nil {
+		return nil, fmt.Errorf("CUPS does not answer: %w", err)
+	}
+	return resp, nil
 }

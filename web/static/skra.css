@@ -75,6 +75,9 @@ button { font:inherit; color:inherit; background:none; border:0; cursor:pointer;
 .seg button { padding:0.231rem 0.615rem; color:var(--sub0); border-bottom:2px solid transparent; }
 .seg button.on { color:var(--text); border-bottom-color:var(--accent); }
 .seg button:hover { color:var(--text); }
+.seg button:disabled { color:var(--o0); cursor:default; }
+.seg button:disabled:hover { color:var(--o0); }
+.seg button.on:disabled { border-bottom-color:var(--o0); }
 
 table.q { width:calc(100% - 2.462rem); margin:0.308rem 1.231rem 0; border-collapse:collapse; table-layout:fixed; }
 table.q th { text-align:left; font-weight:400; color:var(--o1); font-size:0.923rem; padding:2px 0.615rem; }
@@ -126,6 +129,10 @@ select.f option { background:var(--mantle); color:var(--text); }
 .panel .row { display:flex; gap:2px; justify-content:flex-end; margin-top:0.769rem; }
 .wait { color:var(--sub0); padding:0.615rem 1.846rem; }
 .frow .wait { padding:0; }
+/* the CUPS log: the last lines of the journal, newest at the bottom */
+.logbox { margin:0.462rem 1.231rem 0; background:var(--mantle); padding:0.769rem 0.923rem; font:inherit; font-size:0.923rem;
+  max-height:28rem; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; }
+.logbox .ts { color:var(--o1); }
 /* the countdown of a search keeps its width from 10 to 0 */
 .cd { display:inline-block; min-width:2ch; text-align:right; }
 

@@ -242,7 +242,8 @@ document.addEventListener("click", (e) => {
   }
   const b = e.target.closest("button[data-act]");
   if (!b) return;
-  if (b.dataset.job) jobAction(b);
+  if (b.dataset.act.startsWith("log-")) logAction(b);
+  else if (b.dataset.job) jobAction(b);
   else if (b.dataset.act === "testpage") testPage(b);
   else if (b.dataset.q) queueAction(b);
   else addAction(b);
@@ -497,6 +498,55 @@ function addAction(b) {
       return createPrinter(b);
   }
 }
+// --- the CUPS log ---
+// The log section is loaded once when the tab opens and again on "refresh log"
+// and after the level was set; the event stream does not carry it, because a
+// journal that moves under the reader is hard to read. An answer that comes
+// after a newer question is dropped.
+let logAsked = 0;
+let logBusy = false;
+
+async function loadLog() {
+  const slot = $("log");
+  if (!slot) return;
+  const mine = ++logAsked;
+  try {
+    const res = await fetch("/printers/log", { cache: "no-store" });
+    const text = await res.text();
+    if (mine !== logAsked) return;
+    if (!res.ok) {
+      say(text.trim() || `skrá answered ${res.status}.`, true);
+      return;
+    }
+    slot.innerHTML = text;
+    const box = $("logbox");
+    if (box) box.scrollTop = box.scrollHeight;
+  } catch (err) {
+    if (mine === logAsked) say("Could not reach skrá. Is it still running?", true);
+  }
+}
+
+async function logAction(b) {
+  if (b.dataset.act === "log-refresh") {
+    b.disabled = true;
+    await loadLog();
+    if (b.isConnected) b.disabled = false;
+    return;
+  }
+  const { level } = b.dataset;
+  if (logBusy || b.classList.contains("on")) return;
+  logBusy = true;
+  say(`Setting the log level to ${level}. CUPS restarts its scheduler, this takes a few seconds.`, false, true);
+  try {
+    await send("/printers/log/level", new URLSearchParams({ level }), b);
+    // Whatever the answer was, the section shows what cupsd.conf says now.
+    await loadLog();
+  } finally {
+    logBusy = false;
+  }
+}
+
+if ($("log")) loadLog();
 
 // --- printing a file ---
 // The choices live in the #opts fragment as JSON; what was picked stays here
