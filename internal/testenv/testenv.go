@@ -6,6 +6,7 @@ package testenv
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"syscall"
 	"testing"
@@ -64,4 +65,19 @@ func LockDefault(tb testing.TB) {
 		tb.Fatal(err)
 	}
 	tb.Cleanup(func() { f.Close() }) // closing releases the lock
+}
+
+// ScratchQueue makes a driverless queue in the harness container and removes
+// it when the test ends. Tests that reject, pause, empty or remove a queue use
+// one of their own, so a test of another package that prints on Virtual-MFC
+// at the same moment is not hit; the names differ per package for the same
+// reason.
+func ScratchQueue(tb testing.TB, name string) {
+	tb.Helper()
+	out, err := exec.Command("podman", "exec", "skra-harness", "lpadmin", "-p", name, "-E", "-v",
+		"ipp://localhost:8631/ipp/print", "-m", "everywhere").CombinedOutput()
+	if err != nil {
+		tb.Fatalf("lpadmin -p %s: %v\n%s", name, err, out)
+	}
+	tb.Cleanup(func() { exec.Command("podman", "exec", "skra-harness", "lpadmin", "-x", name).Run() }) // gone already is fine
 }

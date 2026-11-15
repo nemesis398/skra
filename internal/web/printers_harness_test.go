@@ -7,7 +7,6 @@ package web
 import (
 	"context"
 	"net/url"
-	"os/exec"
 	"slices"
 	"strings"
 	"testing"
@@ -15,19 +14,6 @@ import (
 	"github.com/nemesis398/skra/internal/cups"
 	"github.com/nemesis398/skra/internal/testenv"
 )
-
-// scratchQueue makes a queue in the container and removes it at the end. The
-// web tests that pause, empty or remove a queue use their own, so a test of
-// another package that prints on Virtual-MFC at the same moment is not hit.
-func scratchQueue(t *testing.T, name string) {
-	t.Helper()
-	out, err := exec.Command("podman", "exec", "skra-harness", "lpadmin", "-p", name, "-E", "-v",
-		"ipp://localhost:8631/ipp/print", "-m", "everywhere").CombinedOutput()
-	if err != nil {
-		t.Fatalf("lpadmin -p %s: %v\n%s", name, err, out)
-	}
-	t.Cleanup(func() { exec.Command("podman", "exec", "skra-harness", "lpadmin", "-x", name).Run() }) // gone already is fine
-}
 
 func queueNamed(t *testing.T, c *cups.Client, name string) (cups.Printer, bool) {
 	t.Helper()
@@ -48,7 +34,7 @@ func queueNamed(t *testing.T, c *cups.Client, name string) (cups.Printer, bool) 
 func TestSettingsAgainstHarness(t *testing.T) {
 	s, c := harnessServer(t)
 	h := s.Handler()
-	scratchQueue(t, "Scratch-Web-S")
+	testenv.ScratchQueue(t, "Scratch-Web-S")
 	get(h, "/") // learn the queue names
 
 	body := get(h, "/printers/Scratch-Web-S/settings").Body.String()
@@ -99,8 +85,8 @@ func TestPrintersPageAgainstHarness(t *testing.T) {
 func TestQueueActionsAgainstHarness(t *testing.T) {
 	s, c := harnessServer(t)
 	h := s.Handler()
-	scratchQueue(t, "Scratch-Web-A")
-	scratchQueue(t, "Scratch-Web-B")
+	testenv.ScratchQueue(t, "Scratch-Web-A")
+	testenv.ScratchQueue(t, "Scratch-Web-B")
 	cancelNamed(t, c, "skra-test web queue")
 	get(h, "/") // learn the queue names
 
@@ -184,7 +170,7 @@ func TestSetDefaultAgainstHarness(t *testing.T) {
 			t.Errorf("the default is %q (%v) after the test, was %q", got, err, before)
 		}
 	})
-	scratchQueue(t, "Scratch-Web-C")
+	testenv.ScratchQueue(t, "Scratch-Web-C")
 	t.Cleanup(func() {
 		if before != "" {
 			if err := c.SetDefault(context.Background(), before); err != nil {

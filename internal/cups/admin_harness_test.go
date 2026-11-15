@@ -27,16 +27,6 @@ func printer(t *testing.T, c *cups.Client, name string) cups.Printer {
 	return p
 }
 
-// scratch makes a queue in the container for the test and removes it at the
-// end. Tests that reject, pause or empty a queue use their own, so a test of
-// another package that prints on Virtual-MFC at the same moment is not hit.
-// The names differ per package for the same reason.
-func scratch(t *testing.T, name string) {
-	t.Helper()
-	podmanExec(t, "lpadmin", "-p", name, "-E", "-v", "ipp://localhost:8631/ipp/print", "-m", "everywhere")
-	t.Cleanup(func() { exec.Command("podman", "exec", "skra-harness", "lpadmin", "-x", name).Run() }) // gone already is fine
-}
-
 // commandQueue makes a scratch queue from a generic PostScript driver that
 // lists the three common maintenance commands, which a driverless queue does
 // not. The queue is paused, so a command sent to it stays waiting.
@@ -94,7 +84,7 @@ func TestSettingsRoundTrip(t *testing.T) {
 func TestAcceptRejectPause(t *testing.T) {
 	c := testenv.Client(t)
 	ctx := ctxFor(t)
-	scratch(t, "Scratch-Cups-A")
+	testenv.ScratchQueue(t, "Scratch-Cups-A")
 	const q = "Scratch-Cups-A"
 
 	if err := c.Accept(ctx, q, false); err != nil {
@@ -127,8 +117,8 @@ func TestAcceptRejectPause(t *testing.T) {
 func TestCancelAllAndMoveAll(t *testing.T) {
 	c := testenv.Client(t)
 	ctx := ctxFor(t)
-	scratch(t, "Scratch-Cups-B")
-	scratch(t, "Scratch-Cups-C")
+	testenv.ScratchQueue(t, "Scratch-Cups-B")
+	testenv.ScratchQueue(t, "Scratch-Cups-C")
 	ids := []int{heldOn(t, c, "Scratch-Cups-B", "1"), heldOn(t, c, "Scratch-Cups-B", "2")}
 
 	if err := c.MoveAll(ctx, "Scratch-Cups-B", "Scratch-Cups-C"); err != nil {
@@ -171,7 +161,7 @@ func TestSetDefault(t *testing.T) {
 			t.Errorf("the default is %q (%v) after the test, was %q", got, err, before)
 		}
 	})
-	scratch(t, "Scratch-Cups-D")
+	testenv.ScratchQueue(t, "Scratch-Cups-D")
 	t.Cleanup(func() {
 		if before != "" {
 			if err := c.SetDefault(context.Background(), before); err != nil {
@@ -190,7 +180,7 @@ func TestSetDefault(t *testing.T) {
 func TestDeleteAQueue(t *testing.T) {
 	c := testenv.Client(t)
 	ctx := ctxFor(t)
-	scratch(t, "Scratch-Cups-E")
+	testenv.ScratchQueue(t, "Scratch-Cups-E")
 	if err := c.Delete(ctx, "Scratch-Cups-E"); err != nil {
 		t.Fatal(err)
 	}
