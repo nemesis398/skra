@@ -32,8 +32,10 @@ const (
 	stopWait      = 10 * time.Second
 )
 
-// scanLimit is how long one scan job may run. A variable so a test can lower it.
-var scanLimit = 10 * time.Minute
+// scanLimit is how long one scan job may run: a full feeder of 40 sides at
+// 600 dpi fits. A stalled job ends sooner, as each page has 60 seconds, and
+// a runaway one at 200 pages. A variable so a test can lower it.
+var scanLimit = 60 * time.Minute
 
 // saveScanFiles writes a scan into a folder. A variable so a test can hold a
 // save while it runs.
