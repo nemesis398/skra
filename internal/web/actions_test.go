@@ -3,6 +3,7 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -10,9 +11,11 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"net/url"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/nemesis398/skra/internal/config"
@@ -24,6 +27,9 @@ func (f *fakeCUPS) act(what string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.acts = append(f.acts, what)
+	if f.failOnly != "" && !strings.HasPrefix(what, f.failOnly) {
+		return nil
+	}
 	return f.actErr
 }
 
@@ -349,6 +355,12 @@ func (r *fileBody) Read(p []byte) (int, error) {
 // upload posts a multipart form whose fields come in the given order. A
 // contentLength of -1 sends no length, as a chunked request does.
 func upload(s *Server, h http.Handler, fields [][2]string, filename string, file io.Reader, contentLength int64) *httptest.ResponseRecorder {
+	return uploadCtx(context.Background(), s, h, fields, filename, file, contentLength)
+}
+
+// uploadCtx is upload for a request whose context the caller owns, so a test
+// can make the browser leave.
+func uploadCtx(ctx context.Context, s *Server, h http.Handler, fields [][2]string, filename string, file io.Reader, contentLength int64) *httptest.ResponseRecorder {
 	pr, pw := io.Pipe()
 	mw := multipart.NewWriter(pw)
 	go func() {
@@ -368,7 +380,7 @@ func upload(s *Server, h http.Handler, fields [][2]string, filename string, file
 		mw.Close()
 		pw.Close()
 	}()
-	req := httptest.NewRequest("POST", "/print", pr)
+	req := httptest.NewRequest("POST", "/print", pr).WithContext(ctx)
 	req.Host = "127.0.0.1:7631"
 	req.ContentLength = contentLength
 	req.Header.Set("Content-Type", mw.FormDataContentType())
@@ -562,6 +574,25 @@ func TestPrintRejectsABadForm(t *testing.T) {
 			t.Errorf("%s: status %d, body %q", tc.name, rec.Code, rec.Body.String())
 		}
 	}
+	// A printer field that came empty says so, and a missing one is the
+	// wrong order of the form.
+	for _, tc := range []struct {
+		name   string
+		fields [][2]string
+		want   string
+	}{
+		{"no printer", [][2]string{{"sides", "one-sided"}}, fieldOrderText},
+		{"empty printer", [][2]string{{"printer", ""}}, "Choose the printer to print on."},
+		{"blank printer", [][2]string{{"printer", "  "}}, "Choose the printer to print on."},
+	} {
+		if rec := upload(s, h, tc.fields, "a.pdf", pdf(), -1); rec.Code != 400 || rec.Body.String() != tc.want {
+			t.Errorf("%s: status %d, body %q, want 400 %q", tc.name, rec.Code, rec.Body.String(), tc.want)
+		}
+	}
+	// skrá's own refusals before it asks CUPS are not actions for the history.
+	if ev, _ := s.deps.Store.Recent(context.Background(), 1); len(ev) != 0 {
+		t.Errorf("a refused form was logged: %+v", ev[0])
+	}
 	// The file part before the printer field.
 	pr, pw := io.Pipe()
 	mw := multipart.NewWriter(pw)
@@ -630,6 +661,137 @@ func TestPrintFindsThePrinterLikeEveryQueueRoute(t *testing.T) {
 	if ev := lastEvent(t, s); to != "Virtual-MFC" || ev.Target != "Virtual-MFC" {
 		t.Errorf("printed to %q, event about %q; want the name CUPS knows", to, ev.Target)
 	}
+}
+
+// A browser that leaves in the middle of the file is not CUPS failing: the
+// history and the reply say the upload stopped, whatever the CUPS client made
+// of the read that failed.
+func TestPrintTellsAnUploadThatStoppedFromCUPSTrouble(t *testing.T) {
+	const stopped = "The upload stopped before the end. Send the file again."
+	pdf := "%PDF-1.4\n" + strings.Repeat("x", 3000)
+	check := func(t *testing.T, s *Server, rec *httptest.ResponseRecorder) {
+		t.Helper()
+		ev := lastEvent(t, s)
+		if ev.Action != "print.file" || ev.OK || ev.Detail != `"a.pdf" as job 0: `+stopped {
+			t.Errorf("event = %+v, want the upload stopped, with the file name kept", ev)
+		}
+		if strings.Contains(rec.Body.String(), "CUPS does not answer") || !strings.Contains(rec.Body.String(), stopped) {
+			t.Errorf("status %d, body %q", rec.Code, rec.Body.String())
+		}
+	}
+	t.Run("the body read fails", func(t *testing.T) {
+		s, h := actionServer(t, twoJobs())
+		file := io.MultiReader(strings.NewReader(pdf), iotest.ErrReader(errors.New("connection reset by peer")))
+		rec := upload(s, h, printFields, "a.pdf", file, -1)
+		check(t, s, rec)
+	})
+	t.Run("the request is canceled", func(t *testing.T) {
+		f := twoJobs()
+		ctx, cancel := context.WithCancel(context.Background())
+		f.print = func(_ string, _ string, _ string, _ cups.JobOptions, doc io.Reader) (int, error) {
+			cancel()
+			return 0, errors.New("CUPS does not answer: context canceled")
+		}
+		s, h := actionServer(t, f)
+		rec := uploadCtx(ctx, s, h, printFields, "a.pdf", strings.NewReader(pdf), -1)
+		check(t, s, rec)
+	})
+	t.Run("a CUPS that fails with the whole file sent keeps its own words", func(t *testing.T) {
+		f := twoJobs()
+		f.actErr = errors.New("CUPS is busy. Try again in a moment.")
+		s, h := actionServer(t, f)
+		rec := upload(s, h, printFields, "a.pdf", strings.NewReader(pdf), -1)
+		if ev := lastEvent(t, s); ev.Detail != `"a.pdf" as job 31: CUPS is busy. Try again in a moment.` || rec.Body.String() != "CUPS is busy. Try again in a moment." {
+			t.Errorf("event %+v, body %q", ev, rec.Body.String())
+		}
+	})
+}
+
+// countedBody is a request body that counts what is read from it.
+type countedBody struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countedBody) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
+}
+
+// rawUpload posts a multipart body that was built beforehand and returns how
+// many of its bytes the handler read.
+func rawUpload(s *Server, h http.Handler, body []byte, contentType string) (*httptest.ResponseRecorder, int64) {
+	cb := &countedBody{r: bytes.NewReader(body)}
+	req := httptest.NewRequest("POST", "/print", cb)
+	req.Host = "127.0.0.1:7631"
+	req.ContentLength = int64(len(body))
+	req.Header.Set("Content-Type", contentType)
+	req.Header.Set("X-Skra-Token", s.token)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec, cb.n
+}
+
+// bigForm is a print form with the printer field and a file part of the given
+// header and content, followed by a megabyte in another part that the handler
+// has no use for.
+func bigForm(t *testing.T, header textproto.MIMEHeader, content string) ([]byte, string) {
+	t.Helper()
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	mw.WriteField("printer", "Virtual-MFC")
+	part, err := mw.CreatePart(header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.WriteString(part, content)
+	mw.WriteField("pad", strings.Repeat("x", mib))
+	mw.Close()
+	return buf.Bytes(), mw.FormDataContentType()
+}
+
+func pdfPart() textproto.MIMEHeader {
+	h := textproto.MIMEHeader{}
+	h.Set("Content-Disposition", `form-data; name="file"; filename="a.pdf"`)
+	return h
+}
+
+// Every reply that is made before the whole body has been read drains the
+// body first, so the browser gets the answer and not a reset connection.
+func TestPrintAnswersWithTheWholeBodyRead(t *testing.T) {
+	t.Run("CUPS refuses before it has read the document", func(t *testing.T) {
+		f := twoJobs()
+		f.print = func(string, string, string, cups.JobOptions, io.Reader) (int, error) {
+			return 0, errors.New("CUPS refused the document. Check the queue and try again.")
+		}
+		s, h := actionServer(t, f)
+		body, ct := bigForm(t, pdfPart(), "%PDF-1.4\n")
+		rec, read := rawUpload(s, h, body, ct)
+		if rec.Code != 502 {
+			t.Fatalf("status %d, body %q", rec.Code, rec.Body.String())
+		}
+		if read != int64(len(body)) {
+			t.Errorf("the handler read %d of %d bytes before it answered", read, len(body))
+		}
+	})
+	t.Run("the file cannot be read at its start", func(t *testing.T) {
+		f := twoJobs()
+		s, h := actionServer(t, f)
+		hdr := pdfPart()
+		hdr.Set("Content-Transfer-Encoding", "quoted-printable")
+		body, ct := bigForm(t, hdr, "=") // a lone = cannot be decoded
+		rec, read := rawUpload(s, h, body, ct)
+		if rec.Code != 400 || rec.Body.String() != "The file could not be read. Try again." {
+			t.Fatalf("status %d, body %q", rec.Code, rec.Body.String())
+		}
+		if read != int64(len(body)) {
+			t.Errorf("the handler read %d of %d bytes before it answered", read, len(body))
+		}
+		if f.prints() != 0 {
+			t.Error("Print was called for a file that could not be read")
+		}
+	})
 }
 
 func TestPrintNotMultipart(t *testing.T) {

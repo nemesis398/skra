@@ -46,6 +46,8 @@ const (
 	emptyFileText  = "The file is empty."
 	notUploadText  = "That was not a file upload. Reload the page and try again."
 	fieldOrderText = "The form came in the wrong order. Reload the page and try again."
+	noPrinterText  = "Choose the printer to print on."
+	stoppedText    = "The upload stopped before the end. Send the file again."
 )
 
 // errTooLarge is what the counting reader returns once a file passes maxUpload.
@@ -127,7 +129,15 @@ func (s *Server) jobName(id int) string {
 // shortPrinter is the short name the overview uses for a queue, or the queue
 // name itself when the last poll did not see it.
 func (s *Server) shortPrinter(name string) string {
-	if short, ok := shortNames(s.known().Printers)[name]; ok {
+	return shortOf(s.known().Printers, name)
+}
+
+// shortOf is the short name of a queue among printers, or the queue name
+// itself when they do not have it. Handlers that have just read the queues
+// from CUPS use it, so they name a queue by what CUPS has now and not by the
+// last poll.
+func shortOf(printers []cups.Printer, name string) string {
+	if short, ok := shortNames(printers)[name]; ok {
 		return short
 	}
 	return name
@@ -192,7 +202,7 @@ func (s *Server) moveJob(w http.ResponseWriter, r *http.Request) {
 func (s *Server) testPage(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), actionTimeout)
 	defer cancel()
-	p, _, ok := s.resolve(ctx, w, r)
+	p, all, ok := s.resolve(ctx, w, r)
 	if !ok {
 		return
 	}
@@ -205,7 +215,7 @@ func (s *Server) testPage(w http.ResponseWriter, r *http.Request) {
 		reply(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	reply(w, http.StatusOK, fmt.Sprintf("Test page sent to %s as job %d.", s.shortPrinter(printer), id))
+	reply(w, http.StatusOK, fmt.Sprintf("Test page sent to %s as job %d.", shortOf(all, printer), id))
 }
 
 // --- printing a file ---
@@ -214,12 +224,15 @@ func (s *Server) testPage(w http.ResponseWriter, r *http.Request) {
 var optionValue = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 
 // capReader fails once more than max bytes have passed through it, so a file
-// without a declared length still stops at the limit.
+// without a declared length still stops at the limit. It keeps the first
+// error that the reader under it returned (other than the end of the file), so
+// the caller can tell a body that broke off from a CUPS that failed.
 type capReader struct {
 	r    io.Reader
 	n    int64
 	max  int64
 	over bool
+	err  error
 }
 
 func (c *capReader) Read(p []byte) (int, error) {
@@ -227,6 +240,9 @@ func (c *capReader) Read(p []byte) (int, error) {
 		return 0, errTooLarge
 	}
 	n, err := c.r.Read(p)
+	if err != nil && err != io.EOF && c.err == nil {
+		c.err = err
+	}
 	c.n += int64(n)
 	if c.n > c.max {
 		c.over = true
@@ -287,6 +303,7 @@ func (s *Server) printFile(w http.ResponseWriter, r *http.Request) {
 	}
 	var (
 		printer string
+		sawName bool // the printer field came, even if it came empty
 		opts    cups.JobOptions
 	)
 	for {
@@ -305,7 +322,7 @@ func (s *Server) printFile(w http.ResponseWriter, r *http.Request) {
 		}
 		field := part.FormName()
 		if field == "file" {
-			s.printPart(w, r, part, printer, opts)
+			s.printPart(w, r, part, printer, sawName, opts)
 			return
 		}
 		raw, err := io.ReadAll(io.LimitReader(part, maxField))
@@ -317,7 +334,7 @@ func (s *Server) printFile(w http.ResponseWriter, r *http.Request) {
 		val := strings.TrimSpace(string(raw))
 		switch field {
 		case "printer":
-			printer = val
+			printer, sawName = val, true
 		case "sides", "color":
 			if val != "" && !optionValue.MatchString(val) {
 				drain(r)
@@ -335,11 +352,15 @@ func (s *Server) printFile(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) printPart(w http.ResponseWriter, r *http.Request, part *multipart.Part, printer string, opts cups.JobOptions) {
+func (s *Server) printPart(w http.ResponseWriter, r *http.Request, part *multipart.Part, printer string, sawName bool, opts cups.JobOptions) {
 	name := part.FileName()
 	if printer == "" {
 		drain(r)
-		reply(w, http.StatusBadRequest, fieldOrderText)
+		if sawName {
+			reply(w, http.StatusBadRequest, noPrinterText)
+		} else {
+			reply(w, http.StatusBadRequest, fieldOrderText)
+		}
 		return
 	}
 	if name == "" {
@@ -356,6 +377,7 @@ func (s *Server) printPart(w http.ResponseWriter, r *http.Request, part *multipa
 		reply(w, http.StatusRequestEntityTooLarge, tooLargeText)
 		return
 	case err != nil && err != io.EOF:
+		drain(r)
 		reply(w, http.StatusBadRequest, "The file could not be read. Try again.")
 		return
 	case len(head) == 0:
@@ -375,7 +397,7 @@ func (s *Server) printPart(w http.ResponseWriter, r *http.Request, part *multipa
 	// The printer is found like the queue of every per-queue route, and
 	// named as CUPS knows it. The rest of the body is read first, so the
 	// browser gets the answer and not a reset connection.
-	p, _, ok := s.resolveName(ctx, &drainFirst{ResponseWriter: w, r: r}, printer)
+	p, all, ok := s.resolveName(ctx, &drainFirst{ResponseWriter: w, r: r}, printer)
 	if !ok {
 		return
 	}
@@ -384,6 +406,10 @@ func (s *Server) printPart(w http.ResponseWriter, r *http.Request, part *multipa
 	tooLarge := counted.over || isTooLarge(err)
 	if tooLarge {
 		err = errors.New(tooLargeText)
+	} else if err != nil && ((counted.err != nil && !isTooLarge(counted.err)) || r.Context().Err() != nil) {
+		// The browser left, or the body broke off. CUPS did not fail; it was
+		// handed a file that ended early, and its complaint says nothing.
+		err = errors.New(stoppedText)
 	}
 	s.record(r, "print.file", printer, fmt.Sprintf("%s as job %d", quoted(name), id), err)
 	s.hub.Refresh()
@@ -391,8 +417,11 @@ func (s *Server) printPart(w http.ResponseWriter, r *http.Request, part *multipa
 	case tooLarge:
 		reply(w, http.StatusRequestEntityTooLarge, tooLargeText)
 	case err != nil:
+		// CUPS may have refused before it read the whole document; the rest
+		// of the upload is read first, as for every other refusal.
+		drain(r)
 		reply(w, http.StatusBadGateway, err.Error())
 	default:
-		reply(w, http.StatusOK, fmt.Sprintf("Sent %s to %s as job %d.", quoted(name), s.shortPrinter(printer), id))
+		reply(w, http.StatusOK, fmt.Sprintf("Sent %s to %s as job %d.", quoted(name), shortOf(all, printer), id))
 	}
 }

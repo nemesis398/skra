@@ -33,11 +33,16 @@ type fakeCUPS struct {
 
 	// The actions record what they were asked in acts ("cancel 12"); actErr
 	// is what every action then answers. print stands in for Print.
-	acts    []string
-	actErr  error
-	changes []cups.Changes // what Modify was asked, in order
-	printed int
-	print   func(printer, name, format string, o cups.JobOptions, doc io.Reader) (int, error)
+	acts   []string
+	actErr error
+	// failOnly, when set, limits actErr to the actions whose record starts
+	// with it ("accept"); every other action succeeds. jobsErr fails only the
+	// reading of the jobs.
+	failOnly string
+	jobsErr  error
+	changes  []cups.Changes // what Modify was asked, in order
+	printed  int
+	print    func(printer, name, format string, o cups.JobOptions, doc io.Reader) (int, error)
 
 	// Adding printers: what the search finds (and the timeout it was given and
 	// the time its context had left), the drivers by device id and maker, and
@@ -91,6 +96,9 @@ func (f *fakeCUPS) Default(context.Context) (string, error) {
 func (f *fakeCUPS) Jobs(_ context.Context, which string, _ int) ([]cups.Job, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.jobsErr != nil {
+		return nil, f.jobsErr
+	}
 	if which == "completed" {
 		return f.done, f.err
 	}
