@@ -5,9 +5,9 @@
 A small web service that replaces the CUPS web interface on a Linux laptop. It
 shows your printers with live ink levels, prints a file you drop on the page,
 manages the queue, adds and configures printers, reads the CUPS log, and scans
-into a folder. It runs as your own user, listens on `127.0.0.1:7631` only, and sleeps when
-nobody uses it: systemd starts it on the first request, and it exits after five
-idle minutes.
+into a folder. It runs as your own user, listens on `127.0.0.1:7631` only, and
+sleeps when nobody uses it: systemd starts it on the first request, and it
+exits after five idle minutes.
 
 ![The overview: printers with ink, printing a file, the queue and the last prints](docs/overview.png)
 
@@ -42,11 +42,11 @@ state directory.
 ## 📠 Scan
 
 The Scan tab lists the scanners it knows: the ones in `scanners` in the
-config, and the ones the network announces as eSCL scanners (`_uscan._tcp`)
-through avahi. It asks a scanner nothing until you open the tab. Pick the
-source (feeder, feeder on both sides, or glass), the color mode, the
-resolution and the paper size from what that scanner says it can do, then
-press scan.
+config, and the ones the network announces through avahi as eSCL scanners,
+over http (`_uscan._tcp`) or https (`_uscans._tcp`). It asks a scanner
+nothing until you open the tab. Pick the source (feeder, feeder on both
+sides, or glass), the color mode, the resolution and the paper size from what
+that scanner says it can do, then press scan.
 
 Each page shows as it arrives. Turn a page left or right, or drop it, and
 press scan more to add pages from the same scanner at the same resolution.
@@ -183,6 +183,16 @@ ends the process.
   `declared_queues` so skra shows them read-only.
 - **Scans go to a folder.** Saving to Paperless, OCR and scan presets are not
   part of this version.
+- **The scan folder needs hard links.** A save writes each file under a
+  hidden name and then links it to its own, so it never overwrites a file.
+  FAT and exFAT, and some network mounts, cannot link, and a save there
+  fails. Point `scan_folder` at a folder on a Linux file system.
+- **Saving a picture takes memory.** A page saved as PNG, or turned and
+  saved as JPEG, is decoded and encoded again: about 110 MB at 600 dpi on
+  A4, and twice that on A3. A PDF and an unturned JPEG are copied as the
+  scanner sent them and take next to nothing. After a save, the memory goes
+  back to the system. The unit caps the service at 256 MB
+  (`MemoryMax=256M`).
 
 ## 📄 License
 
