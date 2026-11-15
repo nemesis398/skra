@@ -143,9 +143,10 @@ func rawHost(raw string) string {
 }
 
 // pointsAtThisMachinesCUPS reports whether the host of u, once resolved, is an
-// address of this machine and the port is 631 (the default of ipp, ipps, http
-// and https included). A name that does not resolve is not: the printer may be
-// away.
+// address of this machine and the port is 631. An address without a port gets
+// the default of its scheme, which is 631 for ipp, ipps, http and https; a
+// dnssd address never reaches this function, because checkAddress returns
+// before it. A name that does not resolve is not: the printer may be away.
 //
 // This guards against setting up a queue that loops back into this CUPS. It is
 // best effort and not a security boundary: CUPS connects to the printer, not
