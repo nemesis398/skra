@@ -3,7 +3,6 @@
 package web
 
 import (
-	"bytes"
 	"context"
 	"net/http"
 	"regexp"
@@ -96,15 +95,7 @@ func (s *Server) logFragment(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	var buf bytes.Buffer
-	if err := s.tpl.ExecuteTemplate(&buf, "log", v); err != nil {
-		reply(w, http.StatusInternalServerError, "Could not render the log.")
-		return
-	}
-	h := w.Header()
-	h.Set("Content-Type", "text/html; charset=utf-8")
-	h.Set("Cache-Control", "no-store")
-	buf.WriteTo(w)
+	s.fragment(w, "log", v, "Could not render the log.")
 }
 
 // setLogLevel changes the LogLevel of cupsd.conf through CUPS and answers when

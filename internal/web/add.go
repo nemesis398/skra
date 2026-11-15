@@ -314,14 +314,18 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 		v.Has, v.Queue = len(names) > 0, strings.Join(names, ", ")
 		rows = append(rows, v)
 	}
-	s.fragment(w, "devices", rows)
+	s.fragment(w, "devices", rows, renderFailedText)
 }
 
+// renderFailedText is the answer when a fragment of the add panel does not render.
+const renderFailedText = "Could not render that."
+
 // fragment renders a template of the page as HTML for skra.js to put in place.
-func (s *Server) fragment(w http.ResponseWriter, name string, data any) {
+// When the template fails it answers 500 with failed.
+func (s *Server) fragment(w http.ResponseWriter, name string, data any, failed string) {
 	var buf bytes.Buffer
 	if err := s.tpl.ExecuteTemplate(&buf, name, data); err != nil {
-		reply(w, http.StatusInternalServerError, "Could not render that.")
+		reply(w, http.StatusInternalServerError, failed)
 		return
 	}
 	h := w.Header()
@@ -408,7 +412,7 @@ func (s *Server) addPanel(w http.ResponseWriter, r *http.Request) {
 		v.Driver.Choices = []choice{{"choose", "choose a driver", true}}
 		v.DriverHint = "this address does not speak IPP"
 	}
-	s.fragment(w, "addpanel", v)
+	s.fragment(w, "addpanel", v, renderFailedText)
 }
 
 // --- the driver list ---
@@ -451,7 +455,7 @@ func (s *Server) driverList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if id == "" && maker == "" {
-		s.fragment(w, "drivers", driversView{Message: "Type the maker's name to list its drivers."})
+		s.fragment(w, "drivers", driversView{Message: "Type the maker's name to list its drivers."}, renderFailedText)
 		return
 	}
 	list, total, err := s.drivers(ctx, id, maker)
@@ -460,7 +464,7 @@ func (s *Server) driverList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(list) == 0 {
-		s.fragment(w, "drivers", driversView{Message: "CUPS has no driver for this model. Type another maker, or install the maker's driver package."})
+		s.fragment(w, "drivers", driversView{Message: "CUPS has no driver for this model. Type another maker, or install the maker's driver package."}, renderFailedText)
 		return
 	}
 	v := driversView{Hint: fmt.Sprintf("%d found", total)}
@@ -470,7 +474,7 @@ func (s *Server) driverList(w http.ResponseWriter, r *http.Request) {
 	for _, p := range list {
 		v.Choices = append(v.Choices, choice{Value: p.Name, Label: driverLabel(p)})
 	}
-	s.fragment(w, "drivers", v)
+	s.fragment(w, "drivers", v, renderFailedText)
 }
 
 // --- adding the queue ---

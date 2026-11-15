@@ -3,7 +3,6 @@
 package web
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -473,15 +472,7 @@ func (s *Server) settingsPanel(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var buf bytes.Buffer
-	if err := s.tpl.ExecuteTemplate(&buf, "settings", settingsFor(p, s.declared(p.Name))); err != nil {
-		reply(w, http.StatusInternalServerError, "Could not render the settings.")
-		return
-	}
-	h := w.Header()
-	h.Set("Content-Type", "text/html; charset=utf-8")
-	h.Set("Cache-Control", "no-store")
-	buf.WriteTo(w)
+	s.fragment(w, "settings", settingsFor(p, s.declared(p.Name)), "Could not render the settings.")
 }
 
 func settingsFor(p cups.Printer, declared bool) settingsView {
