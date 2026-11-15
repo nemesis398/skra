@@ -79,10 +79,25 @@ var (
 func parseAddress(raw string) (*url.URL, error) {
 	if i := strings.Index(raw, "://"); i >= 0 && strings.EqualFold(raw[:i], "dnssd") {
 		start := i + len("://")
-		end := start + strings.IndexAny(raw[start:]+"/", "/?#")
-		raw = raw[:start] + strings.ReplaceAll(raw[start:end], "%", "%25") + raw[end:]
+		auth := authority(raw)
+		raw = raw[:start] + strings.ReplaceAll(auth, "%", "%25") + raw[start+len(auth):]
 	}
 	return url.Parse(raw)
+}
+
+// authority returns the authority of an address as typed, before url.Parse
+// decodes any escape: what follows the first ://, up to the first /, ? or #.
+// It is "" when there is no ://.
+func authority(raw string) string {
+	i := strings.Index(raw, "://")
+	if i < 0 {
+		return ""
+	}
+	auth := raw[i+len("://"):]
+	if end := strings.IndexAny(auth, "/?#"); end >= 0 {
+		auth = auth[:end]
+	}
+	return auth
 }
 
 // numberLabel is a part of a host that the system's address parser reads as a
@@ -114,14 +129,7 @@ var (
 // rawHost returns the host part of the authority as typed, before url.Parse
 // decodes any escape: without user[:password]@ and without a port.
 func rawHost(raw string) string {
-	i := strings.Index(raw, "://")
-	if i < 0 {
-		return ""
-	}
-	auth := raw[i+len("://"):]
-	if end := strings.IndexAny(auth, "/?#"); end >= 0 {
-		auth = auth[:end]
-	}
+	auth := authority(raw)
 	if j := strings.LastIndex(auth, "@"); j >= 0 {
 		auth = auth[j+1:]
 	}
@@ -222,16 +230,9 @@ func checkAddress(ctx context.Context, raw string) (string, *refusal) {
 
 // userinfoOf returns the user[:password] part of an address, or "".
 func userinfoOf(addr string) string {
-	i := strings.Index(addr, "://")
-	if i < 0 {
-		return ""
-	}
-	rest := addr[i+len("://"):]
-	if end := strings.IndexAny(rest, "/?#"); end >= 0 {
-		rest = rest[:end]
-	}
-	if j := strings.LastIndex(rest, "@"); j >= 0 {
-		return rest[:j]
+	auth := authority(addr)
+	if j := strings.LastIndex(auth, "@"); j >= 0 {
+		return auth[:j]
 	}
 	return ""
 }
