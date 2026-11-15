@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/nemesis398/skra/internal/ipp"
 	"github.com/nemesis398/skra/internal/ipp/ipptest"
@@ -191,6 +192,22 @@ func TestPrintClipsALongName(t *testing.T) {
 	name := got.group(ipp.GroupOperation).String("job-name")
 	if len(name) > 255 || strings.Trim(name, "ü") != "" {
 		t.Errorf("job-name = %d bytes, %q", len(name), name[len(name)-4:])
+	}
+}
+
+// An invalid byte becomes U+FFFD instead of cutting the name off there, and
+// a short name with one is made valid too.
+func TestClipNameWithInvalidUTF8(t *testing.T) {
+	long := "Brief\xffan " + strings.Repeat("ü", 150) // 309 bytes, invalid at byte 5
+	got := clipName(long)
+	if !utf8.ValidString(got) || len(got) > 255 || len(got) < 252 || !strings.HasPrefix(got, "Brief\uFFFDan ü") {
+		t.Errorf("clipName(long) = %d bytes, valid %v, %q…", len(got), utf8.ValidString(got), got[:min(len(got), 16)])
+	}
+	if got := clipName("Brief\xffan"); got != "Brief\uFFFDan" {
+		t.Errorf("clipName(short) = %q, want %q", got, "Brief\uFFFDan")
+	}
+	if got := clipName(strings.Repeat("a", 254) + "ü"); got != strings.Repeat("a", 254) {
+		t.Errorf("clipName cut inside ü: %q", got[250:])
 	}
 }
 

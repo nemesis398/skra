@@ -122,14 +122,16 @@ func (c *Client) PrintTestPage(ctx context.Context, printer string, hold bool) (
 	return c.Print(ctx, printer, "Test Page", testPageFormat, JobOptions{Hold: hold}, strings.NewReader(testPageBanner))
 }
 
-// clipName cuts name to what an IPP name value can hold, on a rune boundary.
+// clipName makes name valid UTF-8, with U+FFFD for each run of bytes that is
+// not, and cuts it to what an IPP name value can hold, on a rune boundary.
 func clipName(name string) string {
+	name = strings.ToValidUTF8(name, "\uFFFD")
 	if len(name) <= maxJobName {
 		return name
 	}
-	name = name[:maxJobName]
-	for !utf8.ValidString(name) {
-		name = name[:len(name)-1]
+	n := maxJobName
+	for !utf8.RuneStart(name[n]) { // name is valid, so at most three steps
+		n--
 	}
-	return name
+	return name[:n]
 }
