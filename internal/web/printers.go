@@ -5,7 +5,6 @@ package web
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -302,14 +301,8 @@ func jobButtonsFor(p cups.Printer, all []cups.Printer, jobs int) jobButtons {
 		CancelText:  "Everything waiting or printing on this queue is canceled. A sheet already in the printer may still come out.",
 		CancelLabel: "Cancel " + count,
 	}
-	var targets []moveTarget
-	for _, o := range all {
-		if o.Name != p.Name {
-			targets = append(targets, moveTarget{Name: o.Name, Label: names[o.Name]})
-		}
-	}
-	if raw, err := json.Marshal(targets); err == nil && len(targets) > 0 {
-		jb.MoveTo = string(raw)
+	if to := otherQueues(all, p.Name, names); to != "" {
+		jb.MoveTo = to
 		jb.MoveTitle = "Move " + count + " from " + short
 		jb.MoveText = "Choose the printer to move the jobs to."
 		jb.MoveLabel = "Move " + count

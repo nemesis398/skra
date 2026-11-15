@@ -290,9 +290,15 @@ func moveTargets(j cups.Job, printers []cups.Printer, names map[string]string) s
 	if (j.State != 3 && j.State != 4) || len(printers) < 2 {
 		return ""
 	}
+	return otherQueues(printers, j.Printer, names)
+}
+
+// otherQueues is the JSON of the move dialog's choices: every queue but the
+// one named, or "" when there is none.
+func otherQueues(printers []cups.Printer, except string, names map[string]string) string {
 	var targets []moveTarget
 	for _, p := range printers {
-		if p.Name != j.Printer {
+		if p.Name != except {
 			targets = append(targets, moveTarget{Name: p.Name, Label: names[p.Name]})
 		}
 	}
