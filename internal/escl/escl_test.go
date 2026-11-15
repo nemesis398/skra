@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -397,5 +398,141 @@ func TestStartRefusesAJobOutsideScanJobs(t *testing.T) {
 		if err := c.Cancel(context.Background(), job); err == nil {
 			t.Errorf("Cancel took job %q", job)
 		}
+	}
+}
+
+// breakOff sends the headers of an answer of length bytes and the first part
+// of it, then drops the connection.
+func breakOff(t *testing.T, w http.ResponseWriter, contentType string, length int, part []byte) {
+	t.Helper()
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Length", strconv.Itoa(length))
+	w.WriteHeader(http.StatusOK)
+	w.Write(part)
+	w.(http.Flusher).Flush()
+	conn, _, err := http.NewResponseController(w).Hijack()
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	conn.Close()
+}
+
+// jpegStart is the first bytes of a JPEG: SOI and the start of an APP0.
+var jpegStart = []byte{0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 'J', 'F', 'I', 'F', 0}
+
+// pageServer serves the job /eSCL/ScanJobs/1 with page as its NextDocument
+// handler.
+func pageServer(t *testing.T, page http.HandlerFunc) *Client {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/eSCL/ScanJobs/1/NextDocument" {
+			http.NotFound(w, r)
+			return
+		}
+		page(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	c, err := New(srv.URL + "/eSCL")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+// stall sends the headers and the start of a page, then sends nothing more
+// until the client goes or the test ends.
+func stall(release <-chan struct{}) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/jpeg")
+		w.Header().Set("Content-Length", "100000")
+		w.WriteHeader(http.StatusOK)
+		w.Write(jpegStart)
+		w.(http.Flusher).Flush()
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}
+}
+
+func readPage(t *testing.T, c *Client, ctx context.Context) error {
+	t.Helper()
+	page, err := c.NextPage(ctx, "/eSCL/ScanJobs/1")
+	if err != nil {
+		t.Fatalf("NextPage: %v", err)
+	}
+	defer page.Close()
+	_, err = io.ReadAll(page)
+	return err
+}
+
+func TestAPageThatBreaksOffIsAway(t *testing.T) {
+	c := pageServer(t, func(w http.ResponseWriter, r *http.Request) {
+		breakOff(t, w, "image/jpeg", 100000, jpegStart)
+	})
+	if err := readPage(t, c, context.Background()); !errors.Is(err, ErrAway) {
+		t.Errorf("reading a page the scanner broke off: %v, want ErrAway", err)
+	}
+}
+
+func TestAPageThatStallsIsAway(t *testing.T) {
+	old := pageTimeout
+	pageTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { pageTimeout = old })
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	c := pageServer(t, stall(release))
+	t0 := time.Now()
+	err := readPage(t, c, context.Background())
+	if !errors.Is(err, ErrAway) {
+		t.Errorf("reading a page that stalled: %v, want ErrAway", err)
+	}
+	if d := time.Since(t0); d > 5*time.Second {
+		t.Errorf("a stalled page took %v to give up", d)
+	}
+}
+
+func TestACancelledPageSaysSo(t *testing.T) {
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	c := pageServer(t, stall(release))
+	ctx, cancel := context.WithCancel(context.Background())
+	page, err := c.NextPage(ctx, "/eSCL/ScanJobs/1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer page.Close()
+	time.AfterFunc(100*time.Millisecond, cancel)
+	_, err = io.ReadAll(page)
+	if !errors.Is(err, context.Canceled) || errors.Is(err, ErrAway) {
+		t.Errorf("reading a page the caller cancelled: %v, want context.Canceled and not ErrAway", err)
+	}
+}
+
+func TestADocumentThatBreaksOffIsAway(t *testing.T) {
+	doc, err := os.ReadFile("testdata/brother-capabilities.xml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/eSCL/ScannerCapabilities":
+			breakOff(t, w, "text/xml", len(doc), doc[:len(doc)/2])
+		default: // a whole answer that is not a status document
+			w.Header().Set("Content-Type", "text/xml")
+			w.Write([]byte("<scan:ScannerStatus><pwg:State>Idle"))
+		}
+	}))
+	defer srv.Close()
+	c, err := New(srv.URL + "/eSCL")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Capabilities(context.Background()); !errors.Is(err, ErrAway) {
+		t.Errorf("capabilities the scanner broke off: %v, want ErrAway", err)
+	}
+	if _, err := c.Status(context.Background()); err == nil || errors.Is(err, ErrAway) {
+		t.Errorf("a status that is whole but malformed: %v, want an error that is not ErrAway", err)
 	}
 }

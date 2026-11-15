@@ -34,10 +34,10 @@ var (
 )
 
 // How long one request may take. A feeder page at 600 dpi is slow to come.
-const (
-	shortTimeout = 5 * time.Second
-	pageTimeout  = 60 * time.Second
-)
+// pageTimeout is a variable only so a test can lower it.
+const shortTimeout = 5 * time.Second
+
+var pageTimeout = 60 * time.Second
 
 // maxDocument caps the capabilities and status documents, which are a few
 // kilobytes.
@@ -98,17 +98,38 @@ func (c *Client) at(path string, abs bool) string {
 	return u.String()
 }
 
-// do sends req and maps a failure to get any answer to ErrAway. When ctx, the
-// caller's context, is done, the caller gave up and the error says so instead.
+// away maps err, a request or a read that broke off or ran out of time, to
+// ErrAway. When ctx, the caller's context, is done, the caller gave up and
+// the error says so instead.
+func away(ctx context.Context, err error) error {
+	if ctx.Err() != nil {
+		return fmt.Errorf("escl: %w", err)
+	}
+	return fmt.Errorf("%w (%w)", ErrAway, err)
+}
+
+// do sends req and maps a failure to get any answer to ErrAway.
 func (c *Client) do(ctx context.Context, req *http.Request) (*http.Response, error) {
 	resp, err := c.http.Do(req)
 	if err != nil {
-		if ctx.Err() != nil {
-			return nil, fmt.Errorf("escl: %w", err)
-		}
-		return nil, fmt.Errorf("%w (%w)", ErrAway, err)
+		return nil, away(ctx, err)
 	}
 	return resp, nil
+}
+
+// readErr remembers the error a read of r broke off with, so a document that
+// did not arrive whole can be told from one that arrived malformed.
+type readErr struct {
+	r   io.Reader
+	err error
+}
+
+func (b *readErr) Read(p []byte) (int, error) {
+	n, err := b.r.Read(p)
+	if err != nil && err != io.EOF {
+		b.err = err
+	}
+	return n, err
 }
 
 // get fetches path below the eSCL root and decodes the XML answer into v.
@@ -127,9 +148,10 @@ func (c *Client) get(ctx context.Context, path string, v any) error {
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("escl: %s answered HTTP %d", path, resp.StatusCode)
 	}
-	if err := xml.NewDecoder(io.LimitReader(resp.Body, maxDocument)).Decode(v); err != nil {
-		if ctx.Err() == nil && rctx.Err() != nil {
-			return fmt.Errorf("%w (%w)", ErrAway, err)
+	body := &readErr{r: resp.Body}
+	if err := xml.NewDecoder(io.LimitReader(body, maxDocument)).Decode(v); err != nil {
+		if body.err != nil || rctx.Err() != nil {
+			return away(ctx, err)
 		}
 		return fmt.Errorf("escl: reading %s: %w", path, err)
 	}
@@ -375,8 +397,9 @@ func (c *Client) checkJob(job string) error {
 }
 
 // NextPage fetches the next page of job as JPEG. The caller reads it and
-// closes it; the whole page, reading included, has 60 seconds. When the job has
-// no more pages it returns io.EOF.
+// closes it; the whole page, reading included, has 60 seconds. A page that
+// breaks off or runs out of time fails its Read with ErrAway, unless ctx is
+// done. When the job has no more pages NextPage returns io.EOF.
 func (c *Client) NextPage(ctx context.Context, job string) (io.ReadCloser, error) {
 	if err := c.checkJob(job); err != nil {
 		return nil, err
@@ -393,7 +416,7 @@ func (c *Client) NextPage(ctx context.Context, job string) (io.ReadCloser, error
 		return nil, err
 	}
 	if resp.StatusCode == http.StatusOK {
-		return &pageBody{ReadCloser: resp.Body, cancel: cancel}, nil
+		return &pageBody{ReadCloser: resp.Body, ctx: ctx, cancel: cancel}, nil
 	}
 	resp.Body.Close()
 	cancel()
@@ -407,13 +430,25 @@ func (c *Client) NextPage(ctx context.Context, job string) (io.ReadCloser, error
 	}
 }
 
-// pageBody ends the page's timeout when the caller closes it.
+// pageBody is a page being read. A read that breaks off is ErrAway, unless
+// ctx, the caller's context, is done; closing ends the page's timeout.
 type pageBody struct {
 	io.ReadCloser
+	ctx    context.Context
 	cancel context.CancelFunc
+	closed bool
+}
+
+func (p *pageBody) Read(b []byte) (int, error) {
+	n, err := p.ReadCloser.Read(b)
+	if err != nil && err != io.EOF && !p.closed {
+		err = away(p.ctx, err)
+	}
+	return n, err
 }
 
 func (p *pageBody) Close() error {
+	p.closed = true
 	err := p.ReadCloser.Close()
 	p.cancel()
 	return err
