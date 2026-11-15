@@ -296,3 +296,106 @@ func TestNeverDialsOwnCUPS(t *testing.T) {
 		t.Error("nothing was dialed, so the guard was never asked")
 	}
 }
+
+// locationScanner answers every scan with loc as its Location and serves one
+// page for the job /eSCL/ScanJobs/9, wherever loc says that job is.
+func locationScanner(t *testing.T, loc string) (*httptest.Server, *atomic.Int32) {
+	t.Helper()
+	var pages atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/eSCL/ScanJobs":
+			w.Header().Set("Location", loc)
+			w.WriteHeader(http.StatusCreated)
+		case r.Method == http.MethodGet && r.URL.Path == "/eSCL/ScanJobs/9/NextDocument":
+			pages.Add(1)
+			w.Write([]byte("page"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &pages
+}
+
+// A scanner may put its job under another name or address than the one skrá
+// knows it by. Only the path of the Location counts, and the job is fetched
+// from the scanner's address.
+func TestStartTakesTheJobPathFromAnyLocation(t *testing.T) {
+	d := swapTransport(t, func(orig func(context.Context, string, string) (net.Conn, error), d *dials) func(context.Context, string, string) (net.Conn, error) {
+		return func(ctx context.Context, network, addr string) (net.Conn, error) {
+			d.add(addr)
+			if strings.HasSuffix(addr, ":631") || strings.HasPrefix(addr, "192.0.2.") || strings.HasPrefix(addr, "brother.") {
+				return nil, errStopped
+			}
+			return orig(ctx, network, addr)
+		}
+	})
+	feeder := Settings{Source: "Feeder", Color: "Grayscale8", Resolution: 100, Width: 2480, Height: 3508}
+	for _, loc := range []string{
+		"http://192.0.2.7/eSCL/ScanJobs/9",
+		"https://brother.local.:443/eSCL/ScanJobs/9/",
+		"http://127.0.0.1:631/eSCL/ScanJobs/9",
+		"/eSCL/ScanJobs/9",
+		"ScanJobs/9",
+	} {
+		srv, pages := locationScanner(t, loc)
+		c, err := New(srv.URL + "/eSCL")
+		if err != nil {
+			t.Fatal(err)
+		}
+		job, err := c.Start(context.Background(), feeder)
+		if err != nil {
+			t.Errorf("Location %q: %v", loc, err)
+			continue
+		}
+		if job != "/eSCL/ScanJobs/9" {
+			t.Errorf("Location %q: job %q, want /eSCL/ScanJobs/9", loc, job)
+		}
+		page, err := c.NextPage(context.Background(), job)
+		if err != nil {
+			t.Errorf("Location %q: NextPage: %v", loc, err)
+			continue
+		}
+		page.Close()
+		if n := pages.Load(); n != 1 {
+			t.Errorf("Location %q: the scanner served %d pages, want 1", loc, n)
+		}
+	}
+	for _, addr := range d.list() {
+		if !strings.HasPrefix(addr, "127.0.0.1:") || strings.HasSuffix(addr, ":631") {
+			t.Errorf("dialed %q, want only the scanner's address", addr)
+		}
+	}
+}
+
+func TestStartRefusesAJobOutsideScanJobs(t *testing.T) {
+	feeder := Settings{Source: "Feeder", Color: "Grayscale8", Resolution: 100, Width: 2480, Height: 3508}
+	for _, loc := range []string{
+		"/eSCL/ScannerStatus",
+		"http://192.0.2.7/admin/9",
+		"/eSCL/ScanJobs/",
+		"/eSCL/ScanJobsX/9",
+		"/ScanJobs/9",
+		"/eSCL/ScanJobs/%2e%2e/ScannerStatus",
+	} {
+		srv, _ := locationScanner(t, loc)
+		c, err := New(srv.URL + "/eSCL")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if job, err := c.Start(context.Background(), feeder); err == nil {
+			t.Errorf("Location %q taken as job %q", loc, job)
+		}
+	}
+	_, c := fake(t, fakescanner.Options{})
+	for _, job := range []string{"/eSCL/ScannerStatus", "http://192.0.2.7/eSCL/ScanJobs/1", "/eSCL/ScanJobs/1/../../ScannerStatus"} {
+		if page, err := c.NextPage(context.Background(), job); err == nil {
+			page.Close()
+			t.Errorf("NextPage took job %q", job)
+		}
+		if err := c.Cancel(context.Background(), job); err == nil {
+			t.Errorf("Cancel took job %q", job)
+		}
+	}
+}

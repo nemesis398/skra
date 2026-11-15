@@ -13,8 +13,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -307,10 +307,12 @@ func scanSettings(s Settings) string {
 	return b.String()
 }
 
-// Start starts a scan and returns its job: the path the scanner put in the
-// Location of its answer, such as /eSCL/ScanJobs/1. A Location on another host
-// than the scanner's is refused. A scanner that turns the scan down because
-// of the feeder or another job gives ErrFeederEmpty, ErrJam or ErrBusy.
+// Start starts a scan and returns its job: the path of the Location the
+// scanner answered with, such as /eSCL/ScanJobs/1. Only the path counts: a
+// scanner may name itself by another name or address than base, and the job
+// is always fetched from base's scheme and host. A path outside base's
+// ScanJobs is refused. A scanner that turns the scan down because of the
+// feeder or another job gives ErrFeederEmpty, ErrJam or ErrBusy.
 func (c *Client) Start(ctx context.Context, s Settings) (job string, err error) {
 	if s.Source != "Platen" && s.Source != "Feeder" {
 		return "", fmt.Errorf("escl: unknown source %q", s.Source)
@@ -337,33 +339,11 @@ func (c *Client) Start(ctx context.Context, s Settings) (job string, err error) 
 	if err != nil {
 		return "", fmt.Errorf("escl: the scan job has no address: %w", err)
 	}
-	if !sameHost(loc, c.base) {
-		return "", fmt.Errorf("escl: the scanner put its job on another host, %q", loc.Host)
-	}
 	job = strings.TrimRight(loc.Path, "/")
-	if !strings.HasPrefix(job, "/") {
-		return "", fmt.Errorf("escl: the scan job has no path: %q", loc)
+	if err := c.checkJob(job); err != nil {
+		return "", err
 	}
 	return job, nil
-}
-
-// sameHost reports whether a and b name the same host and port, with the
-// port of the scheme when none is given.
-func sameHost(a, b *url.URL) bool {
-	port := func(u *url.URL) string {
-		if p := u.Port(); p != "" {
-			if n, err := strconv.Atoi(p); err == nil {
-				return strconv.Itoa(n)
-			}
-			return p
-		}
-		if u.Scheme == "https" {
-			return "443"
-		}
-		return "80"
-	}
-	name := func(u *url.URL) string { return strings.TrimSuffix(strings.ToLower(u.Hostname()), ".") }
-	return name(a) == name(b) && port(a) == port(b)
 }
 
 // turnedDown reads the scanner's status once to say why it answered a scan
@@ -384,11 +364,12 @@ func (c *Client) turnedDown(ctx context.Context, code int) error {
 	return fmt.Errorf("escl: the scanner answered HTTP %d (state %s)", code, st.State)
 }
 
-// checkJob refuses a job that is not a path, so a job can only ever lead to
-// the scanner's own host.
-func checkJob(job string) error {
-	if !strings.HasPrefix(job, "/") {
-		return fmt.Errorf("escl: %q is not a scan job", job)
+// checkJob refuses a job that is not a clean path below base's ScanJobs, so
+// a job can only ever lead to a scan job on the scanner's own host.
+func (c *Client) checkJob(job string) error {
+	jobs := c.base.Path + "/ScanJobs/"
+	if !strings.HasPrefix(job, jobs) || len(job) == len(jobs) || path.Clean(job) != job {
+		return fmt.Errorf("escl: %q is not a scan job below %s", job, jobs)
 	}
 	return nil
 }
@@ -397,7 +378,7 @@ func checkJob(job string) error {
 // closes it; the whole page, reading included, has 60 seconds. When the job has
 // no more pages it returns io.EOF.
 func (c *Client) NextPage(ctx context.Context, job string) (io.ReadCloser, error) {
-	if err := checkJob(job); err != nil {
+	if err := c.checkJob(job); err != nil {
 		return nil, err
 	}
 	rctx, cancel := context.WithTimeout(ctx, pageTimeout)
@@ -441,7 +422,7 @@ func (p *pageBody) Close() error {
 // Cancel ends job on the scanner. A job the scanner no longer knows counts as
 // ended.
 func (c *Client) Cancel(ctx context.Context, job string) error {
-	if err := checkJob(job); err != nil {
+	if err := c.checkJob(job); err != nil {
 		return err
 	}
 	rctx, cancel := context.WithTimeout(ctx, shortTimeout)
