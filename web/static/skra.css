@@ -37,7 +37,6 @@ button { font:inherit; color:inherit; background:none; border:0; cursor:pointer;
 .btn i { color:var(--accent); }
 .btn:hover { background:var(--s1); border-bottom-color:var(--accent); }
 .btn.sm { padding:0.231rem 0.615rem; font-size:0.923rem; }
-.btn.lock, .btn.lock i { color:var(--o1); }
 .btn:disabled { color:var(--o0); background:var(--mantle); cursor:default; border-bottom-color:transparent; }
 .btn:disabled i { color:var(--o0); }
 
