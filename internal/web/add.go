@@ -357,14 +357,18 @@ func (s *Server) suggestName(info, model string, queues []cups.Printer) string {
 	if base == "" {
 		base = "Printer"
 	}
-	taken := func(n string) bool {
-		return s.declared(n) || slices.ContainsFunc(queues, func(q cups.Printer) bool { return strings.EqualFold(q.Name, n) })
-	}
+	taken := func(n string) bool { return s.declared(n) || hasQueue(queues, n) }
 	name := base
 	for i := 2; taken(name); i++ {
 		name = base + "-" + strconv.Itoa(i)
 	}
 	return name
+}
+
+// hasQueue reports whether one of the queues has the name. CUPS compares queue
+// names without regard to case.
+func hasQueue(queues []cups.Printer, name string) bool {
+	return slices.ContainsFunc(queues, func(q cups.Printer) bool { return strings.EqualFold(q.Name, name) })
 }
 
 func (s *Server) addPanel(w http.ResponseWriter, r *http.Request) {
@@ -547,7 +551,7 @@ func (s *Server) addPrinter(w http.ResponseWriter, r *http.Request) {
 		reply(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	if slices.ContainsFunc(queues, func(q cups.Printer) bool { return strings.EqualFold(q.Name, name) }) {
+	if hasQueue(queues, name) {
 		reply(w, http.StatusConflict, "There is a queue named "+name+" already.")
 		return
 	}
