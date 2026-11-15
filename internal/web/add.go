@@ -249,8 +249,14 @@ func withoutUserinfo(addr string) string {
 	if u.User == nil {
 		return addr
 	}
+	// The user[:password]@ must stand right after the "://"; an address that
+	// has it anywhere else is not cut at a guess.
 	ui := userinfoOf(addr)
-	i := strings.Index(addr, "://") + len("://")
+	i := strings.Index(addr, "://")
+	if i < 0 || !strings.HasPrefix(addr[i+len("://"):], ui+"@") {
+		return "(address withheld)"
+	}
+	i += len("://")
 	return addr[:i] + addr[i+len(ui)+1:]
 }
 

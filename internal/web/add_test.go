@@ -1069,3 +1069,16 @@ func TestDriversNarrowTheDeviceListByTheMaker(t *testing.T) {
 		t.Errorf("a driver the maker keeps: %d %q", rec.Code, rec.Body.String())
 	}
 }
+
+// An address with a user name and no scheme is withheld; it never reaches the
+// log today, but a cut at the wrong place would show most of the user name.
+func TestWithoutUserinfoWithholdsAnAddressItCannotCutSafely(t *testing.T) {
+	for _, in := range []string{"//user:pw@host", "//user@host/x", "ipp://u:pw@h/?next=http://x/", "//u:pw@h/?next=http://x/"} {
+		if got := withoutUserinfo(in); strings.Contains(got, "pw") || strings.Contains(got, "ser") {
+			t.Errorf("withoutUserinfo(%q) = %q, shows part of the credentials", in, got)
+		}
+	}
+	if got := withoutUserinfo("//user:pw@host"); got != "(address withheld)" {
+		t.Errorf("withoutUserinfo(//user:pw@host) = %q", got)
+	}
+}
