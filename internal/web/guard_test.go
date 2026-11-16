@@ -325,6 +325,12 @@ func TestServerStaticAndGuard(t *testing.T) {
 	if rec := get(h, "/nope"); rec.Code != 404 {
 		t.Errorf("GET /nope: status %d, want 404", rec.Code)
 	}
+	// The static files are served one by one; their directory is not listed.
+	for _, p := range []string{"/static/", "/static/nope.css", "/static/skra.css/"} {
+		if rec := get(h, p); rec.Code != 404 || strings.Contains(rec.Body.String(), "skra.js") {
+			t.Errorf("GET %s: status %d, want 404 and no listing; body %q", p, rec.Code, rec.Body.String())
+		}
+	}
 	req := httptest.NewRequest("GET", "/", nil)
 	req.Host = "evil.example:7631"
 	rec := httptest.NewRecorder()

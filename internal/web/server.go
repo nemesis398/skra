@@ -112,7 +112,7 @@ func (s *Server) Handler() http.Handler {
 // handlerOn returns the routes behind the request guard for port.
 func (s *Server) handlerOn(port string) http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("GET /static/", s.static)
+	mux.Handle("GET /static/{file}", s.static) // one file, never the directory listing
 	for path, which := range pages {
 		pattern := "GET " + path
 		if path == "/" {
