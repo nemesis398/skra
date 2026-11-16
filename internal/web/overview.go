@@ -26,8 +26,10 @@ const (
 	// copies it into the server, where a test can lower it.
 	pollEvery = 2 * time.Second
 	// pollTimeout bounds one whole poll. CUPS answers a listing in
-	// milliseconds, so a poll that takes longer means CUPS is stuck.
-	pollTimeout = 10 * time.Second
+	// milliseconds, so a poll that takes longer means CUPS is stuck. A page
+	// load can wait behind a hub poll, so this is also how long a page takes
+	// at most to say that CUPS does not answer.
+	pollTimeout = 2 * time.Second
 	// doneEvery fetches the completed jobs on every fifth poll: they change
 	// only when a job ends.
 	doneEvery = 5
@@ -46,10 +48,18 @@ const (
 // poll asks CUPS for everything the overview shows. It never fails: when CUPS
 // does not answer, the snapshot keeps the last good data and carries the
 // reason in Err, so the page tells the truth instead of going blank. Polls are
-// serialized because the hub's poller and a page load can overlap.
+// serialized because the hub's poller and a page load can overlap. One that
+// waits behind another stops waiting when ctx ends: it then returns the last
+// good data, which nobody reads, since its page or its hub is gone.
 func (s *Server) poll(ctx context.Context, withDone bool) Snapshot {
-	s.pollMu.Lock()
-	defer s.pollMu.Unlock()
+	select {
+	case s.pollLock <- struct{}{}:
+	case <-ctx.Done():
+		snap := s.known()
+		snap.Err, snap.At = "CUPS does not answer: "+ctx.Err().Error(), time.Now()
+		return snap
+	}
+	defer func() { <-s.pollLock }()
 	ctx, cancel := context.WithTimeout(ctx, pollTimeout)
 	defer cancel()
 
@@ -117,6 +127,9 @@ func (s *Server) tickPoll(ctx context.Context) Snapshot { return s.poll(ctx, fal
 // with the shared tab bar around it.
 func (s *Server) render(w http.ResponseWriter, r *http.Request, which string) {
 	snap := s.poll(r.Context(), true)
+	if r.Context().Err() != nil {
+		return // the request ended while it waited: nobody reads the page
+	}
 	var buf bytes.Buffer
 	data := struct {
 		Token, Page string

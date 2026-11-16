@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/nemesis398/skra/internal/config"
@@ -338,6 +339,77 @@ func TestOverviewStateWords(t *testing.T) {
 				t.Errorf("bar says needs you = %t, want %t", got, tc.needBar)
 			}
 		})
+	}
+}
+
+// stuckCUPS takes the printers request and does not answer it until the
+// request's context ends or release closes. Every other request is the fake's.
+type stuckCUPS struct {
+	*fakeCUPS
+	entered chan struct{} // gets a value when a listing starts, if nobody waits for one yet
+	release chan struct{}
+}
+
+func newStuckCUPS() *stuckCUPS {
+	return &stuckCUPS{
+		fakeCUPS: &fakeCUPS{printers: []cups.Printer{brother()}},
+		entered:  make(chan struct{}, 1),
+		release:  make(chan struct{}),
+	}
+}
+
+func (c *stuckCUPS) Printers(ctx context.Context) ([]cups.Printer, error) {
+	select {
+	case c.entered <- struct{}{}:
+	default:
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-c.release:
+	}
+	return c.fakeCUPS.Printers(ctx)
+}
+
+// A poll that CUPS does not answer ends after 2 s and says CUPS does not
+// answer, so a page load behind a stuck hub poll waits that long at most.
+func TestPollGivesUpOnAStuckCUPSAfterTwoSeconds(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := New(config.Config{Listen: "127.0.0.1:7631", User: "mika"}, Deps{CUPS: newStuckCUPS()}, NewToken())
+		start := time.Now()
+		snap := s.poll(context.Background(), true)
+		if d := time.Since(start); d != 2*time.Second {
+			t.Errorf("the poll gave up after %v, want 2s", d)
+		}
+		if !strings.Contains(snap.Err, "CUPS does not answer") {
+			t.Errorf("Err = %q, want it to say CUPS does not answer", snap.Err)
+		}
+	})
+}
+
+// A page load that waits behind a hub poll stuck in CUPS stops waiting as
+// soon as its request ends, instead of holding its goroutine until the stuck
+// poll gives up.
+func TestPageLoadStopsWaitingWhenItsRequestEnds(t *testing.T) {
+	c := newStuckCUPS()
+	defer close(c.release)
+	s := New(config.Config{Listen: "127.0.0.1:7631", User: "mika"}, Deps{CUPS: c}, NewToken())
+	go s.tickPoll(context.Background())
+	<-c.entered // the hub's poll holds the lock and hangs in CUPS
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequestWithContext(ctx, "GET", "/", nil)
+	req.Host = "localhost:7631"
+	done := make(chan struct{})
+	go func() {
+		s.Handler().ServeHTTP(httptest.NewRecorder(), req)
+		close(done)
+	}()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("the page load still waits for the poll lock a second after its request ended")
 	}
 }
 

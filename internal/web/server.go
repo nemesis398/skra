@@ -29,10 +29,12 @@ type Server struct {
 	// so a test that lowers them for its server races no other test.
 	pollEvery, liveEvery time.Duration
 
-	// pollMu guards the poll state: the tick count and the last good data.
-	// good is only written with goodMu held too, so an action can read the
-	// names in it without waiting for a poll that is under way.
-	pollMu   sync.Mutex
+	// pollLock guards the poll state: the tick count and the last good data.
+	// It is a channel with one slot, not a mutex, so a page load can stop
+	// waiting for it when its request ends. good is only written with goodMu
+	// held too, so an action can read the names in it without waiting for a
+	// poll that is under way.
+	pollLock chan struct{}
 	ticks    int
 	haveDone bool
 	good     Snapshot
@@ -76,6 +78,7 @@ func New(cfg config.Config, deps Deps, token string) *Server {
 		tpl:    template.Must(template.ParseFS(webassets.Assets, "templates/*.html")),
 		static: http.StripPrefix("/static/", http.FileServer(http.FS(static))),
 
+		pollLock:  make(chan struct{}, 1),
 		pollEvery: pollEvery,
 		liveEvery: liveEvery,
 		scanJobs:  map[string]*scanJob{},
