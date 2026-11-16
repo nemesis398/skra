@@ -356,6 +356,23 @@ func TestPrinterURLs(t *testing.T) {
 			t.Errorf("httpURL(%q) = %q, %v; want %q", in, got, err, want)
 		}
 	}
+	// The printer-uri names the printer to itself. An interface name means
+	// nothing to the printer, so a link-local address goes without its zone;
+	// the connection keeps it.
+	for in, want := range map[string]string{
+		"ipp://printer.local/ipp/print":            "ipp://printer.local:631/ipp/print",
+		"ipps://[2001:db8::5]:443/ipp/print":       "ipps://[2001:db8::5]:443/ipp/print",
+		"ipp://[fe80::1%25eth0]:631/ipp/print":     "ipp://[fe80::1]:631/ipp/print",
+		"ipps://[fe80::1%25wlp3s0]/ipp/print?a=b":  "ipps://[fe80::1]:631/ipp/print?a=b",
+		"ipp://[fe80::1%25wlp3s0]:60000/ipp/print": "ipp://[fe80::1]:60000/ipp/print",
+		"ipp://[FE80::1%25eth0]/x":                 "ipp://[FE80::1]:631/x", // written as it came
+		"ipp://a%25b/x":                            "ipp://a%25b:631/x",     // a % in a name is no zone
+	} {
+		_, got, err := httpURL(in)
+		if err != nil || got != want {
+			t.Errorf("httpURL(%q) printer-uri = %q, %v; want %q", in, got, err, want)
+		}
+	}
 	for _, in := range []string{"usb://x/y", "socket://host:9100", "http://host/", "", "ipp:///x"} {
 		if _, _, err := httpURL(in); err == nil {
 			t.Errorf("httpURL(%q) accepted", in)

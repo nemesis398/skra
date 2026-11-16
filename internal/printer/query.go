@@ -321,7 +321,10 @@ func fetch(ctx context.Context, uri string) (*ipp.Response, error) {
 
 // httpURL maps ipp://host[:port]/path to the http URL to post to and the
 // printer-uri to put in the request: ipp becomes http, ipps becomes https, and
-// the port defaults to 631.
+// the port defaults to 631. A link-local IPv6 address keeps its zone (the
+// interface) in the URL to post to, which the connection needs, and loses it
+// in the printer-uri: the name of an interface on this machine means nothing
+// to the printer, and a strict one may reject a printer-uri that carries it.
 func httpURL(uri string) (target, printerURI string, err error) {
 	u, err := url.Parse(uri)
 	if err != nil {
@@ -357,5 +360,9 @@ func httpURL(uri string) (target, printerURI string, err error) {
 	}
 	pu := next
 	pu.Scheme = u.Scheme
+	if ip, err := netip.ParseAddr(host); err == nil && ip.Zone() != "" {
+		bare, _, _ := strings.Cut(host, "%")
+		pu.Host = net.JoinHostPort(bare, port)
+	}
 	return next.String(), pu.String(), nil
 }
