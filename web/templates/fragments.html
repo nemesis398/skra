@@ -65,7 +65,7 @@
 </div>{{end}}
 
 {{define "history"}}<div id="history">
-<div class="sec"><b>history</b><span>· {{.HistoryCount}}</span><span class="rule"></span></div>
+<div class="sec"><b>history</b>{{with .HistoryCount}}<span>· {{.}}</span>{{end}}<span class="rule"></span></div>
 {{if .History}}{{template "donetable" .History}}
 {{else}}<div class="empty">CUPS keeps no finished jobs yet.</div>
 {{end}}</div>{{end}}

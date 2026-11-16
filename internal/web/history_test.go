@@ -51,8 +51,13 @@ func TestHistoryPageListsEveryCompletedJob(t *testing.T) {
 
 func TestHistoryPageWithoutJobs(t *testing.T) {
 	rec := get(serverFor(&fakeCUPS{printers: []cups.Printer{brother()}}).Handler(), "/history")
-	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "CUPS keeps no finished jobs") {
+	body := rec.Body.String()
+	if rec.Code != 200 || !strings.Contains(body, "CUPS keeps no finished jobs") {
 		t.Errorf("status %d, body lacks the empty text", rec.Code)
+	}
+	// The heading counts nothing when the empty text says it already.
+	if strings.Contains(body, "the last 0 jobs") || strings.Contains(body, "<b>history</b><span>") {
+		t.Errorf("an empty history still counts its jobs in the heading:\n%s", body)
 	}
 }
 

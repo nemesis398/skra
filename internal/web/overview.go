@@ -310,7 +310,9 @@ func (s *Server) view(snap Snapshot) view {
 		v.History = append(v.History, jobRow(j, names, now, false))
 	}
 	v.Recent = v.History[:min(len(v.History), recentJobs)]
-	v.HistoryCount = "the last " + plural(len(snap.Done), "job", "jobs") + " CUPS keeps"
+	if len(snap.Done) > 0 { // an empty history says so in its own words
+		v.HistoryCount = "the last " + plural(len(snap.Done), "job", "jobs") + " CUPS keeps"
+	}
 
 	var need []string
 	if held > 0 {
