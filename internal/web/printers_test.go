@@ -798,10 +798,7 @@ func TestQueueTableWithoutQueuesAndWhenCUPSIsDown(t *testing.T) {
 
 func TestEventsCarryTheQueueTable(t *testing.T) {
 	f := queuesFake()
-	old := pollEvery
-	pollEvery = time.Hour
-	defer func() { pollEvery = old }()
-	s := serverFor(f)
+	s := withPollEvery(serverFor(f), time.Hour)
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
 	c := openEvents(t, ts)

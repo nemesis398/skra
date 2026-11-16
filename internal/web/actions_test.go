@@ -218,10 +218,7 @@ func TestActionsNeedTheToken(t *testing.T) {
 func TestActionRefreshesOpenPages(t *testing.T) {
 	f := twoJobs()
 	s, h := actionServer(t, f)
-	old := pollEvery
-	pollEvery = time.Hour // only a Refresh can produce the second snapshot
-	defer func() { pollEvery = old }()
-	s.hub = NewHub(s.tickPoll, pollEvery)
+	withPollEvery(s, time.Hour) // only a Refresh can produce the second snapshot
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

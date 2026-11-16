@@ -109,6 +109,15 @@ func serverFor(f *fakeCUPS) *Server {
 	return New(config.Config{Listen: "127.0.0.1:7631", User: "mika"}, Deps{CUPS: f}, NewToken())
 }
 
+// withPollEvery gives s a hub that asks CUPS every d. A test sets the interval
+// on its own server, never in a package variable that a stream still running
+// from that test reads.
+func withPollEvery(s *Server, d time.Duration) *Server {
+	s.pollEvery = d
+	s.hub = s.newHub()
+	return s
+}
+
 func pageFor(t *testing.T, f *fakeCUPS) string {
 	t.Helper()
 	rec := get(serverFor(f).Handler(), "/")
@@ -201,6 +210,19 @@ func TestOverviewCUPSDown(t *testing.T) {
 	}
 	if !strings.Contains(foot, `class="msg bad"`) {
 		t.Error("the failure is not marked bad")
+	}
+}
+
+// The footer states the interval of the server's own hub: 2 s by default, and
+// whatever a test set on that server.
+func TestFooterStatesTheServersInterval(t *testing.T) {
+	f := &fakeCUPS{printers: []cups.Printer{brother()}}
+	if body := get(serverFor(f).Handler(), "/").Body.String(); !strings.Contains(body, "every 2 s while a page is open") {
+		t.Error("the default footer does not say every 2 s")
+	}
+	s := withPollEvery(serverFor(f), 500*time.Millisecond)
+	if body := get(s.Handler(), "/").Body.String(); !strings.Contains(body, "every 0.5 s while a page is open") {
+		t.Error("the footer does not say the server's own interval")
 	}
 }
 
@@ -419,10 +441,7 @@ func TestEventsSendsFullSnapshotOnConnect(t *testing.T) {
 		printers: []cups.Printer{brother()},
 		active:   []cups.Job{{ID: 1, Name: "Held.pdf", Printer: "Virtual-MFC", State: 4}},
 	}
-	old := pollEvery
-	pollEvery = time.Hour
-	defer func() { pollEvery = old }()
-	s := serverFor(f)
+	s := withPollEvery(serverFor(f), time.Hour)
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
 
@@ -466,10 +485,7 @@ func TestEventsSendsFullSnapshotOnConnect(t *testing.T) {
 
 func TestEventsPushesChangesAndStopsPolling(t *testing.T) {
 	f := &fakeCUPS{printers: []cups.Printer{brother()}}
-	old := pollEvery
-	pollEvery = 10 * time.Millisecond
-	defer func() { pollEvery = old }()
-	s := serverFor(f)
+	s := withPollEvery(serverFor(f), 10*time.Millisecond)
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
 

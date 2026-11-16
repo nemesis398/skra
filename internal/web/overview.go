@@ -21,11 +21,10 @@ import (
 	"github.com/nemesis398/skra/internal/printer"
 )
 
-// pollEvery is how often the hub asks CUPS while somebody watches. A variable
-// so a test can lower it.
-var pollEvery = 2 * time.Second
-
 const (
+	// pollEvery is how often the hub asks CUPS while somebody watches. New
+	// copies it into the server, where a test can lower it.
+	pollEvery = 2 * time.Second
 	// pollTimeout bounds one whole poll. CUPS answers a listing in
 	// milliseconds, so a poll that takes longer means CUPS is stuck.
 	pollTimeout = 10 * time.Second
@@ -314,7 +313,7 @@ func (s *Server) view(snap Snapshot) view {
 		v.Msg = "CUPS answers · acting as " + s.cfg.User
 	}
 	if !snap.At.IsZero() {
-		v.Fresh = fmt.Sprintf("updated %s · every %g s while a page is open", snap.At.Format("15:04:05"), pollEvery.Seconds())
+		v.Fresh = fmt.Sprintf("updated %s · every %g s while a page is open", snap.At.Format("15:04:05"), s.pollEvery.Seconds())
 	}
 	return v
 }

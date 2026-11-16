@@ -24,6 +24,10 @@ type Server struct {
 	tpl    *template.Template
 	static http.Handler
 	hub    *Hub
+	// pollEvery and liveEvery are the hub's two intervals, the CUPS poll and
+	// the printers' own answers. They live here, not in package variables,
+	// so a test that lowers them for its server races no other test.
+	pollEvery, liveEvery time.Duration
 
 	// pollMu guards the poll state: the tick count and the last good data.
 	// good is only written with goodMu held too, so an action can read the
@@ -72,16 +76,25 @@ func New(cfg config.Config, deps Deps, token string) *Server {
 		tpl:    template.Must(template.ParseFS(webassets.Assets, "templates/*.html")),
 		static: http.StripPrefix("/static/", http.FileServer(http.FS(static))),
 
-		scanJobs: map[string]*scanJob{},
-		scanCaps: map[string]escl.Caps{},
-		now:      time.Now,
-		born:     time.Now(),
+		pollEvery: pollEvery,
+		liveEvery: liveEvery,
+		scanJobs:  map[string]*scanJob{},
+		scanCaps:  map[string]escl.Caps{},
+		now:       time.Now,
+		born:      time.Now(),
 	}
-	s.hub = NewHub(s.tickPoll, pollEvery)
-	if deps.Query != nil {
-		s.hub.WithLive(s.livePoll, liveEvery)
-	}
+	s.hub = s.newHub()
 	return s
+}
+
+// newHub builds the hub for the server's intervals. Its live loop runs only
+// when the server can ask printers itself.
+func (s *Server) newHub() *Hub {
+	h := NewHub(s.tickPoll, s.pollEvery)
+	if s.deps.Query != nil {
+		h.WithLive(s.livePoll, s.liveEvery)
+	}
+	return h
 }
 
 // Handler returns the routes behind the request guard, for the port of

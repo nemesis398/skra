@@ -22,11 +22,10 @@ const (
 	// printersTimeout bounds the CUPS listing the first live round makes when no
 	// CUPS poll has finished yet.
 	printersTimeout = 3 * time.Second
+	// liveEvery is how often the hub asks the printers themselves. New
+	// copies it into the server, where a test can lower it.
+	liveEvery = 5 * time.Second
 )
-
-// liveEvery is how often the hub asks the printers themselves. A variable so
-// a test can lower it.
-var liveEvery = 5 * time.Second
 
 // queryable reports whether skra may ask the printer behind a device URI
 // itself: only those that speak IPP (ipp, ipps) or are found by name (dnssd).

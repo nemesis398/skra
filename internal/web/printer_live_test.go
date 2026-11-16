@@ -353,14 +353,12 @@ func TestLivePollFindsTheQueuesItselfOnTheFirstRound(t *testing.T) {
 }
 
 func TestLiveEventsPushAwayAndBack(t *testing.T) {
-	oldPoll, oldLive := pollEvery, liveEvery
-	pollEvery, liveEvery = 20*time.Millisecond, 30*time.Millisecond
-	defer func() { pollEvery, liveEvery = oldPoll, oldLive }()
-
 	p := brother()
 	q := &fakeQuery{}
 	q.set(p.DeviceURI, printer.Live{Reachable: true, Markers: liveInks(), At: time.Now()})
 	s := liveServer(&fakeCUPS{printers: []cups.Printer{p}}, q)
+	s.liveEvery = 30 * time.Millisecond
+	withPollEvery(s, 20*time.Millisecond)
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
 	c := openEvents(t, ts)
