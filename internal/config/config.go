@@ -33,7 +33,14 @@ type Config struct {
 	Scanners []Scanner `json:"scanners"`
 	// ScanFolder is the folder scans are saved to unless Mika picks another.
 	ScanFolder string `json:"scan_folder"`
+
+	// idle is IdleExit as Load parsed it.
+	idle time.Duration
 }
+
+// IdleDuration returns idle_exit as a duration, parsed once by Load. A
+// Config that did not come from Load gives 0.
+func (c Config) IdleDuration() time.Duration { return c.idle }
 
 // Scanner is a scanner in the config: a name to show and the URL of its eSCL
 // root, such as http://192.0.2.7:80/eSCL.
@@ -49,6 +56,7 @@ func defaults() Config {
 		User:       os.Getenv("USER"),
 		StateDir:   filepath.Join(os.Getenv("HOME"), ".local", "state", "skra"),
 		IdleExit:   "5m",
+		idle:       5 * time.Minute,
 		ScanFolder: filepath.Join(os.Getenv("HOME"), "Nextcloud", "Documents", "Scans"),
 	}
 }
@@ -88,6 +96,9 @@ func Load(path string) (Config, error) {
 	if err := validate(cfg); err != nil {
 		return Config{}, err
 	}
+	if cfg.idle, err = time.ParseDuration(cfg.IdleExit); err != nil {
+		return Config{}, fmt.Errorf("idle_exit: %w", err)
+	}
 	return cfg, nil
 }
 
@@ -110,9 +121,6 @@ func scanFolder(dir string) (string, error) {
 func validate(cfg Config) error {
 	if err := requireLoopback(cfg.Listen); err != nil {
 		return fmt.Errorf("listen: %w", err)
-	}
-	if _, err := time.ParseDuration(cfg.IdleExit); err != nil {
-		return fmt.Errorf("idle_exit: %w", err)
 	}
 	for i, sc := range cfg.Scanners {
 		if err := checkScanner(sc); err != nil {

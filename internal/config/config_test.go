@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func writeConfig(t *testing.T, body string) string {
@@ -114,6 +115,30 @@ func TestLoadRejectsBadJSON(t *testing.T) {
 	}
 	if _, err := Load(writeConfig(t, `{"listn":"127.0.0.1:1"}`)); err == nil {
 		t.Error("unknown key accepted")
+	}
+}
+
+// Load parses idle_exit once; IdleDuration hands out what it parsed.
+func TestIdleDuration(t *testing.T) {
+	cfg, err := Load("/nonexistent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.IdleDuration(); got != 5*time.Minute {
+		t.Errorf("default IdleDuration = %v, want 5m", got)
+	}
+	for in, want := range map[string]time.Duration{"90s": 90 * time.Second, "1h": time.Hour, "0s": 0} {
+		cfg, err := Load(writeConfig(t, `{"idle_exit":"`+in+`"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := cfg.IdleDuration(); got != want {
+			t.Errorf("idle_exit %q: IdleDuration = %v, want %v", in, got, want)
+		}
+	}
+	cfg, err = Load(writeConfig(t, `{"listen":"127.0.0.1:9999"}`))
+	if err != nil || cfg.IdleDuration() != 5*time.Minute {
+		t.Errorf("a file without idle_exit: IdleDuration = %v, %v; want 5m", cfg.IdleDuration(), err)
 	}
 }
 
