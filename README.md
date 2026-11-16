@@ -163,6 +163,32 @@ make harness-down  remove the container
 `make dev` is how to look at the interface without a printer of your own. The
 screenshots above come from it. `dev/harness/README.md` has the details.
 
+### Checking the page script by hand
+
+`web/static/skra.js` has no test suite and the repo has no JavaScript
+toolchain, so these four checks are run by a person against `make dev`. Open
+`http://127.0.0.1:7631/printers` in a browser. They need two printers for the
+second check, so add one in the harness first, for example
+`lpadmin -h .dev/run/cups.sock -p Second -E -m everywhere -v ipp://localhost:8631/ipp/print`.
+
+1. **A stale panel does not undo a change.** Open Virtual-MFC's settings. In a
+   terminal run `lpadmin -h .dev/run/cups.sock -p Virtual-MFC -L Hall`. Change
+   only the description in the panel and save. The location is still `Hall`
+   afterward, because only the field you touched is sent.
+2. **Two quick settings clicks show the later one.** In the developer tools,
+   throttle the network to slow 3G, then click `settings` on one printer and
+   at once on the other. When both answers are in, the panel belongs to the
+   printer you clicked second, and its row is the highlighted one.
+3. **Clean asks first.** This needs a printer that lists Clean under
+   maintenance, which the harness printer does not. On one that does, click
+   Clean: a dialog asks "Clean the print heads?" and Not now sends nothing.
+4. **The stream comes back on its own.** Stop skra, start it again after a
+   few seconds and leave the tab alone. The footer says it lost the connection
+   and then returns to its usual text without a reload. Make the browser give
+   up for real by answering `/events` with an error status for a while (a
+   throwaway server on the same port that returns 503 does it) and then start
+   skra: the page reconnects within about five seconds.
+
 ## ⚡ Budgets
 
 Each one is a test in `internal/web/budget_test.go`, run by `make integration`.
