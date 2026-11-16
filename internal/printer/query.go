@@ -219,8 +219,8 @@ var resolved sync.Map
 
 // Forget drops the remembered address of every dnssd:// URI that keep does not
 // want, such as those of queues that were removed. Without it the address of a
-// removed queue stays for as long as skrá runs, and a queue added again under
-// the same name is first asked at the old address.
+// removed queue stays for as long as skrá runs, and a queue added again with
+// the same dnssd address is first asked where its printer was back then.
 func Forget(keep func(deviceURI string) bool) {
 	resolved.Range(func(k, _ any) bool {
 		if uri := k.(string); !keep(uri) {
