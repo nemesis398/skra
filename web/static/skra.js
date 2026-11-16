@@ -297,7 +297,10 @@ async function loadPanel(name) {
   }
 }
 
+// closePanel also drops a settings answer still on its way, so a slow one
+// cannot open the panel again after the user closed it.
 function closePanel() {
+  panelAsked++;
   panelFor = "";
   $("panel")?.replaceChildren();
   markSelected();
