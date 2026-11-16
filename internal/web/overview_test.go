@@ -662,13 +662,39 @@ func parseSSE(stream string) (events []fragment) {
 	return events
 }
 
+// logBuffer is a log output a test can read while something still logs: the
+// log writes under its own lock, so reads take this one.
+type logBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (l *logBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *logBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+// captureLog sends the standard log to a buffer until the test ends.
+func captureLog(t *testing.T) *logBuffer {
+	t.Helper()
+	l := &logBuffer{}
+	old := log.Writer()
+	log.SetOutput(l)
+	t.Cleanup(func() { log.SetOutput(old) })
+	return l
+}
+
 // A fragment whose template fails is left out so the stream goes on, and the
 // failure goes to the log, since nothing else would ever show it.
 func TestFragmentThatFailsIsLogged(t *testing.T) {
-	var logged strings.Builder
-	oldOut, oldFlags := log.Writer(), log.Flags()
-	log.SetOutput(&logged)
-	t.Cleanup(func() { log.SetOutput(oldOut); log.SetFlags(oldFlags) })
+	logged := captureLog(t)
 
 	s := serverFor(&fakeCUPS{printers: []cups.Printer{brother()}})
 	tpl := template.Must(s.tpl.Clone())

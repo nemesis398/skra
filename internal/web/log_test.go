@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -335,10 +334,7 @@ const testPassword = "hunter2-skra"
 // history, the log or the page, whatever CUPS says, and also not when skrá
 // refuses the request before CUPS sees it.
 func TestPasswordNeverStored(t *testing.T) {
-	var logged strings.Builder
-	oldOut, oldFlags := log.Writer(), log.Flags()
-	log.SetOutput(&logged)
-	t.Cleanup(func() { log.SetOutput(oldOut); log.SetFlags(oldFlags) })
+	logged := captureLog(t)
 
 	tooLong := testPassword + strings.Repeat("x", 300)
 	for _, tc := range []struct {
