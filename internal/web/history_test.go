@@ -3,6 +3,7 @@
 package web
 
 import (
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -85,5 +86,27 @@ func TestEventsPageHistorySendsOnlyItsFragments(t *testing.T) {
 	}
 	if got := strings.Join(names(s.fragmentsFor("", snap)), ","); !strings.Contains(got, "recent") || strings.Contains(got, "history") {
 		t.Errorf("overview fragments = %s", got)
+	}
+}
+
+// The history tab's stream, opened over HTTP as the page opens it, sends the
+// history's own fragments and none of the overview's.
+func TestEventsQueryPageHistoryOverHTTP(t *testing.T) {
+	s := withPollEvery(serverFor(historyFake()), time.Hour)
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+	c := openEventsAt(t, ts, "/events?page=history")
+	var names []string
+	got := map[string]string{}
+	for range 3 {
+		name, data := c.event(t)
+		names = append(names, name)
+		got[name] = data
+	}
+	if n := strings.Join(names, ","); n != "history,need,foot" {
+		t.Errorf("first events = %s, want history,need,foot", n)
+	}
+	if h := got["history"]; !strings.HasPrefix(h, `<div id="history">`) || !strings.Contains(h, "DocI.pdf") {
+		t.Errorf("history event: %q", h)
 	}
 }
