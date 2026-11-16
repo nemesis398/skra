@@ -62,33 +62,72 @@ func wrapped(t *testing.T) *recorder {
 	return r
 }
 
+// fakeInterfaces makes this machine's interfaces, for the test, loopback and
+// two documentation addresses, so that the cases of an own address run on a
+// machine that has nothing but loopback. It returns the two.
+func fakeInterfaces(t *testing.T) (v4, v6 netip.Addr) {
+	t.Helper()
+	v4, v6 = netip.MustParseAddr("192.0.2.10"), netip.MustParseAddr("2001:db8::10")
+	old := interfaceAddrs
+	interfaceAddrs = func() ([]net.Addr, error) {
+		return []net.Addr{
+			&net.IPNet{IP: net.ParseIP("127.0.0.1"), Mask: net.CIDRMask(8, 32)},
+			&net.IPNet{IP: net.ParseIP("::1"), Mask: net.CIDRMask(128, 128)},
+			&net.IPNet{IP: v4.AsSlice(), Mask: net.CIDRMask(24, 32)},
+			&net.IPNet{IP: v6.AsSlice(), Mask: net.CIDRMask(64, 128)},
+		}, nil
+	}
+	t.Cleanup(func() { interfaceAddrs = old })
+	return v4, v6
+}
+
 func TestIsOwnAddress(t *testing.T) {
-	mine := testenv.InterfaceAddr(t)
+	// The machine's real list first, which only a machine with an address
+	// besides loopback has.
+	t.Run("real interface", func(t *testing.T) { checkIsOwnAddress(t, testenv.InterfaceAddr(t)) })
+	v4, v6 := fakeInterfaces(t)
+	checkIsOwnAddress(t, v4)
+	checkIsOwnAddress(t, v6)
+	for _, addr := range []string{"192.0.2.11", "2001:db8::11", "::ffff:192.0.2.11"} {
+		if IsOwnAddress(netip.MustParseAddr(addr)) {
+			t.Errorf("IsOwnAddress(%s) = true for a neighbour of this machine's address", addr)
+		}
+	}
+}
+
+// checkIsOwnAddress checks IsOwnAddress for the fixed cases and for mine, an
+// address of this machine's interfaces.
+func checkIsOwnAddress(t *testing.T, mine netip.Addr) {
+	t.Helper()
 	for addr, want := range map[netip.Addr]bool{
-		netip.MustParseAddr("127.0.0.1"):                 true,
-		netip.MustParseAddr("127.1.2.3"):                 true,
-		netip.MustParseAddr("::1"):                       true,
-		netip.MustParseAddr("0.0.0.0"):                   true,
-		netip.MustParseAddr("::"):                        true,
-		netip.MustParseAddr("::ffff:127.0.0.1"):          true,
-		netip.MustParseAddr("::ffff:0.0.0.0"):            true,
-		netip.MustParseAddr("::127.0.0.1"):               true, // IPv4-compatible
-		netip.MustParseAddr("::7f00:1"):                  true,
-		netip.MustParseAddr("::ffff:0:127.0.0.1"):        true, // IPv4-translated
-		netip.MustParseAddr("::ffff:0:7f00:1"):           true,
-		netip.MustParseAddr("::" + mine.String()):        mine.Is4(),
-		netip.MustParseAddr("::ffff:0:" + mine.String()): mine.Is4(),
-		mine: true,
-		netip.MustParseAddr("::ffff:" + mine.String()): mine.Is4(),
-		netip.MustParseAddr("93.184.216.34"):           false,
-		netip.MustParseAddr("2001:db8::5"):             false,
-		netip.MustParseAddr("::ffff:93.184.216.34"):    false,
-		netip.MustParseAddr("::10.0.0.5"):              false,
-		netip.MustParseAddr("::ffff:0:93.184.216.34"):  false,
+		netip.MustParseAddr("127.0.0.1"):              true,
+		netip.MustParseAddr("127.1.2.3"):              true,
+		netip.MustParseAddr("::1"):                    true,
+		netip.MustParseAddr("0.0.0.0"):                true,
+		netip.MustParseAddr("::"):                     true,
+		netip.MustParseAddr("::ffff:127.0.0.1"):       true,
+		netip.MustParseAddr("::ffff:0.0.0.0"):         true,
+		netip.MustParseAddr("::127.0.0.1"):            true, // IPv4-compatible
+		netip.MustParseAddr("::7f00:1"):               true,
+		netip.MustParseAddr("::ffff:0:127.0.0.1"):     true, // IPv4-translated
+		netip.MustParseAddr("::ffff:0:7f00:1"):        true,
+		mine:                                          true,
+		netip.MustParseAddr("93.184.216.34"):          false,
+		netip.MustParseAddr("2001:db8::5"):            false,
+		netip.MustParseAddr("::ffff:93.184.216.34"):   false,
+		netip.MustParseAddr("::10.0.0.5"):             false,
+		netip.MustParseAddr("::ffff:0:93.184.216.34"): false,
 		{}: false,
 	} {
 		if got := IsOwnAddress(addr); got != want {
 			t.Errorf("IsOwnAddress(%v) = %v, want %v", addr, got, want)
+		}
+	}
+	if mine.Is4() {
+		for _, embedded := range []string{"::", "::ffff:0:", "::ffff:"} {
+			if addr := netip.MustParseAddr(embedded + mine.String()); !IsOwnAddress(addr) {
+				t.Errorf("IsOwnAddress(%v) = false, want true", addr)
+			}
 		}
 	}
 }
@@ -96,23 +135,36 @@ func TestIsOwnAddress(t *testing.T) {
 // The verdict of the guard for an address Go hands to Control. It is a plain
 // function, so these cases dial nothing.
 func TestGuardVerdicts(t *testing.T) {
-	mine := testenv.InterfaceAddr(t)
-	for _, addr := range []string{
+	t.Run("real interface", func(t *testing.T) { checkGuardVerdicts(t, testenv.InterfaceAddr(t)) })
+	v4, v6 := fakeInterfaces(t)
+	checkGuardVerdicts(t, v4)
+	checkGuardVerdicts(t, v6)
+}
+
+// checkGuardVerdicts checks the guard for the fixed cases and for mine, an
+// address of this machine's interfaces.
+func checkGuardVerdicts(t *testing.T, mine netip.Addr) {
+	t.Helper()
+	refused := []string{
 		"127.0.0.1:631", "127.5.5.5:631", "[::1]:631", "0.0.0.0:631", "[::]:631", "[::ffff:127.0.0.1]:631",
 		net.JoinHostPort(mine.String(), "631"),
 		":631", // what Go passes for an empty host; the kernel connects it to [::]:631, which is ::1
 		"[::127.0.0.1]:631", "[::ffff:0:127.0.0.1]:631", "[::7f00:1]:631", "[::ffff:0:7f00:1]:631",
-		"[::" + mine.String() + "]:631",
 		// What cannot be read is refused, never let through.
 		"localhost:631", "printer.local:631", "127.0.0.1", "", "631", "127.0.0.1:x:631",
 		"127.0.0.1:", "127.0.0.1:631x", "127.0.0.1:-631",
-	} {
+	}
+	if mine.Is4() {
+		refused = append(refused, "[::"+mine.String()+"]:631", "[::ffff:"+mine.String()+"]:631")
+	}
+	for _, addr := range refused {
 		if err := refuseOwnCUPS("tcp", addr, nil); !errors.Is(err, errOwnCUPS) {
 			t.Errorf("%q: verdict %v, want a refusal", addr, err)
 		}
 	}
 	for _, addr := range []string{
 		"127.0.0.1:8631", "127.0.0.1:60631", "127.0.0.1:80", "[::1]:6310", net.JoinHostPort(mine.String(), "8631"),
+		net.JoinHostPort(mine.String(), "60000"),
 		"93.184.216.34:631", "[2001:db8::5]:631", "[::ffff:93.184.216.34]:631", "[::10.0.0.5]:631", "[::ffff:0:93.184.216.34]:631",
 		":8631", "[fe80::1%eth0]:631",
 	} {
