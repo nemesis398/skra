@@ -75,19 +75,52 @@ func TestServiceURIScopesALinkLocalAddress(t *testing.T) {
 	}
 }
 
+// Only port 631 of this machine is its CUPS. Another service that avahi
+// finds here, such as the queue ipp-usb shares for a USB printer on port
+// 60000, is a printer that may be asked.
 func TestOwnResult(t *testing.T) {
 	const (
 		cached, wideArea, multicast = 1, 2, 4
 		local, ourOwn, static       = 8, 16, 32
 	)
-	for flags, want := range map[uint32]bool{
-		0: false, cached: false, wideArea: false, multicast: false, static: false,
-		cached | multicast: false, multicast | static: false,
-		local: true, ourOwn: true, local | ourOwn: true, local | multicast: true, ourOwn | cached | static: true,
+	for _, tc := range []struct {
+		flags uint32
+		port  uint16
+		want  bool
+	}{
+		{0, 631, false}, {cached, 631, false}, {wideArea, 631, false}, {multicast, 631, false}, {static, 631, false},
+		{cached | multicast, 631, false}, {multicast | static, 631, false},
+		{local, 631, true}, {ourOwn, 631, true}, {local | ourOwn, 631, true}, {local | multicast, 631, true}, {ourOwn | cached | static, 631, true},
+		{local, 60000, false}, {ourOwn, 60000, false}, {local | ourOwn, 8631, false}, {local, 0, false}, {local, 6310, false},
+		{0, 60000, false},
 	} {
-		if got := ownResult(flags); got != want {
-			t.Errorf("ownResult(%d) = %v, want %v", flags, got, want)
+		if got := ownResult(tc.flags, tc.port); got != tc.want {
+			t.Errorf("ownResult(%d, %d) = %v, want %v", tc.flags, tc.port, got, tc.want)
 		}
+	}
+}
+
+// What Resolve makes of avahi's answer.
+func TestResolvedURI(t *testing.T) {
+	const local = 8
+	usb := avahiService{address: "127.0.0.1", port: 60000, flags: local, txt: [][]byte{[]byte("rp=ipp/print")}}
+	if got, err := resolvedURI("_ipp._tcp", usb); err != nil || got != "ipp://127.0.0.1:60000/ipp/print" {
+		t.Errorf("the ipp-usb queue: %q, %v; want it queried at 127.0.0.1:60000", got, err)
+	}
+	for _, own := range []avahiService{
+		{address: "127.0.0.1", port: 631, flags: local},
+		{address: "192.0.2.10", port: 631, flags: local},
+		{address: "::1", port: 631, flags: 16},
+	} {
+		if got, err := resolvedURI("_ipp._tcp", own); !errors.Is(err, ErrOwnHost) {
+			t.Errorf("%+v: %q, %v; want ErrOwnHost", own, got, err)
+		}
+	}
+	if got, err := resolvedURI("_ipps._tcp", avahiService{address: "192.0.2.7", port: 443}); err != nil || got != "ipps://192.0.2.7:443/ipp/print" {
+		t.Errorf("a printer on the LAN: %q, %v", got, err)
+	}
+	if _, err := resolvedURI("_ipp._tcp", avahiService{address: "not an address", port: 631}); err == nil {
+		t.Error("an unreadable address was accepted")
 	}
 }
 

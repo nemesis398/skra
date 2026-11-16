@@ -76,8 +76,18 @@ func (Avahi) Resolve(ctx context.Context, dnssdURI string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if ownResult(r.flags) {
-		return "", fmt.Errorf("%q: %w", name, ErrOwnHost)
+	uri, err := resolvedURI(regtype, r)
+	if err != nil {
+		return "", fmt.Errorf("%q: %w", name, err)
+	}
+	return uri, nil
+}
+
+// resolvedURI is the ipp:// or ipps:// URI of what avahi found, or ErrOwnHost
+// when that is this machine's CUPS.
+func resolvedURI(regtype string, r avahiService) (string, error) {
+	if ownResult(r.flags, r.port) {
+		return "", ErrOwnHost
 	}
 	addr, zone, err := r.ip()
 	if err != nil {
@@ -85,7 +95,7 @@ func (Avahi) Resolve(ctx context.Context, dnssdURI string) (string, error) {
 	}
 	uri := serviceURI(regtype, addr, zone, r.port, r.txt)
 	if uri == "" {
-		return "", errors.New("avahi found no usable address for " + name)
+		return "", errors.New("avahi found no usable address")
 	}
 	return uri, nil
 }
@@ -282,7 +292,12 @@ const (
 	lookupResultOurOwn = 16 // this client registered the service itself
 )
 
-// ownResult reports whether avahi found the service on this machine. The
-// laptop shares its CUPS queues over DNS-SD, and skra must not speak TCP to
-// its own CUPS.
-func ownResult(flags uint32) bool { return flags&(lookupResultLocal|lookupResultOurOwn) != 0 }
+// ownResult reports whether avahi found this machine's CUPS: a service on
+// this machine, on port 631. The laptop shares its CUPS queues over DNS-SD,
+// and skra must not speak TCP to its own CUPS. Another service on this
+// machine is no loop: ipp-usb shares a USB printer as a queue on port 60000
+// and up, and that printer may be asked. The dialer still refuses port 631 of
+// every address of this machine, whatever avahi flagged.
+func ownResult(flags uint32, port uint16) bool {
+	return flags&(lookupResultLocal|lookupResultOurOwn) != 0 && port == 631
+}
