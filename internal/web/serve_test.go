@@ -51,10 +51,12 @@ func TestIdleExitWithoutRequests(t *testing.T) {
 	}
 }
 
+// The gaps between the requests are well under the idle time, so a slow
+// round trip under -race does not let the timer run out between two.
 func TestIdleExitWaitsForTheLastRequest(t *testing.T) {
-	sv := startServe(t, 150*time.Millisecond)
+	sv := startServe(t, 500*time.Millisecond)
 	for range 4 { // each request moves the end of activity
-		time.Sleep(60 * time.Millisecond)
+		time.Sleep(150 * time.Millisecond)
 		req, _ := http.NewRequest("GET", "http://"+sv.addr+"/static/skra.css", nil)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
@@ -77,6 +79,10 @@ func TestIdleExitNotWhileAnEventStreamIsOpen(t *testing.T) {
 	resp, err := http.DefaultClient.Do(req.WithContext(ctx))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if ct := resp.Header.Get("Content-Type"); resp.StatusCode != 200 || !strings.HasPrefix(ct, "text/event-stream") {
+		resp.Body.Close()
+		t.Fatalf("GET /events: status %d, content type %q; want 200 and text/event-stream", resp.StatusCode, ct)
 	}
 	if ok, _ := sv.exited(500 * time.Millisecond); ok {
 		t.Fatal("Serve returned with an event stream open")
