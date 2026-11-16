@@ -1106,3 +1106,102 @@ func TestDriversKeepTheDevicesOwnWhenTheMakerMatchesNone(t *testing.T) {
 		t.Errorf("a driver the list showed was refused: %d %q", rec.Code, rec.Body.String())
 	}
 }
+
+// resolveFunc stands in for avahi in the address check.
+type resolveFunc func(ctx context.Context, dnssdURI string) (string, error)
+
+func (f resolveFunc) Resolve(ctx context.Context, dnssdURI string) (string, error) {
+	return f(ctx, dnssdURI)
+}
+
+// A dnssd address is resolved when it is added or set, so the name of a queue
+// that this machine's CUPS shares itself is refused like ipp://localhost.
+// Everything else on this machine, such as the queue ipp-usb shares for a USB
+// printer, is a printer, and so is a name that does not resolve now.
+func TestAddRefusesADNSSDNameOfThisMachinesCUPS(t *testing.T) {
+	var asked []string
+	r := resolveFunc(func(_ context.Context, uri string) (string, error) {
+		asked = append(asked, uri)
+		name, _, _, err := printer.ParseDNSSD(uri)
+		if err != nil {
+			return "", err
+		}
+		switch name {
+		case "Shared": // avahi: on this machine, port 631
+			return "", fmt.Errorf("%q: %w", name, printer.ErrOwnHost)
+		case "Loop":
+			return "ipp://127.0.0.1:631/printers/x", nil
+		case "Loop6":
+			return "ipps://[::1]/printers/x", nil
+		case "USB":
+			return "ipp://127.0.0.1:60000/ipp/print", nil
+		case "LAN":
+			return "ipp://192.0.2.7:631/ipp/print", nil
+		case "Garbled":
+			return "ipp://[::1/x", nil
+		}
+		return "", errors.New("avahi could not resolve " + name)
+	})
+	f := queuesFake()
+	s, h := actionServer(t, f)
+	s.deps.Resolver = r
+	for _, tc := range []struct {
+		addr string
+		code int
+	}{
+		{"dnssd://Shared._ipp._tcp.local./cups?uuid=1", 400},
+		{"dnssd://Loop._ipp._tcp.local./", 400},
+		{"dnssd://Loop6._ipps._tcp.local./", 400},
+		{"DNSSD://u:secret@Shared._ipp._tcp.local./cups", 400},
+		{"dnssd://Garbled._ipp._tcp.local./", 400}, // an answer that cannot be read is not let through
+		{"dnssd://USB._ipp._tcp.local./?uuid=2", 200},
+		{"dnssd://LAN._ipp._tcp.local./", 200},
+		{"dnssd://Away._ipp._tcp.local./", 200}, // the printer may be off
+	} {
+		form := addForm("address", tc.addr, "name", "N"+strings.NewReplacer("/", "", ":", "", ".", "", "?", "", "=", "", "@", "").Replace(tc.addr))
+		rec := postTo(s, h, "/printers/add", form)
+		if rec.Code != tc.code || (tc.code == 400 && rec.Body.String() != ownCUPSText) {
+			t.Errorf("add %s: %d %q, want %d", tc.addr, rec.Code, rec.Body.String(), tc.code)
+		}
+		if panel := get(h, "/printers/new?uri="+url.QueryEscape(tc.addr)); panel.Code != tc.code {
+			t.Errorf("panel for %s: %d %q, want %d", tc.addr, panel.Code, panel.Body.String(), tc.code)
+		}
+		settings := same(full())
+		settings.Set("address", tc.addr)
+		if rec := postTo(s, h, "/printers/Virtual-MFC/settings", settings); rec.Code != tc.code {
+			t.Errorf("settings %s: %d %q, want %d", tc.addr, rec.Code, rec.Body.String(), tc.code)
+		}
+	}
+	for _, uri := range asked {
+		if strings.Contains(uri, "secret") {
+			t.Errorf("the resolver was given the credentials: %q", uri)
+		}
+	}
+	if len(asked) == 0 {
+		t.Error("no dnssd address was resolved")
+	}
+	for _, a := range f.added() {
+		if strings.Contains(a.DeviceURI, "Shared") || strings.Contains(a.DeviceURI, "Loop") {
+			t.Errorf("CUPS was asked to add %s", a.DeviceURI)
+		}
+	}
+}
+
+// avahi waits several seconds for a service that has gone; the check does not.
+func TestAddDoesNotWaitLongForASlowDNSSDResolver(t *testing.T) {
+	old := lookupTimeout
+	lookupTimeout = 50 * time.Millisecond
+	defer func() { lookupTimeout = old }()
+	s, h := actionServer(t, queuesFake())
+	s.deps.Resolver = resolveFunc(func(ctx context.Context, _ string) (string, error) {
+		<-ctx.Done()
+		return "", ctx.Err()
+	})
+	start := time.Now()
+	if rec := get(h, "/printers/new?uri="+url.QueryEscape("dnssd://Slow._ipp._tcp.local./")); rec.Code != 200 {
+		t.Errorf("a service that did not resolve in time: %d %q", rec.Code, rec.Body.String())
+	}
+	if took := time.Since(start); took > 2*time.Second {
+		t.Errorf("took %v", took)
+	}
+}

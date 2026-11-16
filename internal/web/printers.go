@@ -625,7 +625,7 @@ func (s *Server) planSettings(ctx context.Context, p cups.Printer, f url.Values)
 		if s.declared(p.Name) {
 			return plan{}, &refusal{http.StatusForbidden, declaredText(p.Name)}
 		}
-		addr, ref := checkAddress(ctx, v)
+		addr, ref := checkAddress(ctx, s.deps.Resolver, v)
 		if ref != nil {
 			return plan{}, ref
 		}

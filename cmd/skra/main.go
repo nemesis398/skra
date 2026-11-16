@@ -57,6 +57,7 @@ func run() error {
 		Query: func(ctx context.Context, deviceURI string) printer.Live {
 			return printer.Query(ctx, deviceURI, printer.Avahi{})
 		},
+		Resolver: printer.Avahi{},
 		Scanners: func(ctx context.Context) []escl.Scanner {
 			return escl.Find(ctx, cfg.Scanners, printer.Avahi{})
 		},

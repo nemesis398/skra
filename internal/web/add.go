@@ -118,7 +118,8 @@ func oddNumber(host string) bool {
 }
 
 // lookupAddrs and lookupTimeout are the name lookup of checkAddress, variables
-// so that tests need not wait for a real resolver.
+// so that tests need not wait for a real resolver. lookupTimeout bounds the
+// resolution of a dnssd address too.
 var (
 	lookupAddrs = func(ctx context.Context, host string) ([]netip.Addr, error) {
 		return net.DefaultResolver.LookupNetIP(ctx, "ip", host)
@@ -145,8 +146,9 @@ func rawHost(raw string) string {
 // pointsAtThisMachinesCUPS reports whether the host of u, once resolved, is an
 // address of this machine and the port is 631. An address without a port gets
 // the default of its scheme, which is 631 for ipp, ipps, http and https; a
-// dnssd address never reaches this function, because checkAddress returns
-// before it. A name that does not resolve is not: the printer may be away.
+// dnssd address is resolved by dnssdIsThisMachinesCUPS instead, which hands
+// the address it resolved to here. A name that does not resolve is not: the
+// printer may be away.
 //
 // This guards against setting up a queue that loops back into this CUPS. It is
 // best effort and not a security boundary: CUPS connects to the printer, not
@@ -173,9 +175,38 @@ func pointsAtThisMachinesCUPS(ctx context.Context, u *url.URL) bool {
 	return slices.ContainsFunc(addrs, printer.IsOwnAddress)
 }
 
+// dnssdIsThisMachinesCUPS resolves a dnssd address through r and reports
+// whether it is this machine's CUPS: avahi says so (the queues this CUPS
+// shares), or the address it found is port 631 of this machine. Anything else
+// avahi finds on this machine is a printer, such as the queue ipp-usb shares
+// for a USB printer on port 60000. A service that does not resolve within
+// lookupTimeout is not refused: the printer may be off, and the live status
+// query refuses this machine's CUPS again when it connects. Without r nothing
+// is resolved.
+func dnssdIsThisMachinesCUPS(ctx context.Context, r printer.Resolver, addr string) bool {
+	if r == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(ctx, lookupTimeout)
+	defer cancel()
+	resolved, err := r.Resolve(ctx, withoutUserinfo(addr))
+	if errors.Is(err, printer.ErrOwnHost) {
+		return true
+	}
+	if err != nil {
+		return false
+	}
+	u, err := url.Parse(resolved)
+	if err != nil {
+		return true // avahi's answer is ours to read; one that does not parse is not let through
+	}
+	return printer.IsLocalCUPS(resolved) || pointsAtThisMachinesCUPS(ctx, u)
+}
+
 // checkAddress reads an address the page sends and returns it with its scheme
-// in lower case, or the refusal. It sends nothing to the printer.
-func checkAddress(ctx context.Context, raw string) (string, *refusal) {
+// in lower case, or the refusal. It sends nothing to the printer. r resolves a
+// dnssd address to tell whether it is this machine's CUPS; it may be nil.
+func checkAddress(ctx context.Context, r printer.Resolver, raw string) (string, *refusal) {
 	bad := func(msg string) (string, *refusal) { return "", &refusal{http.StatusBadRequest, msg} }
 	if raw == "" || len(raw) > maxText || !utf8.ValidString(raw) ||
 		strings.ContainsFunc(raw, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) {
@@ -208,6 +239,9 @@ func checkAddress(ctx context.Context, raw string) (string, *refusal) {
 	case u.Hostname() == "":
 		return bad(notAddressText)
 	case u.Scheme == "dnssd": // the instance name is percent-encoded and may be UTF-8
+		if dnssdIsThisMachinesCUPS(ctx, r, addr) {
+			return bad(ownCUPSText)
+		}
 		return addr, nil
 	}
 	// The host as typed, because url.Parse has decoded its escapes and CUPS,
@@ -386,7 +420,7 @@ func (s *Server) addPanel(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), actionTimeout)
 	defer cancel()
 	q := r.URL.Query()
-	addr, ref := checkAddress(ctx, strings.TrimSpace(q.Get("uri")))
+	addr, ref := checkAddress(ctx, s.deps.Resolver, strings.TrimSpace(q.Get("uri")))
 	if ref != nil {
 		reply(w, ref.status, ref.msg)
 		return
@@ -539,7 +573,7 @@ func (s *Server) addPrinter(w http.ResponseWriter, r *http.Request) {
 		reply(w, http.StatusForbidden, name+" is declared in ravnix; add it there.")
 		return
 	}
-	addr, ref := checkAddress(ctx, text("address"))
+	addr, ref := checkAddress(ctx, s.deps.Resolver, text("address"))
 	if ref != nil {
 		reply(w, ref.status, ref.msg)
 		return

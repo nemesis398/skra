@@ -65,15 +65,21 @@ var _ ScannerClient = (*escl.Client)(nil)
 // returns the last n lines of the CUPS journal; it may be nil, and then
 // cups.ReadLog runs journalctl. Tests set it so none of them does.
 //
+// Resolver resolves a dnssd address that is added or set in the settings, so
+// that the name of a queue this machine's CUPS shares itself is refused. It
+// may be nil, and then a dnssd address is taken without that check; the live
+// status query still never connects there.
+//
 // Scanners lists the scanners the Scan tab offers; it may be nil, and then
 // there are none. Scanner makes a client for the scanner at an eSCL root; it
 // may be nil, and then escl.New does. Scans keeps the scans while they are
 // open; it may be nil, and then nothing can be scanned.
 type Deps struct {
-	CUPS    CUPS
-	Store   *store.Store
-	Query   func(ctx context.Context, deviceURI string) printer.Live
-	ReadLog func(ctx context.Context, n int) ([]string, error)
+	CUPS     CUPS
+	Store    *store.Store
+	Query    func(ctx context.Context, deviceURI string) printer.Live
+	ReadLog  func(ctx context.Context, n int) ([]string, error)
+	Resolver printer.Resolver
 
 	Scanners func(ctx context.Context) []escl.Scanner
 	Scanner  func(url string) (ScannerClient, error)
