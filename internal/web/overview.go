@@ -27,8 +27,8 @@ const (
 	pollEvery = 2 * time.Second
 	// pollTimeout bounds one whole poll. CUPS answers a listing in
 	// milliseconds, so a poll that takes longer means CUPS is stuck. A page
-	// load can wait behind a hub poll, so this is also how long a page takes
-	// at most to say that CUPS does not answer.
+	// load can first wait behind a hub poll and then runs its own, so a page
+	// takes about twice this at most to say that CUPS does not answer.
 	pollTimeout = 2 * time.Second
 	// doneEvery fetches the completed jobs on every fifth poll: they change
 	// only when a job ends.

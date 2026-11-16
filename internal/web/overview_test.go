@@ -382,7 +382,8 @@ func (c *stuckCUPS) Printers(ctx context.Context) ([]cups.Printer, error) {
 }
 
 // A poll that CUPS does not answer ends after 2 s and says CUPS does not
-// answer, so a page load behind a stuck hub poll waits that long at most.
+// answer. A page load behind a stuck hub poll waits that long for the lock
+// and as long again for its own poll, so about 4 s at most.
 func TestPollGivesUpOnAStuckCUPSAfterTwoSeconds(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		s := New(config.Config{Listen: "127.0.0.1:7631", User: "mika"}, Deps{CUPS: newStuckCUPS()}, NewToken())
