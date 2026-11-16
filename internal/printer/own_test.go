@@ -12,6 +12,7 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/nemesis398/skra/internal/testenv"
 )
@@ -325,5 +326,35 @@ func TestQueryStillReachesAPrinterOnLoopback(t *testing.T) {
 	live := Query(context.Background(), "ipp://"+s.Listener.Addr().String()+"/ipp/print", nil)
 	if !live.Reachable || live.Own {
 		t.Errorf("live = %+v, want a reachable printer that is not Own", live)
+	}
+}
+
+// The clients skrá really uses, not a test's wrapper, and the transport other
+// packages build theirs from, all pass the guard. With the list of this
+// machine's addresses unreadable, every address on port 631 counts as this
+// machine's, so the guard refuses 192.0.2.1:631 before connect(). That is a
+// documentation address nothing answers on: a client without the guard
+// reaches no CUPS either, and fails here on the timeout instead.
+func TestProductionClientsPassTheGuard(t *testing.T) {
+	old := interfaceAddrs
+	interfaceAddrs = func() ([]net.Addr, error) { return nil, errors.New("test: no interface list") }
+	defer func() { interfaceAddrs = old }()
+
+	for _, uri := range []string{"ipp://192.0.2.1:631/", "ipps://192.0.2.1:631/ipp/print"} {
+		if live := Query(context.Background(), uri, nil); !live.Own || live.Reachable {
+			t.Errorf("%s: %+v, want Own: the status client did not ask the guard", uri, live)
+		}
+	}
+	for _, skipVerify := range []bool{false, true} {
+		c := &http.Client{Transport: GuardedTransport(skipVerify)}
+		for _, u := range []string{"http://192.0.2.1:631/", "https://192.0.2.1:631/eSCL/ScannerStatus"} {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			req, _ := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+			_, err := c.Do(req)
+			cancel()
+			if !errors.Is(err, errOwnCUPS) {
+				t.Errorf("GuardedTransport(%t) to %s: %v, want the guard's refusal", skipVerify, u, err)
+			}
+		}
 	}
 }
