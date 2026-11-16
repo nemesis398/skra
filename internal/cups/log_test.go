@@ -528,7 +528,7 @@ func TestCheckPassword(t *testing.T) {
 		{"mika", strings.Repeat("p", 251), "The password is longer than CUPS accepts (at most 250 bytes for this user). Use cupsctl in a terminal instead."},
 		{"root", "", ""},
 		{"mi:ka", "", ""},
-		{"mi:ka", testPassword, "the user name has a colon, which a Basic login cannot carry"},
+		{"mi:ka", testPassword, "The user name has a colon, which a password login cannot carry. Change the level with cupsctl in a terminal instead."},
 		{strings.Repeat("u", 300), "p", "The password is longer than CUPS accepts (at most 0 bytes for this user). Use cupsctl in a terminal instead."},
 	} {
 		err := CheckPassword(tc.user, tc.password)

@@ -338,7 +338,7 @@ func CheckPassword(user, password string) error {
 	case password == "":
 		return nil
 	case strings.Contains(user, ":"):
-		return errors.New("the user name has a colon, which a Basic login cannot carry")
+		return errors.New("The user name has a colon, which a password login cannot carry. Change the level with cupsctl in a terminal instead.")
 	case len(password) > MaxPassword(user):
 		return fmt.Errorf("The password is longer than CUPS accepts (at most %d bytes for this user). Use cupsctl in a terminal instead.", MaxPassword(user))
 	}
