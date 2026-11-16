@@ -151,10 +151,15 @@ func TestIdleClockFireKeepsARequestInFlight(t *testing.T) {
 	c.fire() // a second firing does not close twice
 }
 
+// A connection that sends no headers, or keeps alive with no request, is
+// closed in the end, also in a server started by hand that never exits.
 func TestServeBoundsTheWaitForHeaders(t *testing.T) {
 	srv := serverFor(&fakeCUPS{}).httpServer("7631")
 	if srv.ReadHeaderTimeout != 10*time.Second {
 		t.Errorf("ReadHeaderTimeout = %v, want 10s", srv.ReadHeaderTimeout)
+	}
+	if srv.IdleTimeout != 2*time.Minute {
+		t.Errorf("IdleTimeout = %v, want 2m", srv.IdleTimeout)
 	}
 }
 

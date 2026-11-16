@@ -21,6 +21,12 @@ const shutdownGrace = 2 * time.Second
 // headers, so a client that opens one and sends nothing does not hold it.
 const readHeaderTimeout = 10 * time.Second
 
+// idleConnTimeout bounds how long a kept-alive connection may wait for its
+// next request. A server started by hand never exits when idle, so without
+// it an idle browser connection would stay open for as long as the process.
+// An open event stream is a request in flight, not an idle connection.
+const idleConnTimeout = 2 * time.Minute
+
 // idleClock tells when nothing has used the server for a while. Activity is a
 // request in flight, an open event stream counting as one, and the end of the
 // last request. Its one timer runs only while no request is in flight, and it
@@ -90,7 +96,7 @@ func (s *Server) holdIdle() (release func()) {
 
 // httpServer is the server for the routes behind the guard of port.
 func (s *Server) httpServer(port string) *http.Server {
-	return &http.Server{Handler: s.handlerOn(port), ReadHeaderTimeout: readHeaderTimeout}
+	return &http.Server{Handler: s.handlerOn(port), ReadHeaderTimeout: readHeaderTimeout, IdleTimeout: idleConnTimeout}
 }
 
 // loopbackPort returns the port of addr when it is TCP on 127.0.0.1, the one
