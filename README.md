@@ -137,7 +137,7 @@ unknown key is an error.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `listen` | `127.0.0.1:7631` | `127.0.0.1` or `localhost`, on any port. Under socket activation the socket unit decides, and the `Host` check follows its port. |
+| `listen` | `127.0.0.1:7631` | `127.0.0.1` or `localhost`, on a port from 1 to 65535. Under socket activation the socket unit decides, and the `Host` check follows its port. |
 | `cups_socket` | `/run/cups/cups.sock` | The CUPS socket. |
 | `user` | `$USER` | The name sent to CUPS and recorded with every action. |
 | `state_dir` | `~/.local/state/skra` | Where the action log, the token and the scans waiting to be saved live. |
@@ -222,6 +222,12 @@ ends the process.
   after several wrong passwords the system may lock the account for a while.
   CUPS starts using the new level when it reloads, which waits for a job that
   is printing; the switch says so when that happens.
+- **An edited address loses its user name and password.** CUPS never
+  reports the user name and password in a printer's address, so the
+  settings panel shows the address without them. A save that leaves the
+  address alone keeps them. Any change to the address saves it without
+  them, and that includes writing the scheme in another case, such as
+  `IPP://`. Type them back in with the change.
 - **Declarative systems.** On NixOS or another system that declares queues in
   its configuration, those queues come back after a rebuild. List them in
   `declared_queues` so skra shows them read-only.
