@@ -4,14 +4,20 @@ package web
 
 import (
 	"context"
+	"io"
+	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/nemesis398/skra/internal/config"
 	"github.com/nemesis398/skra/internal/cups"
+	"github.com/nemesis398/skra/internal/ipp"
+	"github.com/nemesis398/skra/internal/ipp/ipptest"
 	"github.com/nemesis398/skra/internal/printer"
 )
 
@@ -445,5 +451,53 @@ func TestQueryable(t *testing.T) {
 		if got := queryable(uri); got != want {
 			t.Errorf("queryable(%q) = %v, want %v", uri, got, want)
 		}
+	}
+}
+
+// countingResolver hands out one address and counts how often it was asked.
+type countingResolver struct {
+	uri   string
+	calls atomic.Int32
+}
+
+func (r *countingResolver) Resolve(context.Context, string) (string, error) {
+	r.calls.Add(1)
+	return r.uri, nil
+}
+
+// The live loop forgets the address of a dnssd queue that is gone, so a queue
+// added again later under the same name is resolved afresh. The real
+// printer.Query runs, against a printer on a random port of 127.0.0.1.
+func TestLivePollForgetsTheAddressOfARemovedQueue(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/ipp")
+		w.Write(ipptest.NewWire(0).Group(ipp.GroupPrinter).Bytes())
+	}))
+	defer srv.Close()
+	r := &countingResolver{uri: "ipp://" + srv.Listener.Addr().String() + "/ipp/print"}
+	p := brother()
+	p.DeviceURI = "dnssd://Forget%20Me-" + strconv.FormatInt(time.Now().UnixNano(), 36) + "._ipp._tcp.local/"
+	f := &fakeCUPS{printers: []cups.Printer{p}}
+	s := New(config.Config{Listen: "127.0.0.1:7631", User: "mika"}, Deps{CUPS: f, Query: func(ctx context.Context, uri string) printer.Live {
+		return printer.Query(ctx, uri, r)
+	}}, NewToken())
+	ctx := context.Background()
+	round := func() {
+		s.poll(ctx, true)
+		s.livePoll(ctx)
+	}
+
+	round()
+	round()
+	if n := r.calls.Load(); n != 1 {
+		t.Fatalf("resolved %d times in two rounds, want 1: the address is cached", n)
+	}
+	f.set(func(f *fakeCUPS) { f.printers = nil })
+	round()
+	f.set(func(f *fakeCUPS) { f.printers = []cups.Printer{p} })
+	round()
+	if n := r.calls.Load(); n != 2 {
+		t.Errorf("resolved %d times, want 2: the removed queue's address was kept", n)
 	}
 }

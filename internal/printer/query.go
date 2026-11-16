@@ -214,8 +214,21 @@ var statusAttrs = []string{"marker-names", "marker-levels", "marker-colors", "ma
 
 // resolved remembers the ipp:// address of each dnssd:// URI that resolved,
 // so the hub does not send a multicast question every few seconds. A failed
-// query drops the entry.
+// query drops the entry, and so does Forget.
 var resolved sync.Map
+
+// Forget drops the remembered address of every dnssd:// URI that keep does not
+// want, such as those of queues that were removed. Without it the address of a
+// removed queue stays for as long as skrá runs, and a queue added again under
+// the same name is first asked at the old address.
+func Forget(keep func(deviceURI string) bool) {
+	resolved.Range(func(k, _ any) bool {
+		if uri := k.(string); !keep(uri) {
+			resolved.Delete(uri)
+		}
+		return true
+	})
+}
 
 // Query asks the printer at deviceURI (ipp, ipps or dnssd) for its markers and
 // state. It never fails: anything that goes wrong, from a refused connection

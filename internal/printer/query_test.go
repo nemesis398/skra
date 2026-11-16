@@ -452,3 +452,31 @@ func TestQueryOwnServiceFromTheResolverIsNotCachedOrAway(t *testing.T) {
 		t.Error("a timeout is not this machine's own service")
 	}
 }
+
+// A queue that was removed leaves no resolution behind: Forget drops every
+// cached address whose dnssd URI keep does not want, and only those.
+func TestForgetDropsTheResolutionsNotKept(t *testing.T) {
+	s := ippServer(t, answer(inkAnswer()))
+	r := &fakeResolver{uri: "ipp://" + s.Listener.Addr().String() + "/"}
+	kept, gone := unique("dnssd://Kept-%s._ipp._tcp.local/"), unique("dnssd://Removed-%s._ipp._tcp.local/")
+	ctx := context.Background()
+	for _, uri := range []string{kept, gone} {
+		if !Query(ctx, uri, r).Reachable {
+			t.Fatalf("%s: not reachable", uri)
+		}
+	}
+	if n := r.calls.Load(); n != 2 {
+		t.Fatalf("resolved %d times, want 2", n)
+	}
+	Forget(func(uri string) bool { return uri == kept })
+	if _, ok := resolved.Load(gone); ok {
+		t.Error("the removed queue's address is still cached")
+	}
+	if _, ok := resolved.Load(kept); !ok {
+		t.Error("the kept queue's address was dropped")
+	}
+	Query(ctx, kept, r)
+	if n := r.calls.Load(); n != 2 {
+		t.Errorf("resolved %d times, want 2: the kept address was asked again", n)
+	}
+}

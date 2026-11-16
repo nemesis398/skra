@@ -56,11 +56,15 @@ func (s *Server) livePoll(ctx context.Context) bool {
 		return false
 	}
 	var targets []cups.Printer
+	current := map[string]bool{}
 	for _, p := range s.knownPrinters(ctx) {
 		if queryable(p.DeviceURI) {
 			targets = append(targets, p)
+			current[p.DeviceURI] = true
 		}
 	}
+	// The address of a dnssd queue that is gone is not kept.
+	printer.Forget(func(uri string) bool { return current[uri] })
 	answers := make([]printer.Live, len(targets))
 	var wg sync.WaitGroup
 	for i, p := range targets {
