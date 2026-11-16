@@ -70,13 +70,15 @@ func run() error {
 		},
 		Scans: scans,
 	}
-	// Only a service that systemd can start again on the next request may
-	// exit when idle; one started by hand stays.
-	var idle time.Duration
-	if activated {
-		if idle, err = time.ParseDuration(cfg.IdleExit); err != nil {
-			return fmt.Errorf("idle_exit: %w", err)
-		}
+	return web.New(cfg, deps, token).Serve(ln, idleFor(activated, cfg))
+}
+
+// idleFor is how long the service waits with no request before it exits, 0
+// for never. Only a service that systemd can start again on the next request
+// may exit when idle; one started by hand stays.
+func idleFor(activated bool, cfg config.Config) time.Duration {
+	if !activated {
+		return 0
 	}
-	return web.New(cfg, deps, token).Serve(ln, idle)
+	return cfg.IdleDuration()
 }
