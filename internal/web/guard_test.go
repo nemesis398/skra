@@ -108,6 +108,27 @@ func TestGuardWithoutATokenRefusesEveryWrite(t *testing.T) {
 	}
 }
 
+// Without a port the guard cannot name the Host it wants, so it lets nothing
+// through: "localhost:" must not match an empty port. Config refuses such a
+// listen address; a Config built by hand can still carry one.
+func TestGuardWithoutAPortRefusesEveryRequest(t *testing.T) {
+	ok := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+	tok := map[string]string{"X-Skra-Token": testToken}
+	for _, h := range []http.Handler{
+		Guard(ok, "", testToken),
+		New(config.Config{Listen: "127.0.0.1:"}, Deps{}, testToken).Handler(),
+	} {
+		for _, host := range []string{"localhost:", "127.0.0.1:", "localhost", ""} {
+			if got := do(h, "GET", "/static/skra.css", host, nil); got != 403 {
+				t.Errorf("GET with Host %q: status %d, want 403", host, got)
+			}
+			if got := do(h, "POST", "/x", host, tok); got != 403 {
+				t.Errorf("POST with Host %q and the token: status %d, want 403", host, got)
+			}
+		}
+	}
+}
+
 func TestLoadTokenMakesOneAndKeepsIt(t *testing.T) {
 	dir := t.TempDir()
 	a, err := LoadToken(dir)

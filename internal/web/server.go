@@ -101,9 +101,11 @@ func (s *Server) newHub() *Hub {
 }
 
 // Handler returns the routes behind the request guard, for the port of
-// listen in the config. Serve guards the port of its listener instead.
+// listen in the config. Serve guards the port of its listener instead. A
+// listen without a port gives the guard an empty one, and it refuses every
+// request.
 func (s *Server) Handler() http.Handler {
-	_, port, _ := net.SplitHostPort(s.cfg.Listen) // an empty port matches no Host: closed
+	_, port, _ := net.SplitHostPort(s.cfg.Listen)
 	return s.handlerOn(port)
 }
 

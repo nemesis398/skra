@@ -15,7 +15,8 @@ const contentSecurityPolicy = "script-src 'self'; object-src 'none'; base-uri 'n
 // Guard protects next from other web pages and from DNS rebinding.
 //
 // Every request must carry a Host of 127.0.0.1:port or localhost:port, which
-// stops a hostile name that resolves to 127.0.0.1 from reading the page.
+// stops a hostile name that resolves to 127.0.0.1 from reading the page; with
+// an empty port no Host matches and every request is refused.
 // Every request that is not GET, HEAD or OPTIONS must also carry the
 // X-Skra-Token header equal to token, and an Origin that is absent or equal to
 // "http://" + Host; an empty token lets no write through, since an empty
@@ -28,9 +29,10 @@ const contentSecurityPolicy = "script-src 'self'; object-src 'none'; base-uri 'n
 // (X-Frame-Options and frame-ancestors) and content sniffing, and carries the
 // Content-Security-Policy.
 func Guard(next http.Handler, port, token string) http.Handler {
-	hosts := map[string]bool{
-		"127.0.0.1:" + port: true,
-		"localhost:" + port: true,
+	hosts := map[string]bool{}
+	if port != "" {
+		hosts["127.0.0.1:"+port] = true
+		hosts["localhost:"+port] = true
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// No other page may frame skrá: a framed page would pass every check
