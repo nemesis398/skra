@@ -28,6 +28,11 @@ const contentSecurityPolicy = "script-src 'self'; object-src 'none'; base-uri 'n
 // Anything else gets 403. Every response, 403s included, forbids framing
 // (X-Frame-Options and frame-ancestors) and content sniffing, and carries the
 // Content-Security-Policy.
+//
+// GET, HEAD and OPTIONS pass without the token only because every route
+// names its method. A route that changes anything must be registered for
+// POST or another write method, never for GET, HEAD or OPTIONS and never
+// without a method, or it runs without the token.
 func Guard(next http.Handler, port, token string) http.Handler {
 	hosts := map[string]bool{}
 	if port != "" {
