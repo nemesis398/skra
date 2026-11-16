@@ -47,12 +47,15 @@ func TestGuard(t *testing.T) {
 	}{
 		{"GET with localhost", "GET", "localhost:7631", nil, 200},
 		{"GET with 127.0.0.1", "GET", "127.0.0.1:7631", nil, 200},
-		{"GET with no Origin (EventSource)", "GET", "localhost:7631", nil, 200},
 		{"GET with the same-origin Origin (EventSource)", "GET", "localhost:7631", map[string]string{"Origin": "http://localhost:7631"}, 200},
 		{"GET with a foreign host (DNS rebinding)", "GET", "evil.example:7631", nil, 403},
 		{"GET with the right name on another port", "GET", "localhost:80", nil, 403},
 		{"GET without a port", "GET", "localhost", nil, 403},
 		{"GET with an empty host", "GET", "", nil, 403},
+		{"GET with the name in upper case", "GET", "LOCALHOST:7631", nil, 403},
+		{"GET with the IPv6 loopback", "GET", "[::1]:7631", nil, 403},
+		{"HEAD without a token", "HEAD", "localhost:7631", nil, 200},
+		{"OPTIONS without a token", "OPTIONS", "localhost:7631", nil, 200},
 		{"POST without a token", "POST", "localhost:7631", nil, 403},
 		{"POST with a wrong token", "POST", "localhost:7631", map[string]string{"X-Skra-Token": "nope"}, 403},
 		{"POST with an empty token", "POST", "localhost:7631", map[string]string{"X-Skra-Token": ""}, 403},
@@ -305,8 +308,11 @@ func TestServerStaticAndGuard(t *testing.T) {
 	req.Host = "evil.example:7631"
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
-	if rec.Code != 403 || strings.Contains(rec.Body.String(), s.token) {
-		t.Errorf("foreign host: status %d", rec.Code)
+	if rec.Code != 403 {
+		t.Errorf("foreign host: status %d, want 403", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), s.token) {
+		t.Error("foreign host: the refusal leaked the token")
 	}
 }
 
