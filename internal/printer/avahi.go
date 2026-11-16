@@ -93,11 +93,7 @@ func resolvedURI(regtype string, r avahiService) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	uri := serviceURI(regtype, addr, zone, r.port, r.txt)
-	if uri == "" {
-		return "", errors.New("avahi found no usable address")
-	}
-	return uri, nil
+	return serviceURI(regtype, addr, zone, r.port, r.txt), nil
 }
 
 // avahiService is what avahi's ResolveService returned for one service.
