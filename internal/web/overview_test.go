@@ -707,16 +707,17 @@ func TestEventsSurviveCarriageReturnInJobName(t *testing.T) {
 	ts := httptest.NewServer(serverFor(f).Handler())
 	t.Cleanup(ts.Close)
 	c := openEvents(t, ts)
-	// The reader splits on \n only, so read raw bytes until all six events are in.
+	// The reader splits on \n only, so read raw bytes until all six events are
+	// in. ReadByte has no deadline of its own, so the request ends after 2 s:
+	// a stream that stalls then fails the read instead of hanging the test
+	// until go test's timeout.
+	stop := time.AfterFunc(2*time.Second, c.cancel)
+	defer stop.Stop()
 	var raw strings.Builder
-	deadline := time.Now().Add(2 * time.Second)
 	for len(parseSSE(raw.String())) < 6 {
-		if time.Now().After(deadline) {
-			t.Fatalf("fewer than six events:\n%q", raw.String())
-		}
 		b, err := c.r.ReadByte()
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("fewer than six events within 2 s (%v):\n%q", err, raw.String())
 		}
 		raw.WriteByte(b)
 	}
