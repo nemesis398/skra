@@ -31,31 +31,57 @@ func NewToken() string {
 // none. The token outlives the process, so a page that was open while the
 // service exited when idle can still act once the socket starts it again.
 //
-// The file is made with O_EXCL and mode 0600. A file that is there but is not
-// a regular file (a symlink included), has any permission bit for the group
-// or for others, is longer than tokenFileMax, or does not hold a token of 32
-// bytes or more, with at most one line end after it, is refused, so the
-// service does not start. Deleting the file makes a new token at the next
-// start.
+// A new token is written to a hidden temp file of mode 0600 in dir, synced,
+// and then hard-linked to dir/token, so the token file never exists half
+// written. A link fails when the name is taken: of two first starts at once,
+// such as one by hand next to the socket's, the later one reads the token of
+// the first. A file that is there but is not a regular file (a symlink
+// included), has any permission bit for the group or for others, is longer
+// than tokenFileMax, or does not hold a token of 32 bytes or more, with at
+// most one line end after it, is refused, so the service does not start.
+// Deleting the file makes a new token at the next start.
 func LoadToken(dir string) (string, error) {
 	path := filepath.Join(dir, "token")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("token: create %s: %w", dir, err)
 	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if errors.Is(err, fs.ErrExist) {
+	_, err := os.Lstat(path)
+	if err == nil {
 		return readToken(path)
 	}
-	if err != nil {
-		return "", fmt.Errorf("token: create %s: %w", path, err)
+	if !errors.Is(err, fs.ErrNotExist) {
+		return "", fmt.Errorf("token: %w", err)
 	}
 	tok := NewToken()
-	_, werr := f.WriteString(tok)
-	if err := errors.Join(werr, f.Sync(), f.Close()); err != nil {
-		os.Remove(path) // a half-written file would refuse the next start
-		return "", fmt.Errorf("token: write %s: %w", path, err)
+	tmp, err := writeTokenTemp(dir, tok)
+	if err != nil {
+		return "", err
+	}
+	defer os.Remove(tmp)
+	err = os.Link(tmp, path)
+	if errors.Is(err, fs.ErrExist) {
+		return readToken(path) // another start linked its token first
+	}
+	if err != nil {
+		return "", fmt.Errorf("token: link %s: %w; put state_dir on a file system with hard links", path, err)
 	}
 	return tok, nil
+}
+
+// writeTokenTemp writes tok to a new hidden temp file in dir and returns its
+// path, with the data on disk. On an error it removes the file.
+func writeTokenTemp(dir, tok string) (string, error) {
+	// CreateTemp makes the file 0600 and never reuses a name.
+	f, err := os.CreateTemp(dir, ".token-*.tmp")
+	if err != nil {
+		return "", fmt.Errorf("token: create a temp file in %s: %w", dir, err)
+	}
+	_, werr := f.WriteString(tok)
+	if err := errors.Join(werr, f.Sync(), f.Close()); err != nil {
+		os.Remove(f.Name())
+		return "", fmt.Errorf("token: write %s: %w", f.Name(), err)
+	}
+	return f.Name(), nil
 }
 
 // tokenFileMax caps how much of the token file is read: a token is 43

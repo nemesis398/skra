@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -148,6 +149,38 @@ func TestLoadTokenMakesOneAndKeepsIt(t *testing.T) {
 	b, err := LoadToken(dir)
 	if err != nil || b != a {
 		t.Errorf("second load = %q, %v; want the first token %q", b, err, a)
+	}
+}
+
+// Two first starts at once, such as a start by hand next to the socket's,
+// both get the one token: neither reads a token file the other is still
+// writing, and the loser leaves no file of its own behind.
+func TestLoadTokenTwoFirstStartsAgree(t *testing.T) {
+	const starts = 8
+	for round := range 200 {
+		dir := t.TempDir()
+		var wg sync.WaitGroup
+		toks := make([]string, starts)
+		errs := make([]error, starts)
+		for i := range starts {
+			wg.Go(func() { toks[i], errs[i] = LoadToken(dir) })
+		}
+		wg.Wait()
+		for i := range starts {
+			if errs[i] != nil {
+				t.Fatalf("round %d: start %d: %v", round, i, errs[i])
+			}
+			if toks[i] != toks[0] {
+				t.Fatalf("round %d: start %d got %q, start 0 got %q", round, i, toks[i], toks[0])
+			}
+		}
+		left, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(left) != 1 || left[0].Name() != "token" {
+			t.Fatalf("round %d: the state directory holds %v, want only the token", round, left)
+		}
 	}
 }
 
