@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -172,17 +173,22 @@ func (s *Server) fragmentsFor(page string, snap Snapshot) []fragment {
 		slots = scanSlots
 	}
 	for _, name := range slots {
+		var html string
+		var err error
 		if name == "scan" {
-			if html, err := s.scanFragment(); err == nil {
-				out = append(out, fragment{name, html})
-			}
+			html, err = s.scanFragment()
+		} else {
+			var buf bytes.Buffer
+			err = s.tpl.ExecuteTemplate(&buf, name, v)
+			html = buf.String()
+		}
+		if err != nil {
+			// A template bug must not end the stream, but it must show
+			// somewhere: the page only keeps its old piece.
+			log.Printf("skra: fragment %s: %v", name, err)
 			continue
 		}
-		var buf bytes.Buffer
-		if err := s.tpl.ExecuteTemplate(&buf, name, v); err != nil {
-			continue // a template bug must not end the stream
-		}
-		out = append(out, fragment{name, buf.String()})
+		out = append(out, fragment{name, html})
 	}
 	return out
 }

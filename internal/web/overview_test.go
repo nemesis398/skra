@@ -7,7 +7,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"html/template"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -649,6 +651,31 @@ func parseSSE(stream string) (events []fragment) {
 		}
 	}
 	return events
+}
+
+// A fragment whose template fails is left out so the stream goes on, and the
+// failure goes to the log, since nothing else would ever show it.
+func TestFragmentThatFailsIsLogged(t *testing.T) {
+	var logged strings.Builder
+	oldOut, oldFlags := log.Writer(), log.Flags()
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(oldOut); log.SetFlags(oldFlags) })
+
+	s := serverFor(&fakeCUPS{printers: []cups.Printer{brother()}})
+	tpl := template.Must(s.tpl.Clone())
+	template.Must(tpl.New("foot").Parse(`{{.NoSuchField}}`))
+	s.tpl = tpl
+
+	var names []string
+	for _, f := range s.fragmentsFor("", s.poll(t.Context(), true)) {
+		names = append(names, f.event)
+	}
+	if got := strings.Join(names, ","); got != "printers,opts,queue,queues,recent,need" {
+		t.Errorf("fragments = %s, want every one but foot", got)
+	}
+	if !strings.Contains(logged.String(), "skra: fragment foot: ") || !strings.Contains(logged.String(), "NoSuchField") {
+		t.Errorf("the log does not name the failed fragment and why:\n%s", logged.String())
+	}
 }
 
 func TestWriteEventKeepsOneFrameForCarriageReturns(t *testing.T) {
