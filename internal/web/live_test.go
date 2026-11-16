@@ -4,6 +4,7 @@ package web
 
 import (
 	"context"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -161,6 +162,59 @@ func TestHubRefreshPollsNow(t *testing.T) {
 			t.Errorf("%d polls, want 2", got)
 		}
 	})
+}
+
+// A run whose last subscriber left never polls again and never takes a
+// Refresh meant for the run of the next subscriber. The old run is held in a
+// poll while the next one starts, so it comes out of that poll with its
+// context done and a Refresh waiting; the new run is held in its first poll,
+// so it is not yet waiting for that Refresh.
+func TestHubOldRunNeitherPollsNorStealsARefresh(t *testing.T) {
+	for range 20 { // a run that picks at random would lose some of these
+		synctest.Test(t, func(t *testing.T) {
+			var calls, late atomic.Int32
+			gates := map[int32]chan struct{}{2: make(chan struct{}), 3: make(chan struct{})}
+			h := NewHub(func(ctx context.Context) Snapshot {
+				n := calls.Add(1)
+				if ctx.Err() != nil {
+					late.Add(1)
+				}
+				if g := gates[n]; g != nil {
+					<-g
+				}
+				return Snapshot{Default: fmt.Sprint(n)}
+			}, time.Hour)
+
+			ctxA, cancelA := context.WithCancel(context.Background())
+			next(t, h.Subscribe(ctxA)) // poll 1
+			h.Refresh()                // poll 2 starts and hangs
+			synctest.Wait()
+			cancelA()
+			synctest.Wait() // A is gone; its run still hangs in poll 2
+
+			ctxB, cancelB := context.WithCancel(context.Background())
+			defer cancelB()
+			b := h.Subscribe(ctxB) // a new run; its first poll, 3, hangs too
+			synctest.Wait()
+			h.Refresh() // meant for B's run
+			close(gates[2])
+			synctest.Wait()
+			close(gates[3])
+			synctest.Wait()
+
+			// The new run ends poll 3 and takes the Refresh: poll 4, whose
+			// snapshot replaces the unread one of poll 3.
+			if s := next(t, b); s.Default != "4" {
+				t.Errorf("newest snapshot of the new run is from poll %s, want 4, after the Refresh", s.Default)
+			}
+			if got := late.Load(); got != 0 {
+				t.Errorf("%d polls began after their run had ended", got)
+			}
+			if got := calls.Load(); got != 4 {
+				t.Errorf("%d polls, want 4", got)
+			}
+		})
+	}
 }
 
 func TestHubKeepsOnlyTheLatestForASlowClient(t *testing.T) {

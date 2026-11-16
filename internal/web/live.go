@@ -34,24 +34,26 @@ type Hub struct {
 	poll  func(context.Context) Snapshot
 	every time.Duration
 
-	refresh  chan struct{}
 	live     func(context.Context) bool
 	liveTick time.Duration
 
-	mu     sync.Mutex
-	subs   map[chan Snapshot]struct{}
-	last   Snapshot
-	have   bool // last is the result of a poll of the running poller
-	cancel context.CancelFunc
+	mu   sync.Mutex
+	subs map[chan Snapshot]struct{}
+	last Snapshot
+	have bool // last is the result of a poll of the running poller
+	// cancel ends the running poller and refresh asks it to poll now; both
+	// are nil while none runs. Each run has a refresh of its own, so a run
+	// that is ending cannot take a Refresh meant for the next one.
+	cancel  context.CancelFunc
+	refresh chan struct{}
 }
 
 // NewHub returns a hub that calls poll every interval while it has subscribers.
 func NewHub(poll func(context.Context) Snapshot, every time.Duration) *Hub {
 	return &Hub{
-		poll:    poll,
-		every:   every,
-		refresh: make(chan struct{}, 1),
-		subs:    map[chan Snapshot]struct{}{},
+		poll:  poll,
+		every: every,
+		subs:  map[chan Snapshot]struct{}{},
 	}
 }
 
@@ -74,15 +76,12 @@ func (h *Hub) Subscribe(ctx context.Context) <-chan Snapshot {
 	h.mu.Lock()
 	if len(h.subs) == 0 {
 		pctx, cancel := context.WithCancel(context.Background())
-		h.cancel = cancel
+		refresh := make(chan struct{}, 1)
+		h.cancel, h.refresh = cancel, refresh
 		h.have = false
-		select { // a Refresh from before this run is moot: the run polls at once
-		case <-h.refresh:
-		default:
-		}
-		go h.run(pctx)
+		go h.run(pctx, refresh)
 		if h.live != nil {
-			go h.runLive(pctx)
+			go h.runLive(pctx, refresh)
 		}
 	}
 	h.subs[ch] = struct{}{}
@@ -99,7 +98,7 @@ func (h *Hub) Subscribe(ctx context.Context) <-chan Snapshot {
 		close(ch)
 		if len(h.subs) == 0 && h.cancel != nil {
 			h.cancel()
-			h.cancel = nil
+			h.cancel, h.refresh = nil, nil
 		}
 	}()
 	return ch
@@ -115,33 +114,48 @@ func (h *Hub) Subscribers() int {
 // Refresh polls now instead of at the next tick, for use after an action. It
 // does nothing while nobody subscribes.
 func (h *Hub) Refresh() {
+	h.mu.Lock()
+	refresh := h.refresh
+	h.mu.Unlock()
+	poke(refresh)
+}
+
+// poke asks the run that owns refresh to poll now. A request already waiting
+// is enough, and a nil refresh, with no run, takes none.
+func poke(refresh chan struct{}) {
 	select {
-	case h.refresh <- struct{}{}:
+	case refresh <- struct{}{}:
 	default:
 	}
 }
 
-func (h *Hub) run(ctx context.Context) {
+// run is one poller, from the first subscriber to the last one leaving. It
+// polls at once, then at every tick and whenever its refresh asks. A tick or
+// a refresh can be ready at the moment ctx ends, and select picks at random,
+// so it checks ctx before every poll.
+func (h *Hub) run(ctx context.Context, refresh chan struct{}) {
 	t := time.NewTicker(h.every)
 	defer t.Stop()
-	h.pollOnce(ctx)
 	for {
+		if ctx.Err() != nil {
+			return
+		}
+		h.pollOnce(ctx)
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-		case <-h.refresh:
+		case <-refresh:
 		}
-		h.pollOnce(ctx)
 	}
 }
 
-func (h *Hub) runLive(ctx context.Context) {
+func (h *Hub) runLive(ctx context.Context, refresh chan struct{}) {
 	t := time.NewTicker(h.liveTick)
 	defer t.Stop()
 	for {
 		if h.live(ctx) && ctx.Err() == nil {
-			h.Refresh()
+			poke(refresh)
 		}
 		select {
 		case <-ctx.Done():
