@@ -59,6 +59,7 @@ function say(text, bad = false, hold = false) {
 // connect and then only what changed, as HTML fragments that each replace the
 // element with the same id as the event.
 let source = null;
+let retryTimer = null;
 const slots = ["printers", "opts", "queue", "queues", "recent", "history", "need", "foot"];
 
 function swap(id, html) {
@@ -84,13 +85,21 @@ function connect() {
   }
   // The browser reconnects on its own, and the server then sends everything
   // again; until it does, say so instead of showing stale numbers quietly.
+  // When the browser gives up (readyState CLOSED, for instance after the server
+  // answered with something that is not a stream), it will not retry, so retry
+  // from here every few seconds until the stream is back.
   source.onerror = () => {
     server = { text: "Lost the connection to skrá. Reconnecting.", bad: true };
     showMsg();
+    if (source && source.readyState === EventSource.CLOSED) {
+      disconnect();
+      retryTimer = setTimeout(connect, 5000);
+    }
   };
 }
 
 function disconnect() {
+  clearTimeout(retryTimer);
   if (source) source.close();
   source = null;
 }
@@ -262,6 +271,7 @@ document.addEventListener("click", (e) => {
 // loaded from the server as HTML and loaded again after a save. No instant
 // action reloads it: those live in the table and on the overview cards.
 let panelFor = "";
+let panelAsked = 0; // the latest panel request; an older answer is dropped
 
 function markSelected() {
   for (const tr of document.querySelectorAll("#queues tr[data-q]")) tr.classList.toggle("sel", tr.dataset.q === panelFor);
@@ -270,9 +280,11 @@ function markSelected() {
 async function loadPanel(name) {
   const panel = $("panel");
   if (!panel) return;
+  const mine = ++panelAsked;
   try {
     const res = await fetch(`/printers/${encodeURIComponent(name)}/settings`, { cache: "no-store" });
     const text = await res.text();
+    if (mine !== panelAsked) return;
     if (!res.ok) {
       say(text.trim() || `skrá answered ${res.status}.`, true);
       return;
@@ -281,7 +293,7 @@ async function loadPanel(name) {
     panelFor = name;
     markSelected();
   } catch (err) {
-    say("Could not reach skrá. Is it still running?", true);
+    if (mine === panelAsked) say("Could not reach skrá. Is it still running?", true);
   }
 }
 
