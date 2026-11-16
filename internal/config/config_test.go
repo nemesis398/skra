@@ -89,8 +89,19 @@ func TestLoadRejectsLoopbackTheGuardRefuses(t *testing.T) {
 	}
 }
 
+// A listen address needs a port a browser can name in the Host header: an
+// empty port or port 0 would have net.Listen pick one at random.
+func TestLoadRejectsAPortTheGuardCannotName(t *testing.T) {
+	for _, listen := range []string{"127.0.0.1:", "localhost:", "127.0.0.1:0", "localhost:0", "127.0.0.1:00", "127.0.0.1:65536", "127.0.0.1:-1", "127.0.0.1:ipp"} {
+		_, err := Load(writeConfig(t, `{"listen":"`+listen+`"}`))
+		if err == nil || !strings.Contains(err.Error(), "listen") || !strings.Contains(err.Error(), "1 to 65535") {
+			t.Errorf("listen %q: err = %v", listen, err)
+		}
+	}
+}
+
 func TestLoadAcceptsLoopbackForms(t *testing.T) {
-	for _, listen := range []string{"127.0.0.1:0", "127.0.0.1:7631", "localhost:7631"} {
+	for _, listen := range []string{"127.0.0.1:1", "127.0.0.1:7631", "127.0.0.1:65535", "localhost:7631"} {
 		if _, err := Load(writeConfig(t, `{"listen":"`+listen+`"}`)); err != nil {
 			t.Errorf("listen %q rejected: %v", listen, err)
 		}

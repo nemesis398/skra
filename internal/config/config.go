@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -63,10 +64,10 @@ func DefaultPath() string {
 }
 
 // Load reads path over the defaults. A missing file gives the defaults. An
-// unknown key, a listen address on another host than 127.0.0.1 or localhost,
-// an idle_exit that is not a duration, a scanner without a name or without a
-// plain http or https URL, or a scan_folder that is empty or neither absolute
-// nor under ~/ is an error.
+// unknown key, a listen address on another host than 127.0.0.1 or localhost
+// or without a port from 1 to 65535, an idle_exit that is not a duration, a
+// scanner without a name or without a plain http or https URL, or a
+// scan_folder that is empty or neither absolute nor under ~/ is an error.
 func Load(path string) (Config, error) {
 	cfg := defaults()
 	data, err := os.ReadFile(path)
@@ -145,16 +146,21 @@ func checkScanner(sc Scanner) error {
 }
 
 // requireLoopback accepts host:port where host is 127.0.0.1 or localhost,
-// the two names the request guard allows in the Host header. An empty host,
-// 0.0.0.0 and [::] would listen on every interface; another loopback address
-// such as [::1] would be reached under a name the guard refuses.
+// the two names the request guard allows in the Host header, and port is a
+// number from 1 to 65535. An empty host, 0.0.0.0 and [::] would listen on
+// every interface; another loopback address such as [::1] would be reached
+// under a name the guard refuses. An empty port or port 0 would have the
+// system pick a port at random, which no Host header names in advance.
 func requireLoopback(addr string) error {
-	host, _, err := net.SplitHostPort(addr)
+	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		return fmt.Errorf("%q is not host:port: %w", addr, err)
 	}
-	if host == "127.0.0.1" || host == "localhost" {
-		return nil
+	if host != "127.0.0.1" && host != "localhost" {
+		return fmt.Errorf("%q is not allowed; skra only listens on 127.0.0.1 or localhost", addr)
 	}
-	return fmt.Errorf("%q is not allowed; skra only listens on 127.0.0.1 or localhost", addr)
+	if n, err := strconv.ParseUint(port, 10, 16); err != nil || n == 0 {
+		return fmt.Errorf("%q has no port skra can listen on; give one from 1 to 65535, such as 127.0.0.1:7631", addr)
+	}
+	return nil
 }
