@@ -284,17 +284,23 @@ func TestQueryRefusesAHostThatMapsToNothing(t *testing.T) {
 		t.Errorf("%d dials for hosts that are nothing: %+v", len(vs), vs)
 	}
 
-	// The transport itself, given such a host: whatever it dials on 631 is refused.
+	// The transport itself, given such a host: it dials ":631", and the guard
+	// has to be asked and has to refuse. A Go that one day refuses such a host
+	// before it dials fails here too, and the case then belongs to the half
+	// above.
 	rec = wrapped(t)
-	for _, host := range []string{"­", "​", "͏", "︀"} {
+	for _, host := range []string{"\u00ad", "\u200b", "\u034f", "\ufe00"} {
+		before := len(rec.verdicts())
 		req, _ := http.NewRequest(http.MethodPost, "http://"+host+":631/", nil)
-		plainClient.Do(req) //nolint:errcheck // stopped by the wrapper
-	}
-	vs := rec.verdicts()
-	t.Logf("the transport asked the guard about %d addresses: %+v", len(vs), vs)
-	for _, v := range vs {
-		if !errors.Is(v.err, errOwnCUPS) {
-			t.Errorf("the guard let %q through (verdict %v)", v.address, v.err)
+		_, err := plainClient.Do(req)
+		vs := rec.verdicts()[before:]
+		if len(vs) == 0 || !errors.Is(err, errOwnCUPS) {
+			t.Errorf("%q: %d verdicts and error %v, want the guard asked and the request refused by it", host, len(vs), err)
+		}
+		for _, v := range vs {
+			if !errors.Is(v.err, errOwnCUPS) {
+				t.Errorf("%q: the guard let %q through (verdict %v)", host, v.address, v.err)
+			}
 		}
 	}
 }
