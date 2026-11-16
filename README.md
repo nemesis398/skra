@@ -140,7 +140,7 @@ unknown key is an error.
 | `listen` | `127.0.0.1:7631` | `127.0.0.1` or `localhost`, on a port from 1 to 65535. Under socket activation the socket unit decides, and the `Host` check follows its port. |
 | `cups_socket` | `/run/cups/cups.sock` | The CUPS socket. |
 | `user` | `$USER` | The name sent to CUPS and recorded with every action. |
-| `state_dir` | `~/.local/state/skra` | Where the action log, the token and the scans waiting to be saved live. |
+| `state_dir` | `~/.local/state/skra` | Where the action log, the token and the scans waiting to be saved live. Like the scan folder, it needs a file system with hard links: skra links the token into place on the first start. |
 | `idle_exit` | `5m` | How long the service waits with no request before it exits. Ignored when it was not started by its socket. |
 | `declared_queues` | none | Queue names that your system configuration owns. They show as read-only and cannot be removed or re-addressed here. |
 | `cupsd_conf_managed` | `false` | Set it when `cupsd.conf` is managed elsewhere, and the debug switch turns off. |
