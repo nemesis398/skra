@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"net/textproto"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"testing"
 	"testing/iotest"
@@ -934,5 +935,41 @@ func TestRecordKeepsTheDetailOnFailure(t *testing.T) {
 	s.record(httptest.NewRequest("POST", "/", nil), "x.y", "t", "", errors.New("boom"))
 	if ev = lastEvent(t, s); ev.Detail != "boom" {
 		t.Errorf("a failure with no detail logs %q, want just the reason", ev.Detail)
+	}
+}
+
+// With CUPS down, an action's reply and its history row give ruling 2's next
+// step and not the dial error under it. The client is a real one, on a socket
+// that is not there.
+func TestActionsWithCUPSDownSayWhatToDo(t *testing.T) {
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	c := cups.New(filepath.Join(t.TempDir(), "no-such.sock"), "root")
+	s := New(config.Config{Listen: "127.0.0.1:7631", User: "root"}, Deps{CUPS: c, Store: db}, NewToken())
+	h := s.Handler()
+	want := cups.ErrNotRunning.Error()
+	// A queue that cannot be looked up is not an attempt, so pause leaves no
+	// row; the other two do.
+	for _, tc := range []struct{ path, action string }{
+		{"/printers/Hall/pause", ""},
+		{"/jobs/7/cancel", "job.cancel"},
+		{"/printers/log/level", "cups.loglevel"},
+	} {
+		rec := postTo(s, h, tc.path, url.Values{"level": {"debug"}})
+		if rec.Code != http.StatusBadGateway || rec.Body.String() != want {
+			t.Errorf("%s: status %d, body %q, want 502 %q", tc.path, rec.Code, rec.Body.String(), want)
+		}
+		if tc.action == "" {
+			continue
+		}
+		if ev := lastEvent(t, s); ev.Action != tc.action || ev.OK || !strings.HasSuffix(ev.Detail, want) || strings.Contains(ev.Detail, "dial") {
+			t.Errorf("%s: event %+v, want it to end with %q", tc.path, ev, want)
+		}
+	}
+	if body := get(h, "/printers/log").Body.String(); !strings.Contains(body, want) || strings.Contains(body, "dial unix") {
+		t.Errorf("the log section does not give %q alone", want)
 	}
 }

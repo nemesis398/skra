@@ -45,11 +45,17 @@ var (
 	ErrBusy       = errors.New("CUPS is busy. Try again in a moment.")
 )
 
-// noAnswer is a request CUPS did not answer. It reads "CUPS does not answer:"
-// and the cause, and errors.Is finds both the cause and the kind, when known.
+// noAnswer is a request CUPS did not answer. When the kind is known it reads
+// as the kind, the next step a person can take; otherwise it reads "CUPS does
+// not answer:" and the cause. errors.Is finds both the cause and the kind.
 type noAnswer struct{ kind, cause error }
 
-func (e *noAnswer) Error() string { return "CUPS does not answer: " + e.cause.Error() }
+func (e *noAnswer) Error() string {
+	if e.kind != nil {
+		return e.kind.Error()
+	}
+	return "CUPS does not answer: " + e.cause.Error()
+}
 
 func (e *noAnswer) Unwrap() []error {
 	if e.kind == nil {

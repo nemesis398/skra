@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -178,7 +179,8 @@ func TestDoMapsHTTPErrors(t *testing.T) {
 }
 
 // A socket that is missing or refuses the connect means CUPS is not running.
-// The error names the cause without the url.Error wrapping around it.
+// The error reads as the next step; the dial error stays reachable under it,
+// without the url.Error wrapping around it.
 func TestDoSaysCUPSIsNotRunning(t *testing.T) {
 	refused := filepath.Join(t.TempDir(), "r.sock")
 	l, err := net.ListenUnix("unix", &net.UnixAddr{Name: refused, Net: "unix"})
@@ -205,8 +207,14 @@ func checkNotRunning(t *testing.T, name string, err error) {
 		t.Errorf("%s: err = %v, want ErrNotRunning", name, err)
 		return
 	}
-	if msg := err.Error(); !strings.HasPrefix(msg, "CUPS does not answer: dial unix") || strings.Contains(msg, "http://") {
-		t.Errorf("%s: err = %q, want the dial error without the URL", name, msg)
+	if msg := err.Error(); msg != ErrNotRunning.Error() {
+		t.Errorf("%s: err = %q, want ruling 2's sentence alone", name, msg)
+	}
+	if oe, ok := errors.AsType[*net.OpError](err); !ok || oe.Op != "dial" {
+		t.Errorf("%s: the dial error is not under %v", name, err)
+	}
+	if _, ok := errors.AsType[*url.Error](err); ok {
+		t.Errorf("%s: the url.Error is still under %v", name, err)
 	}
 }
 
@@ -529,8 +537,11 @@ func TestDoGivesUpOnACupsThatNeverAnswers(t *testing.T) {
 	if !errors.Is(err, ErrBusy) || errors.Is(err, ErrNotRunning) {
 		t.Fatalf("err = %v, want ErrBusy", err)
 	}
-	if msg := err.Error(); !strings.HasPrefix(msg, "CUPS does not answer") || strings.Contains(msg, "http://") {
-		t.Errorf("err = %q, want the cause without the URL", msg)
+	if msg := err.Error(); msg != ErrBusy.Error() {
+		t.Errorf("err = %q, want ruling 2's sentence alone", msg)
+	}
+	if ne, ok := errors.AsType[net.Error](err); !ok || !ne.Timeout() {
+		t.Errorf("the timeout is not under %v", err)
 	}
 	if d := time.Since(start); d > time.Second {
 		t.Errorf("Do waited %v for a CUPS that never answers", d)

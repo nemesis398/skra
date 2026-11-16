@@ -6,12 +6,12 @@ import (
 	"bufio"
 	"context"
 	"errors"
-	"fmt"
 	"html/template"
 	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -230,14 +230,22 @@ func TestFooterStatesTheServersInterval(t *testing.T) {
 }
 
 // When cups knows why CUPS does not answer, the footer gives the next step
-// instead of the raw cause.
+// instead of the raw cause. A real client on a missing socket says it.
 func TestOverviewSaysWhatToDoWhenCUPSIsDown(t *testing.T) {
-	for _, sentinel := range []error{cups.ErrNotRunning, cups.ErrBusy} {
-		f := &fakeCUPS{err: fmt.Errorf("CUPS does not answer: dial unix /run/cups/cups.sock: connect: no such file or directory: %w", sentinel)}
-		body := get(serverFor(f).Handler(), "/").Body.String()
+	gone := filepath.Join(t.TempDir(), "no-such.sock")
+	for _, tc := range []struct {
+		name string
+		c    CUPS
+		want error
+	}{
+		{"no socket", cups.New(gone, "mika"), cups.ErrNotRunning},
+		{"busy", &fakeCUPS{err: cups.ErrBusy}, cups.ErrBusy},
+	} {
+		s := New(config.Config{Listen: "127.0.0.1:7631", User: "mika"}, Deps{CUPS: tc.c}, NewToken())
+		body := get(s.Handler(), "/").Body.String()
 		foot := body[strings.Index(body, `<footer`):]
-		if !strings.Contains(foot, sentinel.Error()) || strings.Contains(foot, "dial unix") {
-			t.Errorf("footer does not give %q alone:\n%s", sentinel, foot)
+		if !strings.Contains(foot, tc.want.Error()) || strings.Contains(foot, "dial unix") || strings.Contains(foot, "does not answer") {
+			t.Errorf("%s: footer does not give %q alone:\n%s", tc.name, tc.want, foot)
 		}
 	}
 }

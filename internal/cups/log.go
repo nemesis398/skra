@@ -306,7 +306,7 @@ func (c *Client) readConf(ctx context.Context) (string, error) {
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxConf+1))
 	if err != nil {
-		return "", fmt.Errorf("CUPS does not answer: %w", err)
+		return "", notAnswered(err)
 	}
 	if len(data) > maxConf {
 		return "", errors.New("cupsd.conf is larger than 1 MiB; skrá does not read it")
@@ -421,7 +421,7 @@ func (c *Client) waitForLogLevel(ctx context.Context, level string) error {
 		select {
 		case <-pctx.Done():
 			if ctx.Err() != nil {
-				return fmt.Errorf("CUPS does not answer: %w", ctx.Err())
+				return notAnswered(ctx.Err())
 			}
 			if held {
 				return ErrReloadWaits

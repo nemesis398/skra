@@ -653,6 +653,9 @@ func TestSetLogLevelStopsWhenTheContextEnds(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrNotBack) {
 		t.Errorf("err = %v, want the deadline of the context", err)
 	}
+	if !errors.Is(err, ErrBusy) || err.Error() != ErrBusy.Error() {
+		t.Errorf("err = %q, want it to read as ErrBusy", err)
+	}
 	if time.Since(start) > 2*time.Second {
 		t.Errorf("took %v", time.Since(start))
 	}
@@ -751,7 +754,7 @@ func TestLogLevelWithoutUserOrSocket(t *testing.T) {
 		t.Errorf("err = %v", err)
 	}
 	_, err := New("/nonexistent/skra.sock", "mika").LogLevel(context.Background())
-	if err == nil || !strings.HasPrefix(err.Error(), "CUPS does not answer") {
-		t.Errorf("err = %v", err)
+	if !errors.Is(err, ErrNotRunning) || err.Error() != ErrNotRunning.Error() {
+		t.Errorf("err = %v, want ErrNotRunning", err)
 	}
 }
