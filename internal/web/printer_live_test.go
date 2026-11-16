@@ -148,6 +148,32 @@ func TestLiveOfflineWithoutALiveEntryStaysAway(t *testing.T) {
 	}
 }
 
+// An away printer's ink is CUPS's last word, drawn grey, so it carries no low
+// mark: the low color never showed on it anyway. Away by CUPS's offline
+// report and away by a live round that got no answer are the same.
+func TestAwayInkIsNeverLow(t *testing.T) {
+	cupsOffline := brother() // Magenta at 6 % is below its low mark of 10
+	cupsOffline.Reasons = []string{"offline-report"}
+	noAnswer := map[string]printer.Live{"Virtual-MFC": {Reachable: false}}
+	for name, pv := range map[string]printerView{
+		"CUPS offline": printerCell(cupsOffline, "", time.Now(), nil),
+		"no answer":    printerCell(brother(), "", time.Now(), noAnswer),
+	} {
+		if !pv.Away || len(pv.Inks) != 4 {
+			t.Fatalf("%s: away %t with %d inks, want away with 4", name, pv.Away, len(pv.Inks))
+		}
+		for _, ink := range pv.Inks {
+			if ink.Low {
+				t.Errorf("%s: ink %s is marked low on an away printer", name, ink.Label)
+			}
+		}
+	}
+	// A printer that is not away still marks its low ink.
+	if pv := printerCell(brother(), "", time.Now(), nil); !pv.Inks[2].Low {
+		t.Error("a ready printer's Magenta at 6 % lost its low mark")
+	}
+}
+
 func TestLiveBeforeTheFirstAnswerShowsCUPS(t *testing.T) {
 	// No live loop has run: the page falls back to CUPS's levels and says so.
 	f := &fakeCUPS{printers: []cups.Printer{brother()}}

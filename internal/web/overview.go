@@ -468,7 +468,11 @@ func printerCell(p cups.Printer, def string, now time.Time, live map[string]prin
 		if i == maxInks {
 			break
 		}
-		pv.Inks = append(pv.Inks, inkCell(m, i))
+		iv := inkCell(m, i)
+		// An away printer's ink is drawn grey, which hides the low color; the
+		// class would only promise a warning that never shows.
+		iv.Low = iv.Low && !pv.Away
+		pv.Inks = append(pv.Inks, iv)
 	}
 	return pv
 }
